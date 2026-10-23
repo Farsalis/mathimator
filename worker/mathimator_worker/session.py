@@ -129,8 +129,7 @@ class Session:
 
     def rendered_payload(self) -> dict[str, object]:
         return {
-            profile: {"stamp": record.stamp, "keys": list(record.keys)}
-            for profile, record in self.rendered.items()
+            profile: {"stamp": record.stamp, "keys": list(record.keys)} for profile, record in self.rendered.items()
         }
 
     def load_rendered(self, payload: object) -> None:
@@ -490,9 +489,7 @@ def _three_d_param(project: Project, object_id: str, key: str, value: object) ->
 
 
 def _require_three_d(project: Project) -> TemplateInstance:
-    matches = [
-        item for item in project.scene.template_instances if item.template_id == "three_d_axes"
-    ]
+    matches = [item for item in project.scene.template_instances if item.template_id == "three_d_axes"]
     if len(matches) != 1:
         raise DocumentError("This scene has no 3D template.")
     return matches[0]
@@ -536,11 +533,7 @@ def _delete_object(project: Project, raw: dict[str, object]) -> EditResult:
     remove = {object_id}
     _expand_removal(project, remove)
     project.scene.objects = [item for item in project.scene.objects if item.id not in remove]
-    project.scene.beats = [
-        beat
-        for beat in project.scene.beats
-        if not any(target in remove for target in beat.targets)
-    ]
+    project.scene.beats = [beat for beat in project.scene.beats if not any(target in remove for target in beat.targets)]
     project.scene.template_instances = [
         instance
         for instance in project.scene.template_instances
@@ -576,9 +569,7 @@ def _expand_removal(project: Project, remove: set[str]) -> None:
                     changed = True
         entrances = _entrance_indexes(project)
         removed_beats = {
-            index
-            for index, beat in enumerate(project.scene.beats)
-            if any(target in remove for target in beat.targets)
+            index for index, beat in enumerate(project.scene.beats) if any(target in remove for target in beat.targets)
         }
         for item_id, index in entrances.items():
             if index in removed_beats and item_id not in remove:

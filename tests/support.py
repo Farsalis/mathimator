@@ -53,9 +53,7 @@ def write_fake_interpreter(path: Path, sleep_s: float) -> Path:
     """
     if os.name != "nt":
         path.write_text(
-            "#!/usr/bin/env python3\n"
-            "import time\n"
-            f"time.sleep({sleep_s})\n",
+            f"#!/usr/bin/env python3\nimport time\ntime.sleep({sleep_s})\n",
             encoding="utf-8",
         )
         path.chmod(0o755)
@@ -64,8 +62,7 @@ def write_fake_interpreter(path: Path, sleep_s: float) -> Path:
     source = path.with_suffix(".cs")
     millis = max(1, int(sleep_s * 1000))
     source.write_text(
-        "class Sleeper { static void Main() { System.Threading.Thread.Sleep("
-        f"{millis}); }} }}\n",
+        f"class Sleeper {{ static void Main() {{ System.Threading.Thread.Sleep({millis}); }} }}\n",
         encoding="utf-8",
     )
     windir = os.environ.get("WINDIR", r"C:\Windows")

@@ -23,10 +23,7 @@ from mathimator_worker.session import Session
 from tests.support import REPO, media_dir, probe_video, scene_path, start_supervisor, venv_python
 
 SINE = r"y = \sin(x)"
-SINE_DOCUMENT = (
-    "#set page(width: auto, height: auto, margin: 8pt, fill: none)\n"
-    "$ y = sin(x) $\n"
-)
+SINE_DOCUMENT = "#set page(width: auto, height: auto, margin: 8pt, fill: none)\n$ y = sin(x) $\n"
 INTEGRAL = r"\int_0^1 x dx"
 PHASE3 = REPO / "out" / "phase3"
 
@@ -51,10 +48,7 @@ def test_supported_command(latex: str, math: str) -> None:
     result = translate(latex)
     assert result.supported is True
     assert result.math == math
-    assert result.document == (
-        "#set page(width: auto, height: auto, margin: 8pt, fill: none)\n"
-        f"$ {math} $\n"
-    )
+    assert result.document == (f"#set page(width: auto, height: auto, margin: 8pt, fill: none)\n$ {math} $\n")
 
 
 def test_passthrough_and_nested_groups() -> None:

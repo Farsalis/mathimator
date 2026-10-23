@@ -180,9 +180,7 @@ class _Parser:
 
     def _parse_name(self) -> Expression:
         start = self.index
-        while self.index < self.length and (
-            self.source[self.index].isalnum() or self.source[self.index] == "_"
-        ):
+        while self.index < self.length and (self.source[self.index].isalnum() or self.source[self.index] == "_"):
             self.index += 1
         name = self.source[start : self.index]
         if name == "pi" and self._peek() != "(":

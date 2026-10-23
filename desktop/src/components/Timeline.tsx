@@ -42,7 +42,10 @@ export function Timeline({
               start={starts[index] ?? 0}
               dirty={dirty[index] === true}
               selected={beat.id === selectedBeatId}
-              active={playhead >= (starts[index] ?? 0) && (index === beats.length - 1 || playhead < (starts[index + 1] ?? total))}
+              active={
+                playhead >= (starts[index] ?? 0) &&
+                (index === beats.length - 1 || playhead < (starts[index + 1] ?? total))
+              }
               onSelect={onSelect}
               onDraft={onDraft}
               onCommit={onCommit}

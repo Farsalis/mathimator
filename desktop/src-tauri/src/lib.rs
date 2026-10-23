@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -465,13 +465,21 @@ impl Worker {
             .map_err(|err| err.to_string())?
             .insert(id.clone(), sender);
         if let Err(err) = self.send(&value) {
-            let _ = self.shared.pending.lock().map(|mut pending| pending.remove(&id));
+            let _ = self
+                .shared
+                .pending
+                .lock()
+                .map(|mut pending| pending.remove(&id));
             return Err(err);
         }
         match receiver.recv_timeout(Duration::from_secs(30)) {
             Ok(message) => Ok(message),
             Err(_) => {
-                let _ = self.shared.pending.lock().map(|mut pending| pending.remove(&id));
+                let _ = self
+                    .shared
+                    .pending
+                    .lock()
+                    .map(|mut pending| pending.remove(&id));
                 Err("supervisor did not answer".to_string())
             }
         }
@@ -480,7 +488,11 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        let job = self.supervisor_job.lock().ok().and_then(|mut slot| slot.take());
+        let job = self
+            .supervisor_job
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
         let assigned = job.is_some();
         drop(job);
         if let Ok(mut slot) = self.child.lock() {
@@ -571,7 +583,11 @@ fn view_code(worker: State<'_, Worker>) -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn open_project_path(app: AppHandle, worker: State<'_, Worker>, path: String) -> Result<Value, String> {
+fn open_project_path(
+    app: AppHandle,
+    worker: State<'_, Worker>,
+    path: String,
+) -> Result<Value, String> {
     open_project_at(&app, &worker, PathBuf::from(path))
 }
 

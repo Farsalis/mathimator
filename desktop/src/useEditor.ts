@@ -14,20 +14,11 @@ import {
   type Handshake,
 } from "./jobSession";
 import { patchBeat } from "./playback";
-import {
-  parseEditorState,
-  parseWorkerEvent,
-  type Edit,
-  type EditorState,
-  type WorkerEvent,
-} from "./types";
+import { parseEditorState, parseWorkerEvent, type Edit, type EditorState, type WorkerEvent } from "./types";
 
 const PREVIEW_DEBOUNCE_MS = 300;
 
-export type Selection =
-  | { kind: "none" }
-  | { kind: "beat"; id: string }
-  | { kind: "object"; id: string };
+export type Selection = { kind: "none" } | { kind: "beat"; id: string } | { kind: "object"; id: string };
 
 export function useEditor() {
   const [ready, setReady] = useState(false);
@@ -198,11 +189,7 @@ export function useEditor() {
       const rejected = parseWorkerEvent(value);
       if (rejected?.event === "rejected") {
         setError(rejected.message);
-        if (
-          edit.op === "set_expression" ||
-          edit.op === "set_curve_component" ||
-          edit.op === "set_resolution"
-        ) {
+        if (edit.op === "set_expression" || edit.op === "set_curve_component" || edit.op === "set_resolution") {
           setFieldError(rejected.message);
         }
         return;

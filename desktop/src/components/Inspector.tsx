@@ -24,7 +24,8 @@ export function Inspector({
   onEdit,
 }: InspectorProps) {
   const beat = beats.find((item) => item.id === selectedBeatId) ?? null;
-  const selectedFromBeat = beat && beat.targets.length === 1 ? objects.find((item) => item.id === beat.targets[0]) : null;
+  const selectedFromBeat =
+    beat && beat.targets.length === 1 ? objects.find((item) => item.id === beat.targets[0]) : null;
   const selectedObject = objects.find((item) => item.id === selectedObjectId) ?? selectedFromBeat ?? null;
   const targets = beat ? objects.filter((item) => beat.targets.includes(item.id)) : [];
 
@@ -321,9 +322,7 @@ function AxesFields({ object, onEdit }: { object: SceneObject; onEdit: (edit: Ed
         <input
           type="checkbox"
           checked={object.params.showLabels === true}
-          onChange={(event) =>
-            onEdit({ op: "set_show_labels", objectId: object.id, value: event.target.checked })
-          }
+          onChange={(event) => onEdit({ op: "set_show_labels", objectId: object.id, value: event.target.checked })}
         />
         Show labels
       </label>
@@ -514,13 +513,7 @@ function RangeFields({
   );
 }
 
-function ShiftFields({
-  value,
-  onCommit,
-}: {
-  value: [number, number];
-  onCommit: (shift: [number, number]) => void;
-}) {
+function ShiftFields({ value, onCommit }: { value: [number, number]; onCommit: (shift: [number, number]) => void }) {
   return (
     <fieldset>
       <legend>Shift</legend>

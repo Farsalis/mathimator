@@ -115,20 +115,14 @@ struct JobObjectExtendedLimitInformation {
 #[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
-    fn CreateJobObjectW(
-        attrs: *mut std::ffi::c_void,
-        name: *const u16,
-    ) -> *mut std::ffi::c_void;
+    fn CreateJobObjectW(attrs: *mut std::ffi::c_void, name: *const u16) -> *mut std::ffi::c_void;
     fn SetInformationJobObject(
         job: *mut std::ffi::c_void,
         class: i32,
         info: *mut std::ffi::c_void,
         length: u32,
     ) -> i32;
-    fn AssignProcessToJobObject(
-        job: *mut std::ffi::c_void,
-        process: *mut std::ffi::c_void,
-    ) -> i32;
+    fn AssignProcessToJobObject(job: *mut std::ffi::c_void, process: *mut std::ffi::c_void) -> i32;
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
     fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
 }
@@ -187,7 +181,10 @@ fn reap_assigned_tree_within_one_second() {
     let job = assign_supervisor(&child).expect("supervisor was not assigned to a job");
     std::fs::write(&go, b"go").expect("go file");
     let (latex_pid, dvisvgm_pid) = wait_child_pids(&pids);
-    assert!(process_alive(child.id()), "manim stand-in exited before the job closed");
+    assert!(
+        process_alive(child.id()),
+        "manim stand-in exited before the job closed"
+    );
     assert!(process_alive(latex_pid), "latex was not alive");
     assert!(process_alive(dvisvgm_pid), "dvisvgm was not alive");
     let started = std::time::Instant::now();
@@ -197,7 +194,11 @@ fn reap_assigned_tree_within_one_second() {
         let parent_done = child.try_wait().expect("wait").is_some();
         let children_done = !process_alive(latex_pid) && !process_alive(dvisvgm_pid);
         if parent_done && children_done {
-            assert!(started.elapsed() <= limit, "reap took {:?}", started.elapsed());
+            assert!(
+                started.elapsed() <= limit,
+                "reap took {:?}",
+                started.elapsed()
+            );
             let _ = child.wait();
             return;
         }
@@ -263,10 +264,7 @@ fn compile_sleeper(root: &std::path::Path, name: &str, source: &str) -> std::pat
         .output()
         .expect("csc");
     if !completed.status.success() || !exe.is_file() {
-        panic!(
-            "csc failed: {}",
-            String::from_utf8_lossy(&completed.stderr)
-        );
+        panic!("csc failed: {}", String::from_utf8_lossy(&completed.stderr));
     }
     exe
 }

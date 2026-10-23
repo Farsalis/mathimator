@@ -99,9 +99,7 @@ def test_reference_60_codegen_preview_export_and_partial() -> None:
     assert [event["beatIndex"] for event in recolor_beats[:7]] == list(range(7))
     recolor_hashes = [sha256_file(Path(str(event["path"]))) for event in recolor_beats[:7]]
     assert recolor_hashes == prefix_hashes
-    assert sha256_file(Path(str(recolor_beats[7]["path"]))) != sha256_file(
-        Path(str(shortened[7]["path"]))
-    )
+    assert sha256_file(Path(str(recolor_beats[7]["path"]))) != sha256_file(Path(str(shortened[7]["path"])))
 
     _write(
         PHASE2 / "timings.json",
@@ -247,9 +245,11 @@ def _edit_and_render(
             trailing = finished
         else:
             finished = client.wait_for(
-                lambda event: event.get("jobId") == job_id
-                and event.get("event") == "beat_ready"
-                and event.get("beatIndex") == until_beat,
+                lambda event: (
+                    event.get("jobId") == job_id
+                    and event.get("event") == "beat_ready"
+                    and event.get("beatIndex") == until_beat
+                ),
                 600,
             )
             seconds = time.perf_counter() - started
@@ -272,11 +272,7 @@ def _edit_and_render(
 
 def _beats(client: object, job_id: str) -> list[dict[str, object]]:
     assert isinstance(client, SupervisorClient)
-    return [
-        event
-        for event in client.events
-        if event.get("event") == "beat_ready" and event.get("jobId") == job_id
-    ]
+    return [event for event in client.events if event.get("event") == "beat_ready" and event.get("jobId") == job_id]
 
 
 def _write(path: Path, payload: dict[str, object]) -> None:

@@ -44,9 +44,11 @@ def test_phase4_surface_curve_formula_and_png_sequence() -> None:
         time.sleep(0.3)
         client.send({"cmd": "render_preview", "id": "surface-preview"})
         second = client.wait_for(
-            lambda event: event.get("jobId") == "surface-preview"
-            and event.get("event") == "beat_ready"
-            and event.get("beatIndex") == 1,
+            lambda event: (
+                event.get("jobId") == "surface-preview"
+                and event.get("event") == "beat_ready"
+                and event.get("beatIndex") == 1
+            ),
             300,
         )
         insert_seconds = time.perf_counter() - started
@@ -220,11 +222,7 @@ def _ready(client: SupervisorClient, job_id: str) -> None:
 
 
 def _beats(client: SupervisorClient, job_id: str) -> list[dict[str, object]]:
-    return [
-        event
-        for event in client.events
-        if event.get("event") == "beat_ready" and event.get("jobId") == job_id
-    ]
+    return [event for event in client.events if event.get("event") == "beat_ready" and event.get("jobId") == job_id]
 
 
 def _argv_from_log(log_path: Path, job_hint: str | None) -> list[str] | list[list[str]]:

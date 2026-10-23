@@ -26,10 +26,7 @@ from tests.support import SupervisorClient, start_supervisor, venv_python
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MATHIMATOR_WIN32_TESTS") != "1",
-    reason=(
-        "Win32 job-object tests are written but not executed until Craig "
-        "approves running them on this machine"
-    ),
+    reason=("Win32 job-object tests are written but not executed until Craig approves running them on this machine"),
 )
 
 

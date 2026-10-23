@@ -36,13 +36,9 @@ ANCHORS = frozenset({"origin", "edge_up", "edge_down", "edge_left", "edge_right"
 PHASE_2_OBJECT_TYPES = frozenset({"axes", "function_plot", "math_formula", "text"})
 THREE_D_OBJECT_TYPES = frozenset({"three_d_axes", "surface", "parametric_curve"})
 OBJECT_TYPES = PHASE_2_OBJECT_TYPES | THREE_D_OBJECT_TYPES
-ACTIONS = frozenset(
-    {"create", "fade_in", "write", "wait", "transform_formula", "set_color", "move"}
-)
+ACTIONS = frozenset({"create", "fade_in", "write", "wait", "transform_formula", "set_color", "move"})
 ENTRANCES = frozenset({"create", "fade_in", "write", "transform_formula"})
-CREATE_TYPES = frozenset(
-    {"axes", "function_plot", "three_d_axes", "surface", "parametric_curve"}
-)
+CREATE_TYPES = frozenset({"axes", "function_plot", "three_d_axes", "surface", "parametric_curve"})
 WRITE_TYPES = frozenset({"math_formula", "text"})
 TEMPLATE_IDS = frozenset({"axes_function", "formula_transform", "three_d_axes"})
 MAX_RESOLUTION = 24
@@ -331,9 +327,7 @@ def project_dict(project: Project) -> dict[str, JsonValue]:
         }
     scene_payload["objects"] = [_object_dict(item) for item in scene.objects]
     scene_payload["beats"] = [_beat_dict(item) for item in scene.beats]
-    scene_payload["templateInstances"] = [
-        _template_dict(item) for item in scene.template_instances
-    ]
+    scene_payload["templateInstances"] = [_template_dict(item) for item in scene.template_instances]
     return {
         "schemaVersion": project.schema_version,
         "generatorVersion": project.generator_version,
@@ -556,9 +550,7 @@ def _parse_scene(raw: dict[str, object]) -> Scene:
         background=_color(raw["background"], "scene.background"),
         objects=[_parse_object(item, index) for index, item in enumerate(objects_raw)],
         beats=[_parse_beat(item, index) for index, item in enumerate(beats_raw)],
-        template_instances=[
-            _parse_template(item, index) for index, item in enumerate(templates_raw)
-        ],
+        template_instances=[_parse_template(item, index) for index, item in enumerate(templates_raw)],
         camera=camera,
     )
 
@@ -681,7 +673,7 @@ def _parse_beat(raw: object, index: int) -> Beat:
     _require(raw, {"id", "duration", "action", "targets"}, path)
     action = raw["action"]
     if not isinstance(action, str) or action not in ACTIONS:
-        raise DocumentError(f'unknown action {action!r}')
+        raise DocumentError(f"unknown action {action!r}")
     targets_raw = raw["targets"]
     if not isinstance(targets_raw, list) or not all(isinstance(item, str) for item in targets_raw):
         raise DocumentError(f"{path}.targets must be an array of ids")
@@ -833,7 +825,7 @@ def _parse_export(raw: object) -> ExportProfile:
     _require(raw, _EXPORT_KEYS, "exportProfile")
     fmt = raw["format"]
     if not isinstance(fmt, str) or fmt not in EXPORT_FORMATS:
-        raise DocumentError(f'unknown export format {fmt!r}')
+        raise DocumentError(f"unknown export format {fmt!r}")
     width = _int_value(raw["width"], "exportProfile.width")
     height = _int_value(raw["height"], "exportProfile.height")
     fps = _int_value(raw["fps"], "exportProfile.fps")
@@ -976,7 +968,9 @@ def _check_templates(project: Project) -> None:
             raise DocumentError(f'unknown template "{instance.template_id}"')
 
 
-def _linked(instance: TemplateInstance, objects: dict[str, SceneObject], beats: dict[str, Beat]) -> tuple[SceneObject, SceneObject, Beat, Beat]:
+def _linked(
+    instance: TemplateInstance, objects: dict[str, SceneObject], beats: dict[str, Beat]
+) -> tuple[SceneObject, SceneObject, Beat, Beat]:
     if len(instance.object_ids) != 2 or len(instance.beat_ids) != 2:
         raise DocumentError(f"{instance.template_id} records two objects and two beats")
     first_object = objects.get(instance.object_ids[0])

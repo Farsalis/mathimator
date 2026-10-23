@@ -79,12 +79,7 @@ export function TopBar({
         <button type="button" data-testid="redo-button" onClick={onRedo} disabled={!ready || !canRedo}>
           Redo
         </button>
-        <button
-          type="button"
-          data-testid="export-button"
-          onClick={onExport}
-          disabled={!ready || !canExport}
-        >
+        <button type="button" data-testid="export-button" onClick={onExport} disabled={!ready || !canExport}>
           {exportLabel}
         </button>
         <button type="button" data-testid="view-code-button" onClick={onViewCode} disabled={!ready}>

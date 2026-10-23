@@ -157,9 +157,7 @@ def test_last_beat_scene_differs_only_in_final_color() -> None:
 
 def test_progress_parser_emits_written_partials_in_order(tmp_path: Path) -> None:
     media = tmp_path / "media"
-    partial_dir = (
-        media / "videos" / "reference_60" / "480p15" / "partial_movie_files" / "MainScene"
-    )
+    partial_dir = media / "videos" / "reference_60" / "480p15" / "partial_movie_files" / "MainScene"
     partial_dir.mkdir(parents=True)
     first = partial_dir / "aaa.mp4"
     second = partial_dir / "bbb.mp4"
@@ -182,9 +180,7 @@ def test_progress_parser_emits_written_partials_in_order(tmp_path: Path) -> None
 
 def test_progress_parser_resolves_cached_hash(tmp_path: Path) -> None:
     media = tmp_path / "media"
-    partial_dir = (
-        media / "videos" / "reference_60" / "480p15" / "partial_movie_files" / "MainScene"
-    )
+    partial_dir = media / "videos" / "reference_60" / "480p15" / "partial_movie_files" / "MainScene"
     partial_dir.mkdir(parents=True)
     digest = "ab" * 32
     cached = partial_dir / f"{digest}.mp4"
@@ -196,9 +192,7 @@ def test_progress_parser_resolves_cached_hash(tmp_path: Path) -> None:
 
 def test_progress_parser_reads_manifest_order(tmp_path: Path) -> None:
     media = tmp_path / "media"
-    partial_dir = (
-        media / "videos" / "reference_60" / "480p15" / "partial_movie_files" / "MainScene"
-    )
+    partial_dir = media / "videos" / "reference_60" / "480p15" / "partial_movie_files" / "MainScene"
     partial_dir.mkdir(parents=True)
     files = []
     for index in range(3):
@@ -253,8 +247,7 @@ def test_runtime_error_then_status() -> None:
         assert ready["event"] == "ready"
         client.send({"cmd": "render_preview", "id": "job-error"})
         failed = client.wait_for(
-            lambda event: event.get("jobId") == "job-error"
-            and event.get("event") in {"error", "done"},
+            lambda event: event.get("jobId") == "job-error" and event.get("event") in {"error", "done"},
             600,
         )
         assert failed["event"] == "error"
@@ -308,8 +301,7 @@ def test_cancel_ends_grandchild_within_one_second() -> None:
 
         client.send({"cmd": "status", "id": "status-after-cancel"})
         client.wait_for(
-            lambda event: event.get("event") == "ready"
-            and event.get("jobId") == "status-after-cancel",
+            lambda event: event.get("event") == "ready" and event.get("jobId") == "status-after-cancel",
             30,
         )
         assert client.proc.poll() is None
@@ -470,9 +462,7 @@ def _render(
         if finished.get("event") != "done":
             raise AssertionError(json.dumps(finished, indent=2))
         beats = [
-            event
-            for event in client.events
-            if event.get("event") == "beat_ready" and event.get("jobId") == job_id
+            event for event in client.events if event.get("event") == "beat_ready" and event.get("jobId") == job_id
         ]
         argv = read_argv(log_path, timeout=5)
         return {

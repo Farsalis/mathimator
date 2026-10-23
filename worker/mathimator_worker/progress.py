@@ -98,11 +98,7 @@ def find_partial(media_dir: Path, digest: str) -> Path | None:
     if not digest:
         return None
     name = f"{digest}.mp4"
-    matches = [
-        path
-        for path in media_dir.rglob(name)
-        if "partial_movie_files" in path.parts and path.is_file()
-    ]
+    matches = [path for path in media_dir.rglob(name) if "partial_movie_files" in path.parts and path.is_file()]
     if not matches:
         return None
     matches.sort(key=lambda path: path.stat().st_mtime, reverse=True)
@@ -141,9 +137,7 @@ def discard_unfinished_partials(
         suffix = path.suffix.lower()
         is_partial = "partial_movie_files" in path.parts and suffix in _VIDEO_SUFFIXES
         is_scene_movie = (
-            path.name.startswith("MainScene.")
-            and suffix in _VIDEO_SUFFIXES
-            and "partial_movie_files" not in path.parts
+            path.name.startswith("MainScene.") and suffix in _VIDEO_SUFFIXES and "partial_movie_files" not in path.parts
         )
         is_manifest = path.name == "partial_movie_file_list.txt"
         if not is_partial and not is_scene_movie and not is_manifest:

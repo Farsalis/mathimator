@@ -282,7 +282,7 @@ def test_surface_and_curve_expressions_use_the_grammar() -> None:
     session.edit({"op": "add_three_d_axes"})
     before = dumps_project(session.project)
     with pytest.raises(DocumentError, match="This expression is not supported."):
-        session.edit({"op": "set_expression", "objectId": "surface_1", "expression": 'np.sin(x)'})
+        session.edit({"op": "set_expression", "objectId": "surface_1", "expression": "np.sin(x)"})
     assert dumps_project(session.project) == before
     session.edit({"op": "set_three_d_mode", "mode": "curve"})
     curve = dumps_project(session.project)

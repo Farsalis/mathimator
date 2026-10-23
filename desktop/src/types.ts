@@ -3,26 +3,13 @@ import { parseExportProfile, type ExportProfile } from "./exportProfile";
 export type { ExportProfile };
 
 export type ObjectType =
-  | "axes"
-  | "function_plot"
-  | "math_formula"
-  | "text"
-  | "three_d_axes"
-  | "surface"
-  | "parametric_curve";
+  "axes" | "function_plot" | "math_formula" | "text" | "three_d_axes" | "surface" | "parametric_curve";
 
 export type SceneKind = "scene" | "three_d_scene";
 
 export type ThreeDMode = "surface" | "curve";
 
-export type BeatAction =
-  | "create"
-  | "fade_in"
-  | "write"
-  | "wait"
-  | "transform_formula"
-  | "set_color"
-  | "move";
+export type BeatAction = "create" | "fade_in" | "write" | "wait" | "transform_formula" | "set_color" | "move";
 
 export type Anchor = "origin" | "edge_up" | "edge_down" | "edge_left" | "edge_right";
 
@@ -152,15 +139,7 @@ const OBJECT_TYPES: readonly ObjectType[] = [
   "surface",
   "parametric_curve",
 ];
-const ACTIONS: readonly BeatAction[] = [
-  "create",
-  "fade_in",
-  "write",
-  "wait",
-  "transform_formula",
-  "set_color",
-  "move",
-];
+const ACTIONS: readonly BeatAction[] = ["create", "fade_in", "write", "wait", "transform_formula", "set_color", "move"];
 
 export function parseEditorState(value: unknown): EditorState | null {
   if (!isRecord(value) || value.event !== "state") {
@@ -242,7 +221,8 @@ function parseDocument(value: unknown): ProjectDocument | null {
   if (!kind) {
     return null;
   }
-  const camera = value.scene.camera === undefined || value.scene.camera === null ? null : parseCamera(value.scene.camera);
+  const camera =
+    value.scene.camera === undefined || value.scene.camera === null ? null : parseCamera(value.scene.camera);
   if (value.scene.camera !== undefined && value.scene.camera !== null && camera === null) {
     return null;
   }

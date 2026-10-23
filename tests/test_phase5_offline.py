@@ -16,7 +16,7 @@ pytestmark = pytest.mark.offline
 
 BUNDLE = REPO / "packaging" / "bundle"
 SCENE = textwrap.dedent(
-    '''\
+    """\
     from manim import *
 
 
@@ -26,7 +26,7 @@ SCENE = textwrap.dedent(
             title = MathTex(r"y = \\sin(x)")
             self.play(Write(title), run_time=0.4)
             self.wait(0.2)
-    '''
+    """
 )
 
 

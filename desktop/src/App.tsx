@@ -100,7 +100,11 @@ export function App() {
         onPlaying={editor.setPlaying}
       />
       {editor.codeOpen ? (
-        <CodeView source={editor.codeText} onClose={() => editor.setCodeOpen(false)} onExport={() => void editor.onExportCode()} />
+        <CodeView
+          source={editor.codeText}
+          onClose={() => editor.setCodeOpen(false)}
+          onExport={() => void editor.onExportCode()}
+        />
       ) : editor.noticesOpen ? (
         <NoticesView onClose={() => editor.setNoticesOpen(false)} />
       ) : (

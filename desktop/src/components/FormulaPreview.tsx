@@ -97,9 +97,7 @@ export function FormulaPreview({ latex }: FormulaPreviewProps) {
       <p className="hint equation-caption" data-testid="equation-caption">
         {CAPTION}
       </p>
-      {blobUrl ? (
-        <img className="equation-svg" data-testid="equation-svg" alt="" src={blobUrl} />
-      ) : null}
+      {blobUrl ? <img className="equation-svg" data-testid="equation-svg" alt="" src={blobUrl} /> : null}
       {message ? (
         <p className="equation-message" data-testid="equation-message">
           {message}

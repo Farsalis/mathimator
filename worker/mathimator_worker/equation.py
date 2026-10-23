@@ -25,9 +25,7 @@ _COMMANDS = {
     "gamma": "gamma",
 }
 
-_PASSTHROUGH = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789^_+-=()[]"
-)
+_PASSTHROUGH = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789^_+-=()[]")
 _WHITESPACE = frozenset(" \t\r\n")
 
 
@@ -79,7 +77,7 @@ class _Parser:
             self.index += 1
             while self.index < self.length and self.source[self.index] in _WHITESPACE:
                 self.index += 1
-            return self.source[start:self.index]
+            return self.source[start : self.index]
         if char == "\\":
             return self._command()
         if char in _PASSTHROUGH:
@@ -94,7 +92,7 @@ class _Parser:
         start = self.index
         while self.index < self.length and _is_command_letter(self.source[self.index]):
             self.index += 1
-        name = self.source[start:self.index]
+        name = self.source[start : self.index]
         mapped = _COMMANDS.get(name)
         if mapped is not None:
             return mapped
