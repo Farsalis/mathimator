@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from mathimator_worker.document import dumps_project, empty_project, load_text
+from mathimator_worker.win32_job import jobs_enabled
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.progress import discard_unfinished_partials
 from mathimator_worker.session import Session
@@ -54,6 +55,18 @@ def test_formula_anchor_and_shift_are_stored_per_formula() -> None:
     assert source.params["anchor"] == "edge_up"
     assert list(dest.params["shift"]) == [0, 2]
     assert dest.params["anchor"] == "edge_down"
+    instance = restored.scene.template_instances[0]
+    assert instance.params["sourceAnchor"] == "edge_up"
+    assert list(instance.params["sourceShift"]) == [1, 0]
+    assert instance.params["destinationAnchor"] == "edge_down"
+    assert list(instance.params["destinationShift"]) == [0, 2]
+
+
+def test_windows_job_objects_are_the_default(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv("MATHIMATOR_WIN32_JOBS", raising=False)
+    assert jobs_enabled() is (os.name == "nt")
+    monkeypatch.setenv("MATHIMATOR_WIN32_JOBS", "0")
+    assert jobs_enabled() is False
 
 
 def test_object_ids_reject_keywords_and_generated_names() -> None:
@@ -123,7 +136,7 @@ def test_clear_cache_keeps_project_and_exports(tmp_path: Path, monkeypatch) -> N
 
 def test_queued_preview_starts_once_after_export(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MATHIMATOR_SKIP_PROCESS_TABLE", "1")
-    monkeypatch.delenv("MATHIMATOR_WIN32_JOBS", raising=False)
+    monkeypatch.setenv("MATHIMATOR_WIN32_JOBS", "0")
     fake = write_fake_interpreter(tmp_path / "fake-manim.py", 0.6)
     project = tmp_path / "handoff"
     log_path = tmp_path / "handoff.log"

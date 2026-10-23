@@ -398,8 +398,12 @@ impl Worker {
         let mut job_slot = self.supervisor_job.lock().map_err(|err| err.to_string())?;
         let mut child_slot = self.child.lock().map_err(|err| err.to_string())?;
         if let Some(mut old) = child_slot.take() {
-            job_slot.take();
-            let _ = old.kill();
+            let old_job = job_slot.take();
+            let assigned = old_job.is_some();
+            drop(old_job);
+            if !assigned {
+                let _ = old.kill();
+            }
             let _ = old.wait();
         }
         *child_slot = Some(child);

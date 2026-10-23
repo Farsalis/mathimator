@@ -5,8 +5,8 @@ job with ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``. Cancel calls
 ``TerminateJobObject``, which also ends ``latex`` and ``dvisvgm``. Linux and
 macOS keep the process-group path in ``process_group``.
 
-Nothing in this module runs unless ``MATHIMATOR_WIN32_JOBS=1``. The tests that
-call it are skipped unless ``MATHIMATOR_WIN32_TESTS=1``.
+On Windows the job is the default. ``MATHIMATOR_WIN32_JOBS=0`` turns it off.
+The tests that create a job are skipped unless ``MATHIMATOR_WIN32_TESTS=1``.
 """
 
 from __future__ import annotations
@@ -22,8 +22,14 @@ PROCESS_SET_QUOTA = 0x0100
 
 
 def jobs_enabled() -> bool:
-    """True only when this process should call the Job Object APIs."""
-    return os.name == "nt" and os.environ.get("MATHIMATOR_WIN32_JOBS") == "1"
+    """True when this Windows process should call the Job Object APIs.
+
+    Unset means on. ``MATHIMATOR_WIN32_JOBS=0`` keeps the process-group path
+    so a suite can run without calling the API.
+    """
+    if os.name != "nt":
+        return False
+    return os.environ.get("MATHIMATOR_WIN32_JOBS") != "0"
 
 
 class _BasicLimit(ctypes.Structure):

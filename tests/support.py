@@ -192,8 +192,9 @@ def start_supervisor(
     *,
     python: Path | None = None,
     init: bool = False,
+    supervisor_python: Path | None = None,
 ) -> SupervisorClient:
-    interpreter = venv_python()
+    interpreter = supervisor_python or venv_python()
     if not interpreter.is_file():
         raise FileNotFoundError(
             f"render interpreter not found at {interpreter}. Create .venv and install manim==0.22.0."

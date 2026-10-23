@@ -635,6 +635,8 @@ class Supervisor:
                 handle = assign_kill_on_close(proc.pid)
             except OSError as exc:
                 self.log(f"job object assignment failed: {exc}")
+            else:
+                self.log(f"job assigned pid={proc.pid}")
         with self._state_lock:
             if self._current is job:
                 job.proc = proc

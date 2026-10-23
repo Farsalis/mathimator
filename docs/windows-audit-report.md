@@ -2,7 +2,7 @@
 
 Date: 22 October 2026. Machine: Lenovo 21DC0032US, 12th Gen Intel Core i9-12900H (14 cores / 20 threads), about 64 GB RAM, Windows 11 Pro 10.0.26200 x64. The account is not an administrator. This is not the section 2 reference machine (8 cores, 16 GB, integrated graphics). Timings below are measurements on this PC. They are not budget-gate results.
 
-The network stayed connected. MiKTeX's own configuration was not changed. `MATHIMATOR_WIN32_JOBS` and `MATHIMATOR_WIN32_TESTS` were unset for every command and for the app launch. The GUI run set `MATHIMATOR_SKIP_PROCESS_TABLE=1` so the worker did not start its kernel32 process-table helper. The Job Object path stayed off.
+The network stayed connected. MiKTeX's own configuration was not changed. The GUI run left `MATHIMATOR_WIN32_JOBS` and `MATHIMATOR_WIN32_TESTS` unset and set `MATHIMATOR_SKIP_PROCESS_TABLE=1`, so that launch did not create a Job Object and did not start the kernel32 process-table helper. A later code change makes the Windows job the default. The verification commands below set `MATHIMATOR_WIN32_JOBS=0` and `tests/conftest.py` does the same unless `MATHIMATOR_WIN32_TESTS=1`. Those reap tests were not executed.
 
 ## Setup that worked
 
@@ -88,21 +88,21 @@ All figures are this machine, not the reference machine.
 
 ## Follow-up items
 
-1. **Windows teardown via Job Objects. Written, not executed.** `worker/mathimator_worker/win32_job.py` and `desktop/src-tauri/src/win32_job.rs` assign `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` only when `MATHIMATOR_WIN32_JOBS=1`. Default is off, so this PC did not call `CreateJobObject`. `tests/test_win32_job.py` is skipped unless `MATHIMATOR_WIN32_TESTS=1`. The two tests (`test_cancel_reaps_manim_latex_and_dvisvgm_within_one_second`, `test_quit_reaps_manim_latex_and_dvisvgm_within_one_second`) are placeholders that fail if the flag is turned on, so they cannot silently pass. The Rust test `supervisor_job_reaps_manim_latex_and_dvisvgm_within_one_second` is `#[ignore]` and was not run. `cargo test` reported 1 ignored. Pending Craig's OK before any of this runs here. Section 6 and section 7 of `docs/design-spec.md` now describe the Job Object rule. The Unix process-group path remains.
+1. **Windows teardown via Job Objects. Fixed in source. Reap tests written, execution deferred.** On Windows the supervisor assigns each Manim child to a job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` unless `MATHIMATOR_WIN32_JOBS=0`. Cancel calls `TerminateJobObject`. The shell's `assign_supervisor` does the same for the supervisor, and `Worker` drop / `ensure_running` close that job before waiting. `ensure_running` calls `child.kill()` only when no job was assigned. `test_windows_job_objects_are_the_default` passed and only reads the flag; it does not create a job. `test_cancel_reaps_manim_latex_and_dvisvgm_within_one_second` and `test_quit_reaps_manim_latex_and_dvisvgm_within_one_second` start a `manim.exe` stand-in that then starts `latex.exe` and `dvisvgm.exe`, and assert all three are gone within 1 s. They stay skipped unless `MATHIMATOR_WIN32_TESTS=1`. The Rust test `supervisor_job_reaps_manim_latex_and_dvisvgm_within_one_second` is the shell-side version of that tree and is `#[ignore]`. `cargo test` reported 1 ignored, 0 failed. None of those three tests were executed on this PC. `docs/design-spec.md` sections 1, 6, and 7 already describe this rule. Linux and macOS still use the process group.
 
-2. **UI job handshake. Fixed.** `desktop/src/jobSession.ts` reserves the id before the command, buffers early `done`/`error`, and treats Cancel before the id exists as a pending cancel. Vitest in `desktop/src/jobSession.test.ts` (8 passed).
+2. **UI job handshake. Already fixed before this pass.** `desktop/src/jobSession.ts` reserves the id before the command, buffers early `done`/`error`, and treats Cancel before the id exists as a pending cancel. Vitest: `applies a done event that arrived before the export id was stored`, `remembers cancel that happens before the export command is sent`. 8 passed in `desktop/src/jobSession.test.ts`.
 
-3. **Stale playback. Fixed.** A dirty rebuild clears `output`. `playbackAt` takes the same file-exists rule as scrub. The preview seeks when the time changes by more than 0.001 s. Covered by the vitest file.
+3. **Stale playback. Already fixed before this pass.** A dirty rebuild clears `output`. `playbackAt` uses the same file-exists rule as scrub, and the preview seeks when the chosen time changes by more than 0.001 s. Vitest: `does not play the previous movie once a beat is dirty`, `uses a blank canvas when the partial file is missing`, `seeks for a scrub smaller than a quarter second`.
 
-4. **Handoff race. Fixed, then a second cancel bug showed up in the GUI.** The supervisor holds the state lock across clear, take-pending, and install, and joins a replaced preview for 1 s. `test_queued_preview_starts_once_after_export` counts two Manim argv lines and does not snapshot processes. The GUI GIF failure below is the leftover truncated partial, which that test does not see.
+4. **Handoff race. Already fixed before this pass.** The supervisor holds the state lock across clear, take-pending, and install, and joins a replaced preview for 1 s (`test_stop_process_joins_for_one_second`). `test_queued_preview_starts_once_after_export` asserts two Manim argv lines, so a second start in the gap would fail that count. It does not snapshot processes. The cancelled-preview partial is covered by `test_cancelled_render_drops_the_unfinished_partial`.
 
-5. **Export `current` flag. Fixed.** An older export sets the note "This file is from an older export." A preview does not replace the "Rendering export" status. Vitest covers both.
+5. **Export `current` flag. Already fixed before this pass.** An older export sets the note "This file is from an older export." A preview does not replace "Rendering export". Vitest: `labels a finished file that is not the current export`, `does not replace Rendering export when a preview is reserved`.
 
-6. **Formula anchor and shift. Fixed.** `sourceAnchor`, `sourceShift`, `destinationAnchor`, and `destinationShift` are stored per formula. Shared `anchor`/`shift` still load. `test_formula_anchor_and_shift_are_stored_per_formula`.
+6. **Formula anchor and shift. Already fixed before this pass.** `sourceAnchor`, `sourceShift`, `destinationAnchor`, and `destinationShift` are stored per formula. Shared `anchor`/`shift` still load. `test_formula_anchor_and_shift_are_stored_per_formula` saves, reopens, and checks both the objects (`[1, 0]` / `edge_up` versus `[0, 2]` / `edge_down`) and the template params.
 
-7. **Delete object, clear cache, LaTeX error text. Fixed.** Delete object removes the object and the beats that target it as one undo step (`test_delete_object_removes_targeting_beats_as_one_undo`). Clear cache keeps `project.json` and `exports/` (`test_clear_cache_keeps_project_and_exports`). A LaTeX-looking failure is "LaTeX failed." plus the TeX log line (`test_latex_failure_includes_the_tex_log_line`). The window shows "Delete object" and "Clear cache".
+7. **Delete object, clear cache, LaTeX error text. Already fixed before this pass.** Delete object removes the object and the beats that target it as one undo step (`test_delete_object_removes_targeting_beats_as_one_undo`, `test_deleting_a_transform_source_removes_the_destination`). Clear cache keeps `project.json` and `exports/` (`test_clear_cache_keeps_project_and_exports`). A LaTeX-looking failure is "LaTeX failed." plus the TeX log line (`test_latex_failure_includes_the_tex_log_line`). The window shows "Delete object" and "Clear cache".
 
-8. **Reserved object ids. Fixed.** Object ids that are Python keywords or generated scene names are rejected. `test_object_ids_reject_keywords_and_generated_names`.
+8. **Reserved object ids. Already fixed before this pass.** Object ids that are Python keywords or generated scene names are rejected at load. `test_object_ids_reject_keywords_and_generated_names` uses `class` and `np`.
 
 ## Issues
 
@@ -110,7 +110,7 @@ All figures are this machine, not the reference machine.
 | --- | --- | --- | --- |
 | High | GIF (and any later concat) fails after a preview is cancelled mid-animation. Manim leaves a short partial, the next run logs "Using cached data", and `combine_files` raises `InvalidDataError` (`Errno 1094995529`). Journey B's lesson project had `a1fbb270….mp4` and `MainScene.mp4` at 48 bytes. | Open lesson-60, edit, start the preview, export GIF before that preview finishes. | Fixed in source. `discard_unfinished_partials` deletes partials, the scene movie, and the manifest touched by the killed run, and keeps partials that were already logged as written. `test_cancelled_render_drops_the_unfinished_partial`. The already-built exe still has the old bundled worker, so the GUI was not re-run after the fix. |
 | High | Transparent WebM is opaque. Corner alpha 255, pixel format yuv420p, codec vp9, `opaque_surface` true. The PNG sequence in the same phase 5 record passes (corner alpha 0). | `tests/test_phase5_render.py::test_surface_transparent_webm_and_png_sequence` with `--format webm --transparent`. | Not fixed. Needs a spec revision before any FFmpeg binary. The spec still requires the alpha check. |
-| High | Job Object cancel/quit is not proven on this PC. | Tests exist and are skipped. | Written, not executed, pending Craig's OK. |
+| High | Job Object cancel and quit are implemented and not proven on this PC. The Windows default now assigns the job. This run forced `MATHIMATOR_WIN32_JOBS=0`. | `tests/test_win32_job.py` and the ignored Rust test. | Execution deferred until Craig approves running the APIs here. |
 | Medium | Seven tests that walk the process table or call `process_alive` were deselected this session so they would not call kernel32. | Names listed in the command below. | Not run. They had passed in an earlier full run before this restriction. |
 | Low | One MiKTeX `latex` sat near idle for many minutes and a GIF test failed only because that process was stopped. The same compile under `CREATE_NO_WINDOW` finished in about 1 s on retry. | Not reproduced. | Not a product change. |
 | Low | Notices "Close" was clicked and the panel was still visible on the next screenshot. | `13-3d-refused.png`. | Not confirmed as a product bug. The click may have missed. The notices text itself is correct. |
@@ -119,20 +119,21 @@ All figures are this machine, not the reference machine.
 
 ## Commands
 
-Win32 Job Object tests and the seven process-table tests were not run. `MATHIMATOR_WIN32_JOBS` and `MATHIMATOR_WIN32_TESTS` were unset.
+Win32 Job Object reap tests and the seven process-table tests were not run. `MATHIMATOR_WIN32_TESTS` was unset. `MATHIMATOR_WIN32_JOBS=0` and `MATHIMATOR_SKIP_PROCESS_TABLE=1` were set for the pytest process. `tests/conftest.py` also forces the job off unless the reap suite is selected.
 
-- `tests/test_followup.py`: 10 passed in 3.28 s. Includes `test_cancelled_render_drops_the_unfinished_partial`.
+- `tests/test_followup.py`: 11 passed in 3.56 s. Includes `test_windows_job_objects_are_the_default` and `test_cancelled_render_drops_the_unfinished_partial`.
 - `npm test` (vitest): 8 passed in `desktop/src/jobSession.test.ts`.
-- `npx tsc --noEmit`: exit 0.
-- `cargo test` (no `--ignored`): 1 ignored, 0 failed. The ignored test is the Win32 job test.
-- `npm run tauri build`: exit 0. NSIS installer 381.62 MiB. This build's `runtime/worker` is the bundle snapshot from before the unfinished-partial fix.
-- Full pytest, kernel32 tests deselected, MiKTeX and bundle Typst prepended to PATH, `MATHIMATOR_SKIP_PROCESS_TABLE=1`:
+- `npm run build` (`tsc --noEmit && vite build`): exit 0.
+- `cargo test` (no `--ignored`): 0 passed, 0 failed, 1 ignored. The ignored test is `supervisor_job_reaps_manim_latex_and_dvisvgm_within_one_second`. `MATHIMATOR_WIN32_JOBS=0`.
+- `cargo build`: exit 0, no warnings.
+- `npm run tauri build` from the earlier pass: exit 0. NSIS installer 381.62 MiB. That installer still has the older bundled worker.
+- Full pytest, kernel32 tests deselected, MiKTeX and bundle Typst prepended to PATH, `MATHIMATOR_WIN32_JOBS=0`, `MATHIMATOR_SKIP_PROCESS_TABLE=1`:
 
 ```
 pytest tests -q --tb=line -ra -k "not process_group_kills and not cancel_ends_grandchild and not expression_rejection_does_not_spawn and not scrub_command_does_not_spawn and not preview_waits_behind_export and not cancels_the_in_flight and not existing_export_does_not_spawn"
 ```
 
-Result: 1 failed, 86 passed, 3 skipped, 7 deselected in 183.55 s. The failure is `test_surface_transparent_webm_and_png_sequence` (`corner_alpha=255`). The PNG checks in that test ran before the WebM assert. The three skips are the Linux offline test and both Win32 job tests.
+Result: 1 failed, 87 passed, 3 skipped, 7 deselected in 187.72 s. The failure is `test_surface_transparent_webm_and_png_sequence` (`corner_alpha=255`). The PNG checks in that test ran before the WebM assert. The three skips are the Linux offline test and both Win32 job tests. The extra pass against the previous 86 is `test_windows_job_objects_are_the_default`.
 
 Skipped by that command's environment, not by the `-k` filter: the Linux offline `unshare` test, and both tests in `tests/test_win32_job.py`.
 
