@@ -255,6 +255,7 @@ def test_scrub_choice_does_not_describe_a_latency_budget(tmp_path: Path) -> None
     assert blank["badge"] is True
 
 
+@pytest.mark.process_table
 def test_expression_rejection_does_not_spawn_manim(tmp_path: Path) -> None:
     project = tmp_path / "expr-project"
     log_path = tmp_path / "worker.log"
@@ -287,6 +288,7 @@ def test_expression_rejection_does_not_spawn_manim(tmp_path: Path) -> None:
     assert " -m manim" not in log
 
 
+@pytest.mark.process_table
 def test_scrub_command_does_not_spawn_manim(tmp_path: Path) -> None:
     project = tmp_path / "scrub-project"
     shutil.copytree(FIXTURES / "reference-60", project)
@@ -311,6 +313,7 @@ def test_scrub_command_does_not_spawn_manim(tmp_path: Path) -> None:
     assert " -m manim" not in log
 
 
+@pytest.mark.process_table
 def test_preview_waits_behind_export_and_edits_do_not_cancel_it(tmp_path: Path) -> None:
     project = tmp_path / "queue-project"
     log_path = tmp_path / "queue.log"
@@ -336,6 +339,7 @@ def test_preview_waits_behind_export_and_edits_do_not_cancel_it(tmp_path: Path) 
         client.close()
 
 
+@pytest.mark.process_table
 def test_a_new_preview_cancels_the_in_flight_preview(tmp_path: Path) -> None:
     project = tmp_path / "cancel-preview"
     log_path = tmp_path / "cancel-preview.log"
@@ -359,6 +363,7 @@ def test_a_new_preview_cancels_the_in_flight_preview(tmp_path: Path) -> None:
         client.close()
 
 
+@pytest.mark.process_table
 def test_existing_export_does_not_spawn_manim(tmp_path: Path) -> None:
     project = tmp_path / "export-hit"
     shutil.copytree(FIXTURES / "journey-a", project)

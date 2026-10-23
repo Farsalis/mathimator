@@ -1,6 +1,6 @@
 """Phase 1 worker tests from the design spec.
 
-The render tests start real Manim processes. They are slow on purpose.
+The tests marked ``render`` start real Manim processes. They are slow on purpose.
 The supervisor now takes a project directory. Handwritten scenes are copied to
 ``.mathimator/codegen/scene.py`` and rendered when the folder has no
 ``project.json``.
@@ -215,6 +215,7 @@ def test_progress_parser_reads_manifest_order(tmp_path: Path) -> None:
     assert [path for _index, path in events] == files
 
 
+@pytest.mark.process_table
 def test_process_group_kills_a_child_within_one_second() -> None:
     script = (
         "import subprocess, sys, time\n"
@@ -238,6 +239,7 @@ def test_process_group_kills_a_child_within_one_second() -> None:
     assert not process_alive(child_pid)
 
 
+@pytest.mark.render
 def test_runtime_error_then_status() -> None:
     project = handwritten_project(OUT / "runtime-error-project", RUNTIME_ERROR)
     log_path = OUT / "logs" / "runtime-error.log"
@@ -269,6 +271,8 @@ def test_runtime_error_then_status() -> None:
         client.close()
 
 
+@pytest.mark.render
+@pytest.mark.process_table
 def test_cancel_ends_grandchild_within_one_second() -> None:
     project = handwritten_project(OUT / "cancel-project", REFERENCE)
     log_path = OUT / "logs" / "cancel.log"
@@ -320,6 +324,7 @@ def test_cancel_ends_grandchild_within_one_second() -> None:
         client.close()
 
 
+@pytest.mark.render
 def test_reference_60_preview_partials_and_duration(preview: dict[str, object]) -> None:
     beats = preview["beats"]
     assert isinstance(beats, list)
@@ -350,6 +355,7 @@ def test_reference_60_preview_partials_and_duration(preview: dict[str, object]) 
     assert isinstance(preview["seconds"], float)
 
 
+@pytest.mark.render
 def test_last_beat_keeps_the_first_seven_partial_hashes(preview: dict[str, object]) -> None:
     project = Path(str(preview["project"]))
     scene = Path(str(preview["scene"]))
@@ -387,6 +393,7 @@ def test_last_beat_keeps_the_first_seven_partial_hashes(preview: dict[str, objec
     )
 
 
+@pytest.mark.render
 @pytest.mark.export
 def test_export_1080p30() -> None:
     project = handwritten_project(OUT / "export-project", REFERENCE)

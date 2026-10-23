@@ -1,4 +1,8 @@
-"""Helpers for the phase 1 supervisor tests."""
+"""Helpers shared by every test module.
+
+Repo paths, the render interpreter, the supervisor client, fake interpreters,
+and video probes. ``OUT`` and the scene paths belong to the phase 1 tests.
+"""
 
 from __future__ import annotations
 

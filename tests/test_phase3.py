@@ -86,6 +86,7 @@ def test_sine_document_matches_the_spec() -> None:
     assert result.document == SINE_DOCUMENT
 
 
+@pytest.mark.typst
 def test_typst_version_is_0_15_0() -> None:
     completed = subprocess.run(
         ["typst", "--version"],
@@ -96,6 +97,7 @@ def test_typst_version_is_0_15_0() -> None:
     assert completed.stdout.startswith("typst 0.15.0")
 
 
+@pytest.mark.typst
 def test_sine_svg_compiles_without_starting_manim(tmp_path: Path) -> None:
     before = _manim_pids()
     result = translate(SINE)
@@ -197,6 +199,7 @@ def test_journey_a_codegen_is_still_mathtex() -> None:
     assert "Typst(" not in source
 
 
+@pytest.mark.typst
 def test_failed_typst_run_leaves_the_previous_svg(tmp_path: Path) -> None:
     good = translate(SINE)
     assert good.document is not None
