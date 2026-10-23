@@ -19,6 +19,9 @@ render = ["manim[typst]==0.22.0"]
 
 [tool.uv]
 package = false
+# The uv release the bundle build uses. Every machine and CI job reads and
+# rewrites uv.lock with this one release.
+required-version = "==0.13.5"
 # Plain `uv sync` installs the render stack as well: the debug shell and the
 # render tests run Manim from .venv. Jobs that only lint or type-check can use
 # `uv sync --locked --no-default-groups --group dev`.
@@ -62,6 +65,10 @@ constraint-dependencies = [
   "typst==0.15.0",
   "watchdog==6.0.0",
 ]
+# The setuptools that builds the editable worker. Build backends are not
+# resolved into the lock, so without this each sync takes the newest release
+# worker/pyproject.toml allows.
+build-constraint-dependencies = ["setuptools==84.2.1"]
 
 [tool.uv.workspace]
 members = ["worker"]

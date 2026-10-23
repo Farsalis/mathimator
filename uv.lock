@@ -48,6 +48,7 @@ constraints = [
     { name = "typst", specifier = "==0.15.0" },
     { name = "watchdog", specifier = "==6.0.0" },
 ]
+build-constraints = [{ name = "setuptools", specifier = "==84.2.1" }]
 
 [[package]]
 name = "ast-serialize"
