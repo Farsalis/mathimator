@@ -1,7 +1,6 @@
 # Render output and local environments. Sample movies stay here and are not committed.
 out/
 .venv
-.python-version
 
 # Phase 5 bundle products. The recipe is packaging/build-bundle.sh.
 # The directory stays in the tree: tauri.windows.conf.json maps it as a
@@ -35,3 +34,9 @@ media/
 # Editor and OS
 .DS_Store
 *.swp
+Thumbs.db
+desktop.ini
+.cursor/
+
+# Crash dumps from MSYS and Cygwin tools
+*.stackdump
