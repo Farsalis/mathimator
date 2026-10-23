@@ -1,0 +1,18 @@
+[project]
+name = "mathimator-worker"
+version = "0.1.0"
+description = "Mathimator render supervisor. This package does not depend on Manim."
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Mathimator contributors" }]
+dependencies = []
+
+[project.scripts]
+mathimator-worker = "mathimator_worker.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["mathimator_worker*"]

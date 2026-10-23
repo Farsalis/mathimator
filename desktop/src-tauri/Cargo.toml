@@ -1,0 +1,24 @@
+[package]
+name = "mathimator"
+version = "0.1.0"
+description = "Mathimator desktop shell"
+authors = ["Mathimator contributors"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.90"
+
+[lib]
+name = "mathimator"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+serde_json = "1"
+tauri = { version = "=2.12.5", features = ["protocol-asset"] }
+tauri-plugin-dialog = { version = "2.8.3", default-features = false, features = ["gtk3"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
