@@ -14,23 +14,24 @@ from mathimator_worker.document import (
 )
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import assert_supported
+from mathimator_worker.jsonio import JsonValue
 
-_AXES_X_RANGE = [-6.5, 6.5, 1]
-_AXES_Y_RANGE = [-1.5, 1.5, 0.5]
+_AXES_X_RANGE: list[JsonValue] = [-6.5, 6.5, 1]
+_AXES_Y_RANGE: list[JsonValue] = [-1.5, 1.5, 0.5]
 _PLOT_COLOR = "#58C4DD"
 _DEFAULT_LATEX = "y = \\sin(x)"
 _SOURCE_LATEX = "y = \\sin(x)"
 _DEST_LATEX = "y = \\cos(x)"
 _FORMULA_COLOR = "#FFFFFF"
-_THREE_D_X_RANGE = [-3, 3, 1]
-_THREE_D_Y_RANGE = [-3, 3, 1]
-_THREE_D_Z_RANGE = [-2, 2, 1]
+_THREE_D_X_RANGE: list[JsonValue] = [-3, 3, 1]
+_THREE_D_Y_RANGE: list[JsonValue] = [-3, 3, 1]
+_THREE_D_Z_RANGE: list[JsonValue] = [-2, 2, 1]
 _SURFACE_EXPRESSION = "sin(x)*cos(y)"
-_SURFACE_RANGE = [-2.5, 2.5]
-_SURFACE_RESOLUTION = [8, 8]
+_SURFACE_RANGE: list[JsonValue] = [-2.5, 2.5]
+_SURFACE_RESOLUTION: list[JsonValue] = [8, 8]
 _SURFACE_COLOR = "#58C4DD"
-_CURVE_COMPONENTS = ["cos(t)", "sin(t)", "t / 3"]
-_CURVE_RANGE = [0, 12.56]
+_CURVE_COMPONENTS: list[JsonValue] = ["cos(t)", "sin(t)", "t / 3"]
+_CURVE_RANGE: list[JsonValue] = [0, 12.56]
 _CURVE_COLOR = "#F2CC8F"
 _CAMERA_PHI = 65
 _CAMERA_THETA = -45

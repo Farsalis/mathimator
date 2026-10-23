@@ -9,6 +9,7 @@ scenes. Each beat is still exactly one ``play`` or ``wait``.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 from mathimator_worker.document import (
     CURVE_VARIABLES,
@@ -117,9 +118,9 @@ def _emit_beat(project: Project, beat: Beat) -> tuple[str, str]:
         source_id, dest_id = beat.targets
         return action, _emit_transform(objects[dest_id], source_id, beat.duration)
     if action in {"create", "fade_in", "write"}:
-        target = objects[beat.targets[0]]
+        entrance_target = objects[beat.targets[0]]
         animation = {"create": "Create", "fade_in": "FadeIn", "write": "Write"}[action]
-        return action, _emit_entrance(target, beat.duration, animation)
+        return action, _emit_entrance(entrance_target, beat.duration, animation)
     raise CodegenError(f"unknown action {action}")
 
 
@@ -208,14 +209,13 @@ def _emit_surface(target: SceneObject, duration: object, animation: str) -> str:
 def _emit_curve(target: SceneObject, duration: object, animation: str) -> str:
     params = target.params
     components = params["components"]
-    if (
-        not isinstance(components, list)
-        or len(components) != 3
-        or not all(isinstance(item, str) for item in components)
-    ):
+    if not isinstance(components, list) or len(components) != 3:
+        raise CodegenError("curve components must be three expressions")
+    expressions = [item for item in components if isinstance(item, str)]
+    if len(expressions) != 3:
         raise CodegenError("curve components must be three expressions")
     try:
-        bodies = [expression_to_python(item, CURVE_VARIABLES) for item in components]
+        bodies = [expression_to_python(item, CURVE_VARIABLES) for item in expressions]
     except DocumentError as exc:
         raise CodegenError(str(exc)) from exc
     axes_id = params["axesId"]
@@ -280,7 +280,7 @@ def _emit_transform(dest: SceneObject, source_id: str, duration: object) -> str:
     return "\n".join(lines)
 
 
-def _position_lines(variable: str, params: dict[str, object]) -> list[str]:
+def _position_lines(variable: str, params: Mapping[str, object]) -> list[str]:
     anchor = params.get("anchor", "origin")
     if not isinstance(anchor, str) or anchor not in _ANCHOR_CALL:
         raise CodegenError(f"unknown anchor {anchor!r}")

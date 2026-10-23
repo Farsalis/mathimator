@@ -84,3 +84,12 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM"]
 
 # Ruff's default style: double quotes, space indents, magic trailing commas.
 [tool.ruff.format]
+
+# mypy checks the worker as it runs on Windows, so a Linux runner reproduces
+# the Windows result. CI adds a second pass with --platform linux for the
+# POSIX branches behind the sys.platform guards.
+[tool.mypy]
+strict = true
+python_version = "3.13"
+platform = "win32"
+files = ["worker/mathimator_worker"]

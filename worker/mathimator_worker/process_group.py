@@ -13,15 +13,16 @@ import atexit
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from contextlib import suppress
 from pathlib import Path
 
-if os.name == "nt":
+if sys.platform == "win32":
     import _winapi
 else:
-    _winapi = None  # type: ignore[assignment]
+    _winapi = None
 
 _HELPER_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
@@ -229,6 +230,8 @@ class _WindowsProcessTable:
                 lines.append(text)
 
     def _ensure(self) -> subprocess.Popen[str]:
+        if sys.platform != "win32":
+            raise OSError("the process table helper runs only on Windows")
         if self._proc is not None and self._proc.poll() is None:
             return self._proc
         script = Path(os.environ.get("TEMP", ".")) / "mathimator-proc-snap-v1.ps1"
@@ -258,7 +261,7 @@ class _WindowsProcessTable:
         return self._proc
 
 
-_TABLE = _WindowsProcessTable() if os.name == "nt" else None
+_TABLE = _WindowsProcessTable() if sys.platform == "win32" else None
 
 
 def _close_table() -> None:
@@ -284,7 +287,7 @@ def terminate_process_group(proc: subprocess.Popen[str]) -> None:
         _reap_zombies([proc.pid])
         return
 
-    if os.name == "nt":
+    if sys.platform == "win32":
         _terminate_windows(proc)
         return
 
@@ -314,7 +317,7 @@ def process_alive(pid: int) -> bool:
     """Return whether ``pid`` still exists and is not a zombie."""
     if pid <= 0:
         return False
-    if os.name == "nt":
+    if sys.platform == "win32":
         return _windows_process_alive(pid)
     stat = _read_stat(pid)
     if stat is None:
@@ -324,7 +327,7 @@ def process_alive(pid: int) -> bool:
 
 def process_name(pid: int) -> str:
     """Executable name without a trailing ``.exe``, lowercased on Windows."""
-    if os.name == "nt":
+    if sys.platform == "win32":
         if _TABLE is None:
             return ""
         for row_pid, _ppid, name, _command in _TABLE.pids(fresh=False):
@@ -341,7 +344,7 @@ def process_name(pid: int) -> str:
 
 def process_command_line(pid: int) -> str:
     """Return the command line, or an empty string when it cannot be read."""
-    if os.name == "nt":
+    if sys.platform == "win32":
         if _TABLE is None:
             return ""
         return _TABLE.command_line(pid)
@@ -431,7 +434,7 @@ def _deepest_first(root: int, victims: set[int], parents: dict[int, int]) -> lis
 
 
 def _reap_zombies(pids: set[int] | list[int]) -> None:
-    if os.name == "nt" or not hasattr(os, "waitpid"):
+    if sys.platform == "win32" or not hasattr(os, "waitpid"):
         return
     for pid in pids:
         try:
@@ -458,7 +461,7 @@ def _pids_in_group(pgid: int) -> set[int]:
 
 
 def _descendant_pids(root: int) -> set[int]:
-    if os.name == "nt":
+    if sys.platform == "win32":
         if _TABLE is None:
             return set()
         rows = _TABLE.pids(fresh=False)

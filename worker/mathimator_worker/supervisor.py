@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO
 
 from mathimator_worker.argv import build_manim_argv
 from mathimator_worker.codegen import CodegenError, generate
@@ -109,7 +110,7 @@ class Supervisor:
             self.log_path = root / "logs" / "worker.log"
 
     def _warm_process_control(self) -> None:
-        if os.name != "nt":
+        if sys.platform != "win32":
             return
         try:
             warm_process_table()
@@ -592,17 +593,7 @@ class Supervisor:
         env["PYTHONUTF8"] = "1"
         env["COLUMNS"] = "240"
         env["NO_COLOR"] = "1"
-        popen_kwargs: dict[str, object] = {
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.PIPE,
-            "text": True,
-            "encoding": "utf-8",
-            "errors": "replace",
-            "env": env,
-            "bufsize": 1,
-        }
-        if os.name == "nt":
+        if sys.platform == "win32":
             # start_new_session is ignored on Windows, so the grandchild would
             # stay in this console and could open its own window. A new process
             # group plus a hidden window keeps cancel and the single-window
@@ -610,13 +601,28 @@ class Supervisor:
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
-            popen_kwargs["startupinfo"] = startupinfo
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            start_new_session = False
         else:
-            popen_kwargs["start_new_session"] = True
+            startupinfo = None
+            creationflags = 0
+            start_new_session = True
         started = time.time()
         try:
-            proc = subprocess.Popen(argv, **popen_kwargs)
+            proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                bufsize=1,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+                start_new_session=start_new_session,
+            )
         except OSError as exc:
             self.emit(
                 {
@@ -661,8 +667,7 @@ class Supervisor:
         capture_lock = threading.Lock()
         progress_lock = threading.Lock()
 
-        def consume(stream: object) -> None:
-            assert hasattr(stream, "__iter__")
+        def consume(stream: IO[str]) -> None:
             for line in stream:
                 text = str(line)
                 with capture_lock:
@@ -683,6 +688,7 @@ class Supervisor:
                         }
                     )
 
+        assert proc.stdout is not None and proc.stderr is not None
         stdout_thread = threading.Thread(target=consume, args=(proc.stdout,), daemon=True)
         stderr_thread = threading.Thread(target=consume, args=(proc.stderr,), daemon=True)
         stdout_thread.start()

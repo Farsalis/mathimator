@@ -36,6 +36,7 @@ from mathimator_worker.document import (
 )
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import assert_supported
+from mathimator_worker.jsonio import JsonValue
 from mathimator_worker.templates import (
     add_axes_function,
     add_formula,
@@ -661,13 +662,13 @@ def _positive_number(value: object, label: str) -> int | float:
     return number
 
 
-def _shift_value(value: object) -> list[int | float]:
+def _shift_value(value: object) -> list[JsonValue]:
     if not isinstance(value, list) or len(value) != 2:
         raise DocumentError("shift must be two numbers")
     return [_finite(value[0], "shift"), _finite(value[1], "shift")]
 
 
-def _range_value(value: object) -> list[int | float]:
+def _range_value(value: object) -> list[JsonValue]:
     if not isinstance(value, list) or len(value) != 3:
         raise DocumentError("range must be min, max, and step")
     numbers = [_finite(item, "range") for item in value]
@@ -675,4 +676,4 @@ def _range_value(value: object) -> list[int | float]:
         raise DocumentError("range max must be greater than min")
     if float(numbers[2]) <= 0:
         raise DocumentError("range step must be positive")
-    return numbers
+    return list[JsonValue](numbers)

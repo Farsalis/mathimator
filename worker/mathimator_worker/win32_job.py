@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 from ctypes import wintypes
 
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
@@ -27,7 +28,7 @@ def jobs_enabled() -> bool:
     Unset means on. ``MATHIMATOR_WIN32_JOBS=0`` keeps the process-group path
     so a suite can run without calling the API.
     """
-    if os.name != "nt":
+    if sys.platform != "win32":
         return False
     return os.environ.get("MATHIMATOR_WIN32_JOBS") != "0"
 
@@ -76,7 +77,7 @@ def assign_kill_on_close(pid: int) -> int:
     The caller keeps the handle alive. Closing it, or calling
     ``terminate_job``, ends the process and every process it created.
     """
-    if not jobs_enabled():
+    if sys.platform != "win32" or not jobs_enabled():
         raise OSError("Job Object assignment is disabled")
     if pid <= 0:
         raise OSError(f"invalid pid {pid}")
@@ -127,7 +128,7 @@ def assign_kill_on_close(pid: int) -> int:
 
 def terminate_job(handle: int) -> None:
     """End every process in the job, then close the handle."""
-    if not jobs_enabled():
+    if sys.platform != "win32" or not jobs_enabled():
         raise OSError("Job Object termination is disabled")
     if handle <= 0:
         raise OSError("invalid job handle")
@@ -148,6 +149,8 @@ def close_job(handle: int) -> None:
     """Close a job handle. Kill-on-close then reaps anything still inside."""
     if handle <= 0:
         return
+    if sys.platform != "win32":
+        raise OSError("Job Object handles exist only on Windows")
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL

@@ -108,4 +108,6 @@ def _beat_at(beats: list[IndexBeat], time: float) -> IndexBeat:
 
 
 def _exists(path: str | None) -> bool:
-    return bool(path) and Path(path).is_file()
+    if not path:
+        return False
+    return Path(path).is_file()

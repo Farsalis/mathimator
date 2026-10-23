@@ -32,7 +32,7 @@ class ManimProgress:
     media_dir: Path
     beats: dict[int, Path] = field(default_factory=dict)
     output_path: Path | None = None
-    _buffer: str = ""
+    _buffer: str = field(default="", init=False, repr=False)
 
     def feed(self, text: str) -> list[tuple[int, Path]]:
         self._buffer += text

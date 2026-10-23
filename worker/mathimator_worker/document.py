@@ -1381,13 +1381,13 @@ def _numbers(value: object, path: str, count: int) -> list[Number]:
     return [_number(item, f"{path}[{index}]") for index, item in enumerate(value)]
 
 
-def _range3(value: object, path: str) -> list[Number]:
+def _range3(value: object, path: str) -> list[JsonValue]:
     numbers = _numbers(value, path, 3)
     if float(numbers[1]) <= float(numbers[0]):
         raise DocumentError(f"{path} max must be greater than min")
     if float(numbers[2]) <= 0:
         raise DocumentError(f"{path} step must be positive")
-    return numbers
+    return list[JsonValue](numbers)
 
 
 def _positive(value: object, path: str) -> Number:
@@ -1404,8 +1404,8 @@ def _duration(value: object, path: str) -> Number:
     return number
 
 
-def _shift(value: object, path: str) -> list[Number]:
-    return _numbers(value, path, 2)
+def _shift(value: object, path: str) -> list[JsonValue]:
+    return list[JsonValue](_numbers(value, path, 2))
 
 
 def _color(value: object, path: str) -> str:
@@ -1420,11 +1420,11 @@ def _anchor(value: object, path: str) -> str:
     return value
 
 
-def parse_resolution(value: object, path: str = "resolution") -> list[int]:
+def parse_resolution(value: object, path: str = "resolution") -> list[JsonValue]:
     """Two integers from 1 to 24. A larger value is refused and nothing is stored."""
     if not isinstance(value, list) or len(value) != 2:
         raise DocumentError(f"{path} must be two integers")
-    numbers: list[int] = []
+    numbers: list[JsonValue] = []
     for item in value:
         if isinstance(item, bool) or not isinstance(item, (int, float)):
             raise DocumentError(f"{path} must be two integers")
@@ -1445,14 +1445,14 @@ def _expression(value: object, path: str, variables: frozenset[str]) -> str:
     return text
 
 
-def _pair_range(value: object, path: str) -> list[Number]:
+def _pair_range(value: object, path: str) -> list[JsonValue]:
     numbers = _numbers(value, path, 2)
     if float(numbers[1]) <= float(numbers[0]):
         raise DocumentError(f"{path} max must be greater than min")
-    return numbers
+    return list[JsonValue](numbers)
 
 
-def _components(value: object, path: str) -> list[str]:
+def _components(value: object, path: str) -> list[JsonValue]:
     if not isinstance(value, list) or len(value) != 3:
         raise DocumentError(f"{path} must be three expressions")
     return [_expression(item, f"{path}[{index}]", CURVE_VARIABLES) for index, item in enumerate(value)]
