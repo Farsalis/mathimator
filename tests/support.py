@@ -198,7 +198,7 @@ def start_supervisor(
     interpreter = supervisor_python or venv_python()
     if not interpreter.is_file():
         raise FileNotFoundError(
-            f"render interpreter not found at {interpreter}. Create .venv and install manim==0.22.0."
+            f"render interpreter not found at {interpreter}. Run `uv sync --locked` from the repo root."
         )
     manim_python = python or interpreter
     project.mkdir(parents=True, exist_ok=True)

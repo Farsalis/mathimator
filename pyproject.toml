@@ -19,6 +19,10 @@ render = ["manim[typst]==0.22.0"]
 
 [tool.uv]
 package = false
+# Plain `uv sync` installs the render stack as well: the debug shell and the
+# render tests run Manim from .venv. Jobs that only lint or type-check can use
+# `uv sync --locked --no-default-groups --group dev`.
+default-groups = ["dev", "render"]
 # The render stack shipped in packaging/bundle/venv, read from its .dist-info
 # folders, so the lock resolves to the versions the bundle was tested with.
 constraint-dependencies = [
