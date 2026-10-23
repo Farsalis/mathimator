@@ -102,10 +102,7 @@ impl GlyphPreview {
         let status = loop {
             let polled = {
                 let mut slot = self.child.lock().map_err(|err| err.to_string())?;
-                let waited = match slot.as_mut() {
-                    None => None,
-                    Some(child) => Some(child.try_wait()),
-                };
+                let waited = slot.as_mut().map(|child| child.try_wait());
                 match waited {
                     None => Poll::Missing,
                     Some(Ok(Some(status))) => {
