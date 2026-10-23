@@ -16,7 +16,7 @@ import os
 import subprocess
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 import pytest
@@ -101,10 +101,8 @@ def _running_tree(
     finally:
         if client.proc.poll() is None:
             client.proc.kill()
-        try:
+        with suppress(subprocess.TimeoutExpired):
             client.proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
 
 
 def _base_python() -> Path:

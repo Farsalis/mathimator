@@ -71,6 +71,9 @@ mathimator-worker = { workspace = true }
 target-version = "py313"
 line-length = 120
 extend-exclude = ["scenes", "packaging/bundle", "out"]
+# mathimator_worker lives under worker/, so import sorting treats it as first
+# party alongside tests.
+src = [".", "worker"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "UP", "SIM"]

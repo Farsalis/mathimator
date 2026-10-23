@@ -13,12 +13,12 @@ import time
 from pathlib import Path
 
 from mathimator_worker.document import dumps_project, empty_project, load_text
-from mathimator_worker.win32_job import jobs_enabled
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.progress import discard_unfinished_partials
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import Supervisor
 from mathimator_worker.tex_failure import format_render_failure
+from mathimator_worker.win32_job import jobs_enabled
 from tests.support import read_argv, start_supervisor, write_fake_interpreter
 
 

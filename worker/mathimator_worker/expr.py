@@ -37,24 +37,24 @@ class Pi:
 @dataclass(frozen=True)
 class Call:
     name: str
-    argument: "Expression"
+    argument: Expression
 
 
 @dataclass(frozen=True)
 class UnaryMinus:
-    operand: "Expression"
+    operand: Expression
 
 
 @dataclass(frozen=True)
 class Group:
-    inner: "Expression"
+    inner: Expression
 
 
 @dataclass(frozen=True)
 class Binary:
     operator: str
-    left: "Expression"
-    right: "Expression"
+    left: Expression
+    right: Expression
 
 
 Expression = Number | Variable | Pi | Call | UnaryMinus | Group | Binary

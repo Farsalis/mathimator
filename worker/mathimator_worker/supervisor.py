@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mathimator_worker.argv import build_manim_argv
@@ -117,7 +117,7 @@ class Supervisor:
             self.log(f"process table warmup failed: {exc}")
 
     def log(self, message: str) -> None:
-        stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        stamp = datetime.now(UTC).isoformat(timespec="milliseconds")
         line = f"{stamp} {message}\n"
         with self._log_lock:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)

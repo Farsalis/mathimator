@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Mapping, Sequence
+from collections.abc import Mapping, Sequence
 
 JsonScalar = str | int | float | bool | None
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]

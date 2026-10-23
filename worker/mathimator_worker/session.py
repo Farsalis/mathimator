@@ -12,13 +12,14 @@ from dataclasses import dataclass
 from mathimator_worker.codegen import CodegenError, generate
 from mathimator_worker.document import (
     CURVE_VARIABLES,
+    ENTRANCES,
     SURFACE_VARIABLES,
     Beat,
     ExportProfile,
     Project,
     SceneObject,
-    ENTRANCES,
     TemplateInstance,
+    _sync_three_d,
     beat_by_id,
     beat_cache_keys,
     derived_starts,
@@ -26,7 +27,6 @@ from mathimator_worker.document import (
     load_text,
     normalize_color,
     object_by_id,
-    _sync_three_d,
     parse_resolution,
     project_dict,
     quantize,
@@ -121,10 +121,7 @@ class Session:
                 mismatch = index
                 break
         else:
-            if len(keys) > len(record.keys):
-                mismatch = len(record.keys)
-            else:
-                mismatch = len(keys)
+            mismatch = len(record.keys) if len(keys) > len(record.keys) else len(keys)
         return [index >= mismatch for index in range(count)]
 
     def rendered_payload(self) -> dict[str, object]:
@@ -423,10 +420,7 @@ def _set_camera(project: Project, raw: dict[str, object]) -> EditResult:
     key = raw.get("key")
     if key not in {"phi", "theta", "zoom"}:
         raise DocumentError("camera field must be phi, theta, or zoom")
-    if key == "zoom":
-        value = _positive_number(raw.get("value"), "zoom")
-    else:
-        value = _finite(raw.get("value"), str(key))
+    value = _positive_number(raw.get("value"), "zoom") if key == "zoom" else _finite(raw.get("value"), str(key))
     instance.params[key] = value
     _sync_three_d(project, instance)
     return EditResult(focus_object_id=instance.object_ids[0])

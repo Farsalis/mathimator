@@ -43,7 +43,7 @@ def test_phase4_surface_curve_formula_and_png_sequence() -> None:
         client.wait_for(lambda event: event.get("jobId") == "insert" and event.get("event") == "state", 30)
         time.sleep(0.3)
         client.send({"cmd": "render_preview", "id": "surface-preview"})
-        second = client.wait_for(
+        client.wait_for(
             lambda event: (
                 event.get("jobId") == "surface-preview"
                 and event.get("event") == "beat_ready"

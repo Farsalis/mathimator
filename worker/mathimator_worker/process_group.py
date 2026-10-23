@@ -15,6 +15,7 @@ import signal
 import subprocess
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 
 if os.name == "nt":
@@ -63,7 +64,8 @@ public static class MathimatorProc {
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] buffer, IntPtr size, out IntPtr read);
     [DllImport("ntdll.dll")]
-    static extern int NtQueryInformationProcess(IntPtr process, int klass, byte[] information, int length, out int returned);
+    static extern int NtQueryInformationProcess(
+        IntPtr process, int klass, byte[] information, int length, out int returned);
     static string Clean(string value) {
         if (value == null) return "";
         return value.Replace("\t", " ").Replace("\r", " ").Replace("\n", " ");
@@ -297,20 +299,14 @@ def terminate_process_group(proc: subprocess.Popen[str]) -> None:
     victims.update(_descendant_pids(pid))
 
     if hasattr(os, "killpg"):
-        try:
+        with suppress(ProcessLookupError):
             os.killpg(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
     for victim in victims:
-        try:
+        with suppress(ProcessLookupError):
             os.kill(victim, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
 
-    try:
+    with suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        pass
     _reap_zombies(victims)
 
 

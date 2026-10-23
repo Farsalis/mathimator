@@ -228,7 +228,7 @@ def test_windows_bundled_runtime_renders_mathtex_without_user_tex(tmp_path: Path
         encoding="utf-8",
         newline="\n",
     )
-    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
     env = os.environ.copy()
     for key in (
         "TEXINPUTS",

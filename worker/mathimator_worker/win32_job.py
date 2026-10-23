@@ -11,8 +11,8 @@ The tests that create a job are skipped unless ``MATHIMATOR_WIN32_TESTS=1``.
 
 from __future__ import annotations
 
-import os
 import ctypes
+import os
 from ctypes import wintypes
 
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000

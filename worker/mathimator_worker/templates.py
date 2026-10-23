@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from mathimator_worker.document import (
-    Camera,
     Beat,
+    Camera,
     Project,
     SceneObject,
     TemplateInstance,
