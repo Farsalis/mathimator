@@ -1,0 +1,66 @@
+# Local git hooks that mirror the CI lint and format jobs. Install them with
+# `pre-commit install`; `pre-commit run --all-files` checks the whole tree.
+#
+# scenes/ and tests/fixtures/ hold golden output that tests compare byte for
+# byte, packaging/bundle/ is a build product, and the lockfiles are written by
+# uv, npm and cargo, so no hook reads or rewrites any of them.
+exclude: ^(scenes/|tests/fixtures/|packaging/bundle/|uv\.lock$|desktop/package-lock\.json$|desktop/src-tauri/Cargo\.lock$)
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Keep Markdown hard line breaks (.editorconfig leaves *.md alone).
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        # .gitattributes keeps Windows batch files in CRLF.
+        exclude: \.(bat|cmd)$
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+
+  # Keep the rev equal to the ruff pin in the dev dependency group.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.2
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # Scans the staged changes for secrets at commit time.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks
+
+  # These run the desktop's own tools, so `npm ci` in desktop/ and the pinned
+  # Rust toolchain must be installed first.
+  - repo: local
+    hooks:
+      - id: prettier
+        name: prettier --check (desktop)
+        entry: npm --prefix desktop run format:check
+        language: system
+        files: ^desktop/
+        pass_filenames: false
+      - id: eslint
+        name: eslint (desktop)
+        entry: npm --prefix desktop run lint
+        language: system
+        files: ^desktop/.*\.(js|jsx|mjs|cjs|ts|tsx)$
+        pass_filenames: false
+      - id: cargo-fmt
+        name: cargo fmt --check (desktop/src-tauri)
+        # rustup picks the toolchain from the working directory, so run cargo
+        # inside desktop/src-tauri to use its rust-toolchain.toml.
+        entry: bash -c 'cd desktop/src-tauri && exec cargo fmt --check'
+        language: system
+        files: ^desktop/src-tauri/
+        types_or: [rust, toml]
+        pass_filenames: false
