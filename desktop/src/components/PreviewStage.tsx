@@ -24,6 +24,7 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
 
   useEffect(() => {
     if (!src) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): derive the reset from src (F123)
       setBlobUrl(null);
       return;
     }
@@ -61,7 +62,7 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [src]);
+  }, [src, choice.path]);
 
   useEffect(() => {
     const video = videoRef.current;

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { derivedStarts } from "./format";
@@ -45,7 +45,28 @@ export function useEditor() {
   const epoch = useRef(0);
   const debounce = useRef<number | null>(null);
   const stateRef = useRef<EditorState | null>(null);
-  stateRef.current = state;
+
+  useLayoutEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  async function refreshState(): Promise<boolean> {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        const value = await invoke<unknown>("get_state");
+        const parsed = parseEditorState(value);
+        if (parsed) {
+          setState(parsed);
+          setStatus((current) => (current === "Starting" ? "Ready" : current));
+          return true;
+        }
+      } catch {
+        // The supervisor may still be starting.
+      }
+      await delay(100);
+    }
+    return false;
+  }
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
@@ -128,24 +149,6 @@ export function useEditor() {
       void invoke("note_shell_ready");
     }
   }, [ready, state]);
-
-  async function refreshState(): Promise<boolean> {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      try {
-        const value = await invoke<unknown>("get_state");
-        const parsed = parseEditorState(value);
-        if (parsed) {
-          setState(parsed);
-          setStatus((current) => (current === "Starting" ? "Ready" : current));
-          return true;
-        }
-      } catch {
-        // The supervisor may still be starting.
-      }
-      await delay(100);
-    }
-    return false;
-  }
 
   function schedulePreview(): void {
     epoch.current += 1;

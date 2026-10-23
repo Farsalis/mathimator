@@ -40,6 +40,7 @@ export function TopBar({
 }: TopBarProps) {
   const [draft, setDraft] = useState(name);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): resync during render (F119)
     setDraft(name);
   }, [name]);
 

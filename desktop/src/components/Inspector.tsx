@@ -386,6 +386,7 @@ function FormulaFields({ object, onEdit }: { object: SceneObject; onEdit: (edit:
   const latex = stringParam(object.params.latex, "y = \\sin(x)");
   const [previewLatex, setPreviewLatex] = useState(latex);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): resync during render (F119)
     setPreviewLatex(latex);
   }, [object.id, latex]);
   return (
@@ -465,6 +466,7 @@ function AnchorField({ value, onCommit }: { value: Anchor; onCommit: (anchor: An
 function ColorField({ label, value, onCommit }: { label: string; value: string; onCommit: (color: string) => void }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): resync during render (F119)
     setDraft(value);
   }, [value]);
   return (
@@ -538,6 +540,7 @@ function CommitText({
 }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): resync during render (F119)
     setDraft(value);
   }, [value]);
   return (
@@ -579,6 +582,7 @@ function CommitNumber({
 }) {
   const [draft, setDraft] = useState(String(value));
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): resync during render (F119)
     setDraft(String(value));
   }, [value]);
   return (

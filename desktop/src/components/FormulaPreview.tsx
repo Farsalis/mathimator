@@ -58,6 +58,7 @@ export function FormulaPreview({ latex }: FormulaPreviewProps) {
 
   useEffect(() => {
     if (!svgPath) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): derive the reset from svgPath
       setBlobUrl(null);
       return;
     }
