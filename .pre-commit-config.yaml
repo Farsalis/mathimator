@@ -58,9 +58,11 @@ repos:
       - id: cargo-fmt
         name: cargo fmt --check (desktop/src-tauri)
         # rustup picks the toolchain from the working directory, so run cargo
-        # inside desktop/src-tauri to use its rust-toolchain.toml.
-        entry: bash -c 'cd desktop/src-tauri && exec cargo fmt --check'
-        language: system
+        # inside desktop/src-tauri to use its rust-toolchain.toml. Python sets
+        # the directory because `bash` from PowerShell or cmd can be the WSL
+        # launcher in System32.
+        entry: python -c "import subprocess, sys; sys.exit(subprocess.call(['cargo', 'fmt', '--check'], cwd='desktop/src-tauri'))"
+        language: python
         files: ^desktop/src-tauri/
         types_or: [rust, toml]
         pass_filenames: false
