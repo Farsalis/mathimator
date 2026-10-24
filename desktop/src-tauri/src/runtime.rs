@@ -28,6 +28,9 @@ const OVERRIDE_PREFIX: &str = "MATHIMATOR_";
 /// The file that gets the shell-ready marker: the one `MATHIMATOR_*` variable a release build
 /// reads (D32).
 pub const SHELL_READY_FILE: &str = "MATHIMATOR_SHELL_READY_FILE";
+/// The variable that names a Windows venv launcher to the real interpreter it starts, so that the
+/// venv applies there (D16).
+const VENV_LAUNCHER: &str = "__PYVENV_LAUNCHER__";
 /// The notices scripts/generate_notices.py writes into the bundle, which the installer ships as
 /// runtime/THIRD_PARTY_NOTICES.txt (D75).
 const NOTICES: &str = "THIRD_PARTY_NOTICES.txt";
@@ -66,8 +69,12 @@ pub struct NoticesFile {
 /// What starting the worker takes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkerFiles {
-    /// The real interpreter with Manim installed (D33).
+    /// The interpreter with Manim installed, which the worker gets as `--python`: the real one in
+    /// a release build (D33), the repository's venv or `MATHIMATOR_PYTHON` in a debug build.
     pub python: PathBuf,
+    /// The real interpreter that `python` starts as its child when it is a Windows venv launcher,
+    /// which only a debug build runs (D16).
+    pub base_python: Option<PathBuf>,
     /// The folder that holds `mathimator_worker`.
     pub source: PathBuf,
     /// The reference-60 project.json that Sample copies.
@@ -165,6 +172,7 @@ pub fn development(repo: &Path, overrides: &Overrides) -> Runtime {
         .unwrap_or_else(|| venv_python(repo));
     let worker = if python.is_file() {
         Ok(WorkerFiles {
+            base_python: venv_base(&python),
             python,
             source: repo.join("worker"),
             sample: repo
@@ -251,6 +259,7 @@ fn installed(
     let worker = python.and_then(|python| {
         Ok(WorkerFiles {
             python,
+            base_python: None,
             source: source?,
             sample: sample?,
         })
@@ -320,9 +329,14 @@ impl Runtime {
     }
 
     /// `python -P -m <module>` with the worker package importable (C9.6). `-P` keeps the working
-    /// directory off `sys.path` (F124).
+    /// directory off `sys.path` (F124). Behind a venv launcher the real interpreter runs, told the
+    /// launcher as the launcher itself would tell it, so that the process the shell puts in its
+    /// Job Object is the one that starts the worker's children (D16).
     pub fn python_command(&self, files: &WorkerFiles, module: &str) -> Command {
-        let mut command = self.command(&files.python);
+        let mut command = self.command(files.base_python.as_ref().unwrap_or(&files.python));
+        if files.base_python.is_some() {
+            command.env(VENV_LAUNCHER, &files.python);
+        }
         command
             .arg("-P")
             .arg("-m")
@@ -346,8 +360,12 @@ impl Runtime {
     fn describe(&self) -> String {
         let worker = match &self.worker {
             Ok(files) => format!(
-                "python {}, worker {}, sample {}",
+                "python {}{}, worker {}, sample {}",
                 files.python.display(),
+                files
+                    .base_python
+                    .as_ref()
+                    .map_or(String::new(), |base| format!(" (runs {})", base.display())),
                 files.source.display(),
                 files.sample.display()
             ),
@@ -455,6 +473,26 @@ fn venv_python(repo: &Path) -> PathBuf {
     }
 }
 
+/// The real interpreter behind `python` when it is a Windows venv launcher: the file of the same
+/// name in the `home` folder of the venv's pyvenv.cfg, read as the launcher reads it (D16). The
+/// launcher takes the first pyvenv.cfg beside it, else one folder up, and the first lowercase
+/// `home` key in it. A POSIX venv's python is a link to the real interpreter, not a launcher.
+fn venv_base(python: &Path) -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let config = python
+        .parent()?
+        .ancestors()
+        .take(2)
+        .find_map(|venv| fs::read_to_string(venv.join("pyvenv.cfg")).ok())?;
+    let home = config.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "home").then(|| value.trim())
+    })?;
+    Some(Path::new(home).join(python.file_name()?)).filter(|base| base.is_file())
+}
+
 fn on_path(name: &str) -> Option<PathBuf> {
     let file = format!("{name}{}", env::consts::EXE_SUFFIX);
     env::split_paths(&env::var_os("PATH")?)
@@ -474,6 +512,7 @@ fn plain(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::process::Stdio;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use serde_json::json;
@@ -584,6 +623,7 @@ mod tests {
             Runtime {
                 worker: Ok(WorkerFiles {
                     python: root.join("python").join("python.exe"),
+                    base_python: None,
                     source: root.join("worker"),
                     sample: root
                         .join("samples")
@@ -761,6 +801,7 @@ mod tests {
             Runtime {
                 worker: Ok(WorkerFiles {
                     python,
+                    base_python: None,
                     source: repo.0.join("worker"),
                     sample: repo
                         .0
@@ -876,6 +917,7 @@ mod tests {
         Runtime {
             worker: Ok(WorkerFiles {
                 python: PathBuf::from("C:\\rt\\python\\python.exe"),
+                base_python: None,
                 source: PathBuf::from("C:\\rt\\worker"),
                 sample: PathBuf::from("C:\\rt\\sample.json"),
             }),
@@ -1010,7 +1052,164 @@ mod tests {
         assert!(!envs
             .iter()
             .any(|(key, value)| key.eq_ignore_ascii_case("PYTHONHOME") && value.is_some()));
+        assert!(
+            !envs.iter().any(|(key, _)| key == VENV_LAUNCHER),
+            "{envs:?}"
+        );
         assert_eq!(command.get_current_dir(), Some(runtime.work_dir.as_path()));
+    }
+
+    /// A debug runtime on `python`, as `MATHIMATOR_PYTHON` or the repository's .venv gives it.
+    fn debug_runtime(repo: &Scratch, python: &Path) -> Runtime {
+        let overrides = Overrides {
+            python: Some(python.to_owned()),
+            ..Overrides::default()
+        };
+        development(&repo.0, &overrides)
+    }
+
+    /// A repository with a .venv launcher, an interpreter in each of its `base` and `other`
+    /// folders, and the pyvenv.cfg `configs`, whose `{base}`, `{other}` and `{missing}` name those
+    /// folders and one without an interpreter.
+    fn venv_repo(configs: &[(&str, &str)]) -> Scratch {
+        let repo = Scratch::new();
+        repo.file(".venv/Scripts/python.exe");
+        repo.file("base/python.exe");
+        repo.file("other/python.exe");
+        for (config, text) in configs {
+            let mut text = text.to_string();
+            for name in ["base", "other", "missing"] {
+                let folder = repo.0.join(name);
+                text = text.replace(&format!("{{{name}}}"), &folder.to_string_lossy());
+            }
+            fs::write(bundled(&repo.0, config), text).unwrap();
+        }
+        repo
+    }
+
+    #[test]
+    fn a_debug_venv_launcher_runs_the_real_interpreter_that_pyvenv_cfg_names() {
+        // The launcher reads the pyvenv.cfg beside it before the one a folder up, and the first
+        // `home` in it, with or without spaces and CRs.
+        let cases: [&[(&str, &str)]; 3] = [
+            &[(
+                ".venv/pyvenv.cfg",
+                "home = {base}\nimplementation = CPython\nuv = 0.13.5\n",
+            )],
+            &[(
+                ".venv/Scripts/pyvenv.cfg",
+                "include-system-site-packages = false\r\nhome={base}\r\n",
+            )],
+            &[
+                (".venv/pyvenv.cfg", "home = {other}\n"),
+                (
+                    ".venv/Scripts/pyvenv.cfg",
+                    "home = {base}\nhome = {other}\n",
+                ),
+            ],
+        ];
+        for configs in cases {
+            let repo = venv_repo(configs);
+            let launcher = bundled(&repo.0, ".venv/Scripts/python.exe");
+            let base = bundled(&repo.0, "base/python.exe");
+            let runtime = debug_runtime(&repo, &launcher);
+            let files = runtime.worker.clone().unwrap();
+            let command = runtime.python_command(&files, "mathimator_worker");
+            let args: Vec<&OsStr> = command.get_args().collect();
+            assert_eq!(args, ["-P", "-m", "mathimator_worker"], "{configs:?}");
+            assert_eq!(files.python, launcher, "{configs:?}");
+            let told = (
+                VENV_LAUNCHER.to_owned(),
+                Some(launcher.to_string_lossy().into_owned()),
+            );
+            if cfg!(windows) {
+                assert_eq!(files.base_python.as_ref(), Some(&base), "{configs:?}");
+                assert_eq!(command.get_program(), base, "{configs:?}");
+                assert!(envs(&command).contains(&told), "{configs:?}");
+                let line = format!("python {} (runs {}),", launcher.display(), base.display());
+                assert!(runtime.describe().contains(&line), "{configs:?}");
+            } else {
+                assert_eq!(files.base_python, None, "{configs:?}");
+                assert_eq!(command.get_program(), launcher, "{configs:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_interpreter_that_is_no_venv_launcher_runs_as_it_is() {
+        // No pyvenv.cfg, as for a real interpreter; a `home` the launcher does not read, because
+        // the pyvenv.cfg it reads has none or its key is not lowercase; and a `home` with no
+        // interpreter, which the launcher then reports itself.
+        let cases: [&[(&str, &str)]; 5] = [
+            &[],
+            &[(".venv/pyvenv.cfg", "implementation = CPython\n")],
+            &[
+                (".venv/pyvenv.cfg", "home = {other}\n"),
+                (".venv/Scripts/pyvenv.cfg", "implementation = CPython\n"),
+            ],
+            &[(".venv/pyvenv.cfg", "Home = {other}\n")],
+            &[(".venv/pyvenv.cfg", "home = {missing}\n")],
+        ];
+        for configs in cases {
+            let repo = venv_repo(configs);
+            let python = bundled(&repo.0, ".venv/Scripts/python.exe");
+            let runtime = debug_runtime(&repo, &python);
+            let files = runtime.worker.clone().unwrap();
+            assert_eq!(files.base_python, None, "{configs:?}");
+            let command = runtime.python_command(&files, "mathimator_worker");
+            assert_eq!(command.get_program(), python, "{configs:?}");
+            let envs = envs(&command);
+            assert!(
+                !envs.iter().any(|(key, _)| key == VENV_LAUNCHER),
+                "{envs:?}"
+            );
+        }
+    }
+
+    /// The repository's venv, started as the shell starts the worker: the process the shell
+    /// spawns, and so puts in its Job Object, is the interpreter that runs the module, inside the
+    /// venv, and it sees the venv's python as `sys.executable`, as the worker sees the `--python`
+    /// it gets (D16). Runs only under `--ignored` with `MATHIMATOR_REAL_WORKER_TESTS=1`.
+    #[test]
+    #[ignore = "starts the repository's Python; needs MATHIMATOR_REAL_WORKER_TESTS=1"]
+    fn the_repository_venv_runs_in_the_process_the_shell_spawns() {
+        if env::var("MATHIMATOR_REAL_WORKER_TESTS").as_deref() != Ok("1") {
+            return;
+        }
+        let repo = repo_root().expect("debug builds run the repository's venv");
+        let runtime = development(&repo, &Overrides::default());
+        let probe = Scratch::new();
+        fs::write(
+            probe.0.join("probe.py"),
+            "import os, sys\nprint(os.getpid(), sys.prefix, sys.executable, sep='\\n')\n",
+        )
+        .unwrap();
+        let files = WorkerFiles {
+            source: probe.0.clone(),
+            ..runtime.worker.clone().expect("the repository's venv")
+        };
+        let child = runtime
+            .python_command(&files, "probe")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("python");
+        let pid = child.id();
+        let output = child.wait_with_output().expect("probe");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        let stdout = String::from_utf8(output.stdout).expect("UTF-8");
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                pid.to_string(),
+                repo.join(".venv").display().to_string(),
+                files.python.display().to_string(),
+            ],
+            "{stderr}"
+        );
     }
 
     #[test]

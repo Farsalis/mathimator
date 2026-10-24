@@ -54,7 +54,8 @@ Ubuntu package as `libwebkit2gtk-4.1-dev` and `libxdo-dev`.
 
 | Variable | Read by | Effect |
 | --- | --- | --- |
-| `MATHIMATOR_WIN32_TESTS` | pytest, cargo test | `1` runs the Job Object tests, which create real Job Objects: `tests/test_win32_job.py`, and the shell's ignored test under `cargo test -- --include-ignored`. Without it, the pytest suite sets `MATHIMATOR_WIN32_JOBS=0`, so the workers it starts create no Job Object. |
+| `MATHIMATOR_WIN32_TESTS` | pytest, cargo test | `1` runs the Job Object tests, which create real Job Objects: `tests/test_win32_job.py`, and the shell's Job Object test under `cargo test -- --include-ignored`. Without it, the pytest suite sets `MATHIMATOR_WIN32_JOBS=0`, so the workers it starts create no Job Object. |
+| `MATHIMATOR_REAL_WORKER_TESTS` | cargo test | `1` runs the shell's ignored tests that start the repository's `.venv` Python under `cargo test -- --include-ignored`: the real worker's handshake and project lock, and the check that a debug shell spawns the interpreter behind the venv launcher. Without it those tests return at once. |
 | `MATHIMATOR_WIN32_JOBS` | worker, debug shell | `0` turns the kill-on-close Job Objects off. The worker then cancels a render by walking its process tree, and a debug shell leaves the worker outside a job. Unset means on. Release shells ignore it. |
 | `MATHIMATOR_SKIP_PROCESS_TABLE` | worker | `1` keeps the worker from starting the Windows process-table helper, a PowerShell child, ahead of a cancel. A cancel that walks the process tree still starts it. Tests that start a worker but never cancel set it. |
 | `MATHIMATOR_PYTHON` | debug shell, tests | The interpreter that runs the worker, in place of `.venv`. |

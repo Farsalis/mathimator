@@ -1519,6 +1519,7 @@ mod tests {
     fn files() -> WorkerFiles {
         WorkerFiles {
             python: PathBuf::from("C:\\rt\\python\\python.exe"),
+            base_python: None,
             source: PathBuf::from("C:\\rt\\worker"),
             sample: PathBuf::from("C:\\rt\\sample.json"),
         }
@@ -1576,6 +1577,37 @@ mod tests {
         assert_eq!(env_value(&command, TEX_ERROR), Some(None));
         let reopened = supervisor_command(&installed_runtime(), &files(), project, false, None);
         assert!(!reopened.get_args().any(|arg| arg == "--init"));
+    }
+
+    /// The worker runs Manim with the real interpreter only when its `--python` is the launcher it
+    /// runs under (D16).
+    #[test]
+    fn a_supervisor_behind_a_venv_launcher_runs_the_real_interpreter_and_names_the_launcher() {
+        let files = WorkerFiles {
+            python: PathBuf::from("C:\\repo\\.venv\\Scripts\\python.exe"),
+            base_python: Some(PathBuf::from("C:\\Python314\\python.exe")),
+            ..files()
+        };
+        let command = supervisor_command(
+            &installed_runtime(),
+            &files,
+            Path::new("C:\\p"),
+            false,
+            None,
+        );
+        assert_eq!(
+            command.get_program(),
+            Path::new("C:\\Python314\\python.exe")
+        );
+        assert_eq!(
+            env_value(&command, "__PYVENV_LAUNCHER__"),
+            Some(Some(files.python.as_os_str()))
+        );
+        let args: Vec<&OsStr> = command.get_args().collect();
+        assert_eq!(
+            args[args.len() - 2..],
+            ["--python", "C:\\repo\\.venv\\Scripts\\python.exe"]
+        );
     }
 
     #[test]
