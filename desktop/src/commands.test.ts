@@ -23,6 +23,9 @@ describe("command names (C9.1)", () => {
 
   it("has no command that reaches the worker requests the shell sends itself: the handshake and the TeX state", () => {
     const reached = new Set(fixture.tauriCommands.map((command) => command.worker));
-    expect(fixture.workerCommands.filter((name) => !reached.has(name))).toEqual(["status", "set_tex_error"]);
+    expect(Object.keys(fixture.workerRequests).filter((name) => !reached.has(name))).toEqual([
+      "status",
+      "set_tex_error",
+    ]);
   });
 });

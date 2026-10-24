@@ -1,7 +1,21 @@
 {
-  "workerCommands": ["status", "get_state", "edit", "undo", "redo", "code", "clear_cache",
-                     "open_project", "reload", "overwrite", "save_as", "render_preview",
-                     "export", "cancel", "set_tex_error"],
+  "workerRequests": {
+    "status": {},
+    "get_state": {},
+    "edit": {"edit": "object"},
+    "undo": {},
+    "redo": {},
+    "code": {},
+    "clear_cache": {},
+    "open_project": {"path": "string", "init": "boolean?"},
+    "reload": {},
+    "overwrite": {},
+    "save_as": {"path": "string"},
+    "render_preview": {},
+    "export": {"force": "boolean?"},
+    "cancel": {"jobId": "non-empty string"},
+    "set_tex_error": {"message": "non-empty string or null"}
+  },
   "tauriCommands": [
     {"name": "app_status", "args": [], "worker": null},
     {"name": "restart_worker", "args": [], "worker": null},

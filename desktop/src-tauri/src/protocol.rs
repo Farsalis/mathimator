@@ -145,6 +145,60 @@ mod tests {
         );
     }
 
+    /// The request a line of `requests.json` stands for, built from the line's own values.
+    fn shared_request(line: &Value) -> Request {
+        let text = |name: &str| line[name].as_str().expect(name).to_owned();
+        match line["cmd"].as_str().unwrap() {
+            "status" => Request::Status,
+            "get_state" => Request::GetState,
+            "edit" => Request::Edit {
+                edit: line["edit"].clone(),
+            },
+            "undo" => Request::Undo,
+            "redo" => Request::Redo,
+            "code" => Request::Code,
+            "clear_cache" => Request::ClearCache,
+            "open_project" => Request::OpenProject {
+                path: text("path"),
+                init: line["init"] == true,
+            },
+            "reload" => Request::Reload,
+            "overwrite" => Request::Overwrite,
+            "save_as" => Request::SaveAs { path: text("path") },
+            "render_preview" => Request::RenderPreview,
+            "export" => Request::Export {
+                force: line["force"] == true,
+            },
+            "cancel" => Request::Cancel {
+                job_id: text("jobId"),
+            },
+            "set_tex_error" => Request::SetTexError {
+                message: line["message"].as_str().map(str::to_owned),
+            },
+            other => panic!("no request {other}"),
+        }
+    }
+
+    #[test]
+    fn each_shared_request_line_is_the_line_the_shell_writes() {
+        let shared: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/protocol/requests.json"
+        ))
+        .unwrap();
+        for row in shared["requests"].as_array().unwrap() {
+            let line = &row["line"];
+            // The shell gives every request an id; the line without one is the worker's to refuse.
+            let Some(id) = line["id"].as_str() else {
+                continue;
+            };
+            assert_eq!(
+                parsed(&shared_request(line).line(id).unwrap()),
+                *line,
+                "{row}"
+            );
+        }
+    }
+
     #[test]
     fn set_tex_error_lines_carry_the_message_or_null() {
         let failed = Request::SetTexError {

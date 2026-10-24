@@ -978,13 +978,18 @@ async fn check_tex(app: AppHandle) {
     tex_checked(&worker, &shell.tex, &**shell, result).await;
 }
 
-/// Registers the Tauri commands, and keeps each name with the text of its `cfg` attribute ("" when
-/// it has none) for the `commands.json` check (C9.1), so every build checks the release surface.
+/// Registers the Tauri commands, each with the names the UI passes its arguments by: Tauri's
+/// camelCase of the Rust parameter names. Tests keep each name with the text of its `cfg`
+/// attribute ("" when it has none) and those argument names for the `commands.json` check (C9.1),
+/// so every build checks the release surface.
 macro_rules! commands {
-    ($($(#[$cfg:meta])* $command:ident),* $(,)?) => {
+    ($($(#[$cfg:meta])* $command:ident($($arg:ident),*)),* $(,)?) => {
         #[cfg(test)]
-        const COMMANDS: &[(&str, &str)] =
-            &[$((stringify!($command), concat!($(stringify!($cfg)),*))),*];
+        const COMMANDS: &[(&str, &str, &[&str])] = &[$((
+            stringify!($command),
+            concat!($(stringify!($cfg)),*),
+            &[$(stringify!($arg)),*],
+        )),*];
 
         fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
             tauri::generate_handler![$($(#[$cfg])* $command),*]
@@ -993,31 +998,31 @@ macro_rules! commands {
 }
 
 commands![
-    app_status,
-    restart_worker,
-    dismiss_notice,
-    reserve_job_id,
-    get_state,
-    edit_document,
-    undo_document,
-    redo_document,
-    clear_cache,
-    reload_project,
-    overwrite_project,
-    new_project,
-    open_sample,
-    open_project_dialog,
-    save_project_as_dialog,
-    export_code_dialog,
-    render_preview,
-    export_movie,
-    cancel_render,
+    app_status(),
+    restart_worker(),
+    dismiss_notice(id),
+    reserve_job_id(prefix),
+    get_state(),
+    edit_document(edit),
+    undo_document(),
+    redo_document(),
+    clear_cache(),
+    reload_project(),
+    overwrite_project(),
+    new_project(),
+    open_sample(),
+    open_project_dialog(),
+    save_project_as_dialog(),
+    export_code_dialog(),
+    render_preview(jobId),
+    export_movie(jobId, force),
+    cancel_render(jobId),
     #[cfg(any(debug_assertions, feature = "test-hooks"))]
-    open_project_path,
-    cancel_equation_preview,
-    compile_equation_preview,
-    note_shell_ready,
-    third_party_notices,
+    open_project_path(path),
+    cancel_equation_preview(slot, generation),
+    compile_equation_preview(latex, slot, generation),
+    note_shell_ready(),
+    third_party_notices(),
 ];
 
 pub fn run() {
@@ -1094,7 +1099,7 @@ mod tests {
         .unwrap();
         // Release builds register a debugOnly command only with the test-hooks feature (D27).
         let debug_only = r#"cfg(any(debug_assertions, feature = "test-hooks"))"#;
-        let listed: Vec<(&str, &str)> = fixture["tauriCommands"]
+        let listed: Vec<(&str, &str, Vec<&str>)> = fixture["tauriCommands"]
             .as_array()
             .unwrap()
             .iter()
@@ -1104,24 +1109,30 @@ mod tests {
                 } else {
                     ""
                 };
-                (entry["name"].as_str().unwrap(), gate)
+                let args = entry["args"].as_array().unwrap();
+                let args = args.iter().map(|arg| arg.as_str().unwrap()).collect();
+                (entry["name"].as_str().unwrap(), gate, args)
             })
+            .collect();
+        let registered: Vec<(&str, &str, Vec<&str>)> = COMMANDS
+            .iter()
+            .map(|&(name, gate, args)| (name, gate, args.to_vec()))
             .collect();
         let missing: Vec<_> = listed
             .iter()
-            .filter(|command| !COMMANDS.contains(command))
+            .filter(|command| !registered.contains(command))
             .collect();
-        let unlisted: Vec<_> = COMMANDS
+        let unlisted: Vec<_> = registered
             .iter()
             .filter(|command| !listed.contains(command))
             .collect();
         assert!(
             missing.is_empty(),
-            "not registered with this gate: {missing:?}"
+            "not registered with this gate and these arguments: {missing:?}"
         );
         assert!(
             unlisted.is_empty(),
-            "not in commands.json with this gate: {unlisted:?}"
+            "not in commands.json with this gate and these arguments: {unlisted:?}"
         );
     }
 

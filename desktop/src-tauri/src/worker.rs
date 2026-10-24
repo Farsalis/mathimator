@@ -1880,6 +1880,26 @@ mod tests {
     }
 
     #[test]
+    fn crlf_terminated_lines_are_read_like_lf_terminated_ones() {
+        // The worker writes text-mode stdout, so on Windows each line ends in CRLF (C2).
+        let beat = json!({"event": "beat_ready", "jobId": "preview-3", "beatIndex": 0, "path": "C:/p/b0.mp4"});
+        let line = beat.to_string();
+        let test = Test::start(move |request| {
+            let lines = match cmd(request) {
+                "render_preview" => vec![line.clone()],
+                _ => answer(request)?,
+            };
+            Some(lines.into_iter().map(|line| format!("{line}\r")).collect())
+        });
+        let reply = block_on(test.worker.get_state()).unwrap();
+        assert_eq!(reply, json!({"event": "state", "jobId": "rpc-2"}));
+        block_on(test.worker.render_preview("preview-3".to_owned())).unwrap();
+        assert_eq!(wait_for(|| test.events().into_iter().next()), beat);
+        let logs = lock(&test.host.logs);
+        assert!(!logs.iter().any(|log| log.contains("not JSON")), "{logs:?}");
+    }
+
+    #[test]
     fn state_lines_bind_each_new_project_path_once() {
         let test = Test::start(|request| match cmd(request) {
             "get_state" => Some(vec![

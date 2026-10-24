@@ -326,7 +326,7 @@ class Stdout:
     def last(self) -> dict[str, Any]:
         return self.read()[-1]
 
-    def of(self, job_id: str) -> list[dict[str, Any]]:
+    def of(self, job_id: str | None) -> list[dict[str, Any]]:
         return [line for line in self.read() if line["jobId"] == job_id]
 
     def wait_for(self, job_id: str, event: str) -> dict[str, Any]:
