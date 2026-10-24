@@ -57,8 +57,8 @@ export function NoticesView({ onClose }: NoticesViewProps) {
           <li>The Microsoft Edge WebView2 Runtime, which draws this window: Microsoft software under its own terms.</li>
         </ul>
         <p>
-          The full licence texts, and the written offer of the source code of the GPL and LGPL libraries, are in{" "}
-          <code>runtime\THIRD_PARTY_NOTICES.txt</code> in the install folder, shown below.
+          The licence texts that ship with these parts, and the written offer of the source code of the GPL and LGPL
+          libraries, are in <code>runtime\THIRD_PARTY_NOTICES.txt</code> in the install folder, shown below.
         </p>
       </div>
       {file === null ? (

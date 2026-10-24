@@ -728,7 +728,7 @@ Status of the 209 findings after the 69 commits in `main..1306cf7` on `audit/cle
 | Accepted risk | 0 | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **1** | **7** | **64** | **120** | **17** | **209** |
 
-How the table was built: a finding's commits are those whose message cites its id, oldest first. A search of the commit diffs finds no id that the messages miss. The early tooling commits have no message body, so they are named by hand: in the rows of the 15 ids that no message cites, and in 6 rows whose fix they began. A cited id is not always fully fixed: the partly fixed, deferred and accepted rows come from the remediation hand-offs and a check of the code. Dnn are the decisions of section 7. Onn are the owner's later answers, and TRn, PRn, DCn and SPn the items of the follow-up review; the commit messages that cite them explain each one.
+How the table was built: a finding's commits are those whose message cites its id, oldest first. A search of the commit diffs finds no id that the messages miss. The rows of the 15 ids that no message cites name their commits by hand, most of them early tooling commits, which have no message body; those commits are also named by hand in 6 rows whose fix they began. A cited id is not always fully fixed: the partly fixed, deferred and accepted rows come from the remediation hand-offs and a check of the code. Dnn are the decisions of section 7. Onn are the owner's later answers, and TRn, PRn, DCn and SPn the items of the follow-up review; the commit messages that cite them explain each one.
 
 Still open:
 - Checks only the owner can run: rebuild `packaging/bundle`, check the CSP and the GUI on WebView2, and run the render tier (G2.5, F142, the PNG-frame count and the fractional-10 checks).

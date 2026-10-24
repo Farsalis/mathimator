@@ -34,7 +34,7 @@ describe("NoticesView (D75)", () => {
       "pycairo (LGPL-2.1 or MPL-1.1)",
       "Typst (Apache-2.0). Its LICENSE and NOTICE are in runtime\\typst in the install folder",
       "TinyTeX, whose TeX programs keep their own licences",
-      "written offer of the source code of the GPL and LGPL libraries",
+      "The licence texts that ship with these parts, and the written offer of the source code of the GPL and LGPL libraries",
       "runtime\\THIRD_PARTY_NOTICES.txt in the install folder",
       "Microsoft Edge WebView2 Runtime",
     ]) {

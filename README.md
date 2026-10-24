@@ -242,8 +242,8 @@ they check, or the CI files that define them:
 - `lint:python` and `test:python`: the worker, the tests, the scenes, the
   spec, the scripts, the packaging files and the Python dependencies and
   pins;
-- `test:typst`: the worker, the tests, the Python dependencies and pins, and
-  the Typst pin;
+- `test:typst`: the worker, the tests, the Python dependencies and pins, the
+  Typst pin and `ci/install-typst.sh`;
 - `build:ui`, `lint:ui` and `test:ui`: the UI and the shared fixtures and
   worker messages its tests read;
 - `build:ui` and `test:rust`: the shell and the fixtures its tests embed. The

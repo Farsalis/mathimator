@@ -151,9 +151,10 @@ name the issue, audit finding or decision it addresses.
 | `revert` | Reverts |
 | `style` | Left out: formatting only |
 
-The scopes in use are `worker`, `ui` and `shell`, for example
-`fix(worker): refuse a newer generatorVersion`. Mark a breaking change with `!`
-after the type or scope, or with a `BREAKING CHANGE:` footer.
+The scopes in use are `worker`, `ui`, `shell`, `packaging`, `deps` and
+`spec`, for example `fix(worker): refuse a newer generatorVersion`. Mark a
+breaking change with `!` after the type or scope, or with a `BREAKING CHANGE:`
+footer.
 
 Make one commit per verified step: each commit builds and passes its tests.
 Commit messages carry no AI attribution trailers, such as `Co-Authored-By`

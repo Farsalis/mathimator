@@ -18,8 +18,9 @@ git-cliff generates from the commits.
   `done`, `error` or `rejected` line.
 - worker: an exclusive lock on the open project, atomic saves, and a
   fingerprint of project.json that catches edits made outside the app, which
-  the user can reload or overwrite. New, Reload, Overwrite and Save As are
-  commands, a held preview or export waits for the job before it, and a
+  the user can reload or overwrite. `open_project` takes `init`, which New
+  uses to start an empty project, and Reload, Overwrite and Save As are new
+  commands. A held preview or export waits for the job before it, and a
   Re-export bypasses the export cache.
 - worker: `set_tex_error` replaces the TeX error of the running worker, so a
   failed TeX self-test no longer stops a running export or clears undo.
@@ -39,8 +40,9 @@ git-cliff generates from the commits.
   a content security policy.
 - ui: an ordered worker queue, parsers that name the failing field, automatic
   previews after Open, Sample and Clear cache, a prompt for a project changed
-  on disk, an error banner with details, a Worker unavailable view with
-  Retry, New and Save As, and Open and Sample disabled during an export.
+  on disk, an error banner with details, New and Save As buttons, a Worker
+  unavailable view with its reason and Retry, and Open and Sample disabled
+  during an export.
 - ui: Save As, including one from the leave warning, keeps the selection,
   playhead, open panel and note; Clear cache keeps the shown export; a
   preview that used an incomplete clip offers Render again.
@@ -86,8 +88,10 @@ git-cliff generates from the commits.
 
 ### Documentation
 
-- The architecture, defect and DevOps audit report and its fix plan.
-- design-spec.md section 6 rewritten as the protocol 2 contract.
+- The architecture, defect and DevOps audit report, its fix plan, and the
+  remediation status of each finding.
+- design-spec.md section 6 rewritten as the protocol 2 contract, and the rest
+  of the spec brought up to date with the code and the owner's decisions.
 - README, CONTRIBUTING and SECURITY: setup, Linux notes, running, test tiers,
   the installer build, CI and its compute-minutes policy, the environment
   variables, commit and merge rules, releases, setting up the GitLab project,
