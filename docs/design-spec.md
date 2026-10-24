@@ -206,20 +206,24 @@ Deleting `.mathimator/cache`, `codegen`, `typst`, or `logs` is safe. Clear cache
 
 On save, `project.json` is pretty-printed with two-space indentation, a trailing newline, uppercase `#RRGGBB` colors, and stable key order. The same document saved twice has the same bytes. Hashing uses a separate canonical form: UTF-8, sorted keys, no insignificant whitespace, array order preserved, numbers with three decimal places.
 
+`project.json` is UTF-8 text. One leading byte order mark is ignored, and saves never write one. A file in any other encoding, such as UTF-16 with or without a byte order mark or an ANSI code page, is refused with "project.json must be saved as UTF-8 text." Every refusal of a document names the JSON path of the failing value, for example `scene.objects[2].params.latex`.
+
 ### Project
 
 | Field | Rule |
 | --- | --- |
-| `schemaVersion` | Integer. v1 reads and writes `1` only. Any other value, or a missing value, is refused. The message names the file's version. |
+| `schemaVersion` | Integer. v1 reads and writes `1` only. Any other value, or a missing value, is refused; `true` and `1.0` are not integers. The message names the file's version. |
 | `generatorVersion` | Integer `1` for code that matches section 5. Bump it when generated Python changes. It is part of the cache key. |
 | `id` | Stable id matching `[a-z][a-z0-9_]{0,31}`. |
 | `name` | Display name. Not used in codegen. Renaming it does not dirty a preview. |
-| `seed` | Integer. v1 always writes `1` and shows no seed control. |
+| `seed` | Integer from 0 to 4294967295, the range numpy accepts. v1 always writes `1` and shows no seed control. |
 | `scene` | The only scene. |
 | `previewProfile` | Fixed: width 854, height 480, fps 15, `transparent` false. |
 | `exportProfile` | `format` (`mp4`, `gif`, `webm`, or `png_sequence`), `width`, `height`, `fps`, `transparent`. |
 
 There is no scene list. There is no `start` field anywhere. A file that contains `start`, an unknown key, or an unknown object type is refused.
+
+Strings may hold tab, line feed and carriage return, so CRLF text from Windows tools opens. A string with NUL, another C0 control character or a lone UTF-16 surrogate is refused on open and in an edit, naming the field. A number too large for a float, `NaN` and `Infinity` make the file invalid JSON. Codegen writes numbers with three decimal places, so a document number is checked at that precision: a step, length or zoom that rounds to 0, or a range or domain whose maximum rounds to its minimum, is refused. The file keeps the number as written.
 
 ### Scene, objects, beats
 
@@ -251,11 +255,13 @@ Derived start of beat `i` is the sum of durations of beats `0 .. i-1`. The timel
 
 `anchor` is `origin`, `edge_up`, `edge_down`, `edge_left`, or `edge_right`. `shift` is `[dx, dy]` in Manim units, y up. Omitted `shift` means `[0, 0]`.
 
+An axis draws at most 500 ticks: `(max - min) / step` must be below 500, for 2D and 3D axes and for the ranges in template params. Manim samples a function plot ten times per x step of its axes, so `xMax - xMin` must also be below 500 x steps. Manim samples a parametric curve every 0.01 of t, so its `tRange` must span less than 50, which is 5000 samples like a plot's. These refusals name the limit, as the 24×24 resolution cap does.
+
 v1 has no arrow and no dot. The journeys do not need them, and there is no general mobject factory.
 
 Expressions use a fixed grammar. `expr` is terms joined by `+` or `-`. A term is factors joined by `*` or `/`. A factor is a primary, optionally followed by `^` and one primary. A primary is a number, the variable, `pi`, a call of `sin`, `cos`, `tan`, `exp`, `log`, or `sqrt` with one argument, parentheses, or a unary minus. The 2D variable is `x`. A surface uses `x` and `y`. A curve uses `t`. `log` is the natural log, and the inspector says so. `^` binds tighter than `*` and `/`, which bind tighter than `+` and `-`.
 
-Rejected examples, with no render started: `np.sin(x)`, `sin(x, 1)`, `y` in a 2D plot, `__import__("os")`. The field shows "This expression is not supported."
+Rejected examples, with no render started: `np.sin(x)`, `sin(x, 1)`, `y` in a 2D plot, `__import__("os")`. The field shows "This expression is not supported." The same text refuses an expression longer than 1000 characters, one nested deeper than 64 levels (each parenthesis, call and unary minus is a level), and a number literal too large for a float.
 
 ### Actions
 
@@ -269,7 +275,7 @@ Rejected examples, with no render started: `np.sin(x)`, `sin(x, 1)`, `y` in a 2D
 | `set_color` | one already on screen | `params.color`. |
 | `move` | one already on screen | `params.shift` as `[dx, dy]`. |
 
-Every object has exactly one entrance beat. A beat may mention an object only at its entrance or after it. `transform_formula` is the destination's entrance, so a transformed formula has no separate `create`.
+Every object has exactly one entrance beat. A beat may mention an object only at its entrance or after it. A function plot, surface or curve mentions its axes, so it enters after them. `transform_formula` is the destination's entrance, so a transformed formula has no separate `create`.
 
 ### Templates
 

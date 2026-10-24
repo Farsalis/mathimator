@@ -280,6 +280,8 @@ def test_expression_rejection_does_not_spawn_manim(tmp_path: Path) -> None:
         rejected = client.wait_for(lambda event: event.get("jobId") == "bad", 10)
         assert rejected["event"] == "rejected"
         assert rejected["message"] == "This expression is not supported."
+        assert rejected["code"] == "unsupported_expression"
+        assert rejected["field"] == "expression"
         assert client.proc.poll() is None
         assert _fake_pids(client.proc.pid, "manim") == []
     finally:

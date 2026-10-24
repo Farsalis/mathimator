@@ -235,9 +235,10 @@ def test_resolution_above_24_is_refused() -> None:
     session = Session(empty_project())
     session.edit({"op": "add_three_d_axes"})
     before = dumps_project(session.project)
-    with pytest.raises(DocumentError, match="Resolution is above the 24×24 cap."):
+    with pytest.raises(DocumentError, match="value is above the 24×24 resolution cap.") as refused:
         session.edit({"op": "set_resolution", "objectId": "surface_1", "value": [25, 8]})
-    with pytest.raises(DocumentError, match="Resolution is above the 24×24 cap."):
+    assert (refused.value.code, refused.value.field) == ("limit_exceeded", "value")
+    with pytest.raises(DocumentError, match="value is above the 24×24 resolution cap."):
         session.edit({"op": "set_resolution", "objectId": "surface_1", "value": [8, 25]})
     assert dumps_project(session.project) == before
     session.edit({"op": "set_resolution", "objectId": "surface_1", "value": [24, 24]})
@@ -269,7 +270,7 @@ def test_camera_change_dirties_every_beat_and_round_trips() -> None:
         load_text(json.dumps(raw))
     unknown = json.loads(before)
     unknown["scene"]["templateInstances"][0]["templateId"] = "plugin"
-    with pytest.raises(DocumentError, match="unknown template"):
+    with pytest.raises(DocumentError, match="is not a template"):
         load_text(json.dumps(unknown))
 
 
@@ -321,6 +322,8 @@ def test_bad_surface_expression_does_not_spawn_manim(tmp_path: Path) -> None:
         rejected = client.wait_for(lambda event: event.get("jobId") == "bad", 10)
         assert rejected["event"] == "rejected"
         assert rejected["message"] == "This expression is not supported."
+        assert rejected["code"] == "unsupported_expression"
+        assert rejected["field"] == "expression"
         assert client.proc.poll() is None
     finally:
         client.close()

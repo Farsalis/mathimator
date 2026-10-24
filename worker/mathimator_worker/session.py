@@ -13,6 +13,11 @@ from mathimator_worker.codegen import CodegenError, generate
 from mathimator_worker.document import (
     CURVE_VARIABLES,
     ENTRANCES,
+    MAX_LATEX_LENGTH,
+    MAX_TEXT_LENGTH,
+    MAX_TOTAL_SECONDS,
+    MIN_BEAT_SECONDS,
+    PLOT_VARIABLES,
     SURFACE_VARIABLES,
     Beat,
     ExportProfile,
@@ -25,14 +30,17 @@ from mathimator_worker.document import (
     derived_starts,
     dumps_project,
     load_text,
-    normalize_color,
     object_by_id,
+    parse_anchor,
+    parse_axis_range,
+    parse_color,
+    parse_number,
     parse_resolution,
+    parse_text,
     project_dict,
     quantize,
     scene_stamp,
     total_duration,
-    validate_project,
 )
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import assert_supported
@@ -43,10 +51,10 @@ from mathimator_worker.templates import (
     add_formula_transform,
     add_text,
     add_three_d_axes,
-    assert_plot_expression,
 )
 
 UNDO_LIMIT = 100
+MAX_NAME_LENGTH = 200
 
 
 @dataclass
@@ -70,12 +78,16 @@ class Session:
         self.rendered: dict[str, Rendered] = {}
 
     def edit(self, raw: dict[str, object]) -> EditResult:
-        if not isinstance(raw.get("op"), str):
-            raise DocumentError("missing edit op")
         trial = load_text(dumps_project(self.project))
-        result = apply_edit(trial, raw)
-        trial = load_text(dumps_project(trial))
-        validate_project(trial)
+        try:
+            result = apply_edit(trial, raw)
+        except DocumentError as exc:
+            raise _edit_refusal(exc, exc.field) from exc
+        try:
+            trial = load_text(dumps_project(trial))
+        except DocumentError as exc:
+            # A whole-document rule, such as plot sampling, has no edit field to name.
+            raise _edit_refusal(exc, None) from exc
         self._undo.append(self.project)
         if len(self._undo) > UNDO_LIMIT:
             del self._undo[0]
@@ -85,13 +97,13 @@ class Session:
 
     def undo(self) -> None:
         if not self._undo:
-            raise DocumentError("nothing to undo")
+            raise DocumentError("Nothing to undo.", code="nothing_to_undo")
         self._redo.append(self.project)
         self.project = self._undo.pop()
 
     def redo(self) -> None:
         if not self._redo:
-            raise DocumentError("nothing to redo")
+            raise DocumentError("Nothing to redo.", code="nothing_to_redo")
         self._undo.append(self.project)
         self.project = self._redo.pop()
 
@@ -174,12 +186,12 @@ class Session:
 
 
 def apply_edit(project: Project, raw: dict[str, object]) -> EditResult:
-    op = raw["op"]
+    op = raw.get("op")
     if op == "set_project_name":
         project.name = _name(raw.get("name"), "name")
         return EditResult()
     if op == "set_object_name":
-        item = object_by_id(project, _id(raw.get("objectId"), "objectId"))
+        item = _object(project, raw)
         item.name = _name(raw.get("name"), "name")
         return EditResult(focus_object_id=item.id)
     if op == "set_object_color":
@@ -228,27 +240,29 @@ def apply_edit(project: Project, raw: dict[str, object]) -> EditResult:
     if op == "set_export_profile":
         return _set_export_profile(project, raw)
     if op == "add_formula":
-        latex = raw.get("latex", "y = \\sin(x)")
-        if not isinstance(latex, str):
-            raise DocumentError("latex must be a string")
+        latex = parse_text(raw.get("latex", "y = \\sin(x)"), "latex", MAX_LATEX_LENGTH)
         beat_id, object_id = add_formula(project, _after(raw), latex)
         return EditResult(focus_beat_id=beat_id, focus_object_id=object_id)
     if op == "add_text":
-        text = raw.get("text", "Text")
-        if not isinstance(text, str):
-            raise DocumentError("text must be a string")
+        text = parse_text(raw.get("text", "Text"), "text", MAX_TEXT_LENGTH)
         beat_id, object_id = add_text(project, _after(raw), text)
         return EditResult(focus_beat_id=beat_id, focus_object_id=object_id)
     if op == "delete_object":
         return _delete_object(project, raw)
-    raise DocumentError(f"unknown edit {op}")
+    raise DocumentError(f"Unknown edit operation {op}.", field="op")
+
+
+def _edit_refusal(exc: DocumentError, field: str | None) -> DocumentError:
+    """The refusal of an edit: a document rule becomes ``invalid_edit``, and ``field`` is an edit field."""
+    code = "invalid_edit" if exc.code == "invalid_document" else exc.code
+    return DocumentError(str(exc), code=code, field=field)
 
 
 def _set_object_color(project: Project, raw: dict[str, object]) -> EditResult:
-    item = object_by_id(project, _id(raw.get("objectId"), "objectId"))
+    item = _object(project, raw)
     if item.type == "three_d_axes":
-        raise DocumentError("3D axes have no color field")
-    color = normalize_color(_required_str(raw.get("color"), "color"))
+        raise DocumentError("3D axes have no color field", field="objectId")
+    color = parse_color(raw.get("color"), "color")
     item.params["color"] = color
     if item.type == "function_plot":
         _template_plot(project, item.id, "color", color)
@@ -262,51 +276,38 @@ def _set_object_color(project: Project, raw: dict[str, object]) -> EditResult:
 
 
 def _set_expression(project: Project, raw: dict[str, object]) -> EditResult:
-    item = object_by_id(project, _id(raw.get("objectId"), "objectId"))
-    expression = _required_str(raw.get("expression"), "expression")
+    item = _object(project, raw)
+    expression = parse_text(raw.get("expression"), "expression")
     if item.type == "function_plot":
-        assert_plot_expression(expression)
+        assert_supported(expression, PLOT_VARIABLES, "expression")
         item.params["expression"] = expression
         _template_plot(project, item.id, "expression", expression)
         return EditResult(focus_object_id=item.id)
     if item.type == "surface":
-        assert_supported(expression, SURFACE_VARIABLES)
+        assert_supported(expression, SURFACE_VARIABLES, "expression")
         _three_d_param(project, item.id, "expression", expression)
         return EditResult(focus_object_id=item.id)
-    raise DocumentError("only a plot or a surface has an expression")
+    raise DocumentError("only a plot or a surface has an expression", field="objectId")
 
 
 def _set_latex(project: Project, raw: dict[str, object]) -> EditResult:
     item = _formula(project, raw)
-    latex = raw.get("latex")
-    if not isinstance(latex, str):
-        raise DocumentError("latex must be a string")
-    if len(latex) > 500:
-        raise DocumentError("latex is longer than 500 characters")
-    item.params["latex"] = latex
+    item.params["latex"] = parse_text(raw.get("latex"), "latex", MAX_LATEX_LENGTH)
     _sync_formula_fields(project, item)
     return EditResult(focus_object_id=item.id)
 
 
 def _set_text(project: Project, raw: dict[str, object]) -> EditResult:
-    item = object_by_id(project, _id(raw.get("objectId"), "objectId"))
+    item = _object(project, raw)
     if item.type != "text":
-        raise DocumentError("only a text object has text")
-    text = raw.get("text")
-    if not isinstance(text, str):
-        raise DocumentError("text must be a string")
-    if len(text) > 200:
-        raise DocumentError("text is longer than 200 characters")
-    item.params["text"] = text
+        raise DocumentError("only a text object has text", field="objectId")
+    item.params["text"] = parse_text(raw.get("text"), "text", MAX_TEXT_LENGTH)
     return EditResult(focus_object_id=item.id)
 
 
 def _set_anchor(project: Project, raw: dict[str, object]) -> EditResult:
     item = _positioned(project, raw)
-    anchor = _required_str(raw.get("anchor"), "anchor")
-    if anchor not in {"origin", "edge_up", "edge_down", "edge_left", "edge_right"}:
-        raise DocumentError(f"unknown anchor {anchor!r}")
-    item.params["anchor"] = anchor
+    item.params["anchor"] = parse_anchor(raw.get("anchor"), "anchor")
     if item.type == "math_formula":
         _sync_formula_fields(project, item)
     return EditResult(focus_object_id=item.id)
@@ -321,18 +322,16 @@ def _set_object_shift(project: Project, raw: dict[str, object]) -> EditResult:
 
 
 def _set_axes_range(project: Project, raw: dict[str, object]) -> EditResult:
-    item = object_by_id(project, _id(raw.get("objectId"), "objectId"))
+    item = _object(project, raw)
     if item.type not in {"axes", "three_d_axes"}:
-        raise DocumentError("only axes have a range")
+        raise DocumentError("only axes have a range", field="objectId")
     axis = raw.get("axis")
-    if item.type == "axes" and axis not in {"x", "y"}:
-        raise DocumentError("axis must be x or y")
-    if item.type == "three_d_axes" and axis not in {"x", "y", "z"}:
-        raise DocumentError("axis must be x, y, or z")
-    if not isinstance(axis, str):
-        raise DocumentError("axis must be x, y, or z")
-    key = {"x": "xRange", "y": "yRange", "z": "zRange"}[axis]
-    value = _range_value(raw.get("value"))
+    if item.type == "axes" and axis not in ("x", "y"):
+        raise DocumentError("axis must be x or y", field="axis")
+    if item.type == "three_d_axes" and axis not in ("x", "y", "z"):
+        raise DocumentError("axis must be x, y, or z", field="axis")
+    key = {"x": "xRange", "y": "yRange", "z": "zRange"}[str(axis)]
+    value: list[JsonValue] = [_finite(number, "value") for number in parse_axis_range(raw.get("value"), "value")]
     item.params[key] = value
     if item.type == "axes":
         _template_axes(project, item.id, key, value)
@@ -342,56 +341,56 @@ def _set_axes_range(project: Project, raw: dict[str, object]) -> EditResult:
 
 
 def _set_length(project: Project, raw: dict[str, object]) -> EditResult:
-    item = object_by_id(project, _id(raw.get("objectId"), "objectId"))
+    item = _object(project, raw)
     if item.type != "axes":
-        raise DocumentError("only axes have a length")
+        raise DocumentError("only axes have a length", field="objectId")
     axis = raw.get("axis")
-    if axis not in {"x", "y"}:
-        raise DocumentError("axis must be x or y")
+    if axis not in ("x", "y"):
+        raise DocumentError("axis must be x or y", field="axis")
     value = _positive_number(raw.get("value"), "value")
     item.params["xLength" if axis == "x" else "yLength"] = value
     return EditResult(focus_object_id=item.id)
 
 
 def _set_show_labels(project: Project, raw: dict[str, object]) -> EditResult:
-    item = object_by_id(project, _id(raw.get("objectId"), "objectId"))
+    item = _object(project, raw)
     if item.type != "axes":
-        raise DocumentError("only axes have labels")
+        raise DocumentError("only axes have labels", field="objectId")
     value = raw.get("value")
     if not isinstance(value, bool):
-        raise DocumentError("showLabels must be a boolean")
+        raise DocumentError("value must be a boolean", field="value")
     item.params["showLabels"] = value
     return EditResult(focus_object_id=item.id)
 
 
 def _set_domain(project: Project, raw: dict[str, object]) -> EditResult:
-    item = object_by_id(project, _id(raw.get("objectId"), "objectId"))
+    item = _object(project, raw)
     if item.type != "function_plot":
-        raise DocumentError("only a function plot has a domain")
+        raise DocumentError("only a function plot has a domain", field="objectId")
     x_min = _finite(raw.get("xMin"), "xMin")
     x_max = _finite(raw.get("xMax"), "xMax")
     if float(x_max) <= float(x_min):
-        raise DocumentError("xMax must be greater than xMin")
+        raise DocumentError("xMax must be greater than xMin", field="xMax")
     item.params["xMin"] = x_min
     item.params["xMax"] = x_max
     return EditResult(focus_object_id=item.id)
 
 
 def _set_beat_duration(project: Project, raw: dict[str, object]) -> EditResult:
-    beat = beat_by_id(project, _id(raw.get("beatId"), "beatId"))
-    duration = _positive_number(raw.get("duration"), "duration")
-    if float(duration) < 0.1:
-        raise DocumentError("beat duration must be at least 0.1 seconds")
+    beat = _beat(project, raw)
+    duration = _finite(raw.get("duration"), "duration")
+    if float(duration) < MIN_BEAT_SECONDS:
+        raise DocumentError("duration must be at least 0.1 seconds", code="limit_exceeded", field="duration")
     others = sum(float(item.duration) for item in project.scene.beats if item is not beat)
-    if others + float(duration) > 120.0 + 1e-9:
-        raise DocumentError("total duration must be at most 120 seconds")
+    if others + float(duration) > MAX_TOTAL_SECONDS + 1e-9:
+        raise DocumentError("total duration must be at most 120 seconds", code="limit_exceeded", field="duration")
     beat.duration = duration
     return EditResult(focus_beat_id=beat.id)
 
 
 def _set_beat_color(project: Project, raw: dict[str, object]) -> EditResult:
     beat = _param_beat(project, raw, "set_color")
-    color = normalize_color(_required_str(raw.get("color"), "color"))
+    color = parse_color(raw.get("color"), "color")
     if beat.params is None:
         beat.params = {}
     beat.params["color"] = color
@@ -408,8 +407,8 @@ def _set_beat_shift(project: Project, raw: dict[str, object]) -> EditResult:
 
 def _set_three_d_mode(project: Project, raw: dict[str, object]) -> EditResult:
     mode = raw.get("mode")
-    if mode not in {"surface", "curve"}:
-        raise DocumentError(f"unknown 3D mode {mode!r}")
+    if mode not in ("surface", "curve"):
+        raise DocumentError("mode must be surface or curve", field="mode")
     instance = _require_three_d(project)
     instance.params["mode"] = mode
     _sync_three_d(project, instance)
@@ -419,32 +418,32 @@ def _set_three_d_mode(project: Project, raw: dict[str, object]) -> EditResult:
 def _set_camera(project: Project, raw: dict[str, object]) -> EditResult:
     instance = _require_three_d(project)
     key = raw.get("key")
-    if key not in {"phi", "theta", "zoom"}:
-        raise DocumentError("camera field must be phi, theta, or zoom")
-    value = _positive_number(raw.get("value"), "zoom") if key == "zoom" else _finite(raw.get("value"), str(key))
-    instance.params[key] = value
+    if key not in ("phi", "theta", "zoom"):
+        raise DocumentError("key must be phi, theta, or zoom", field="key")
+    value = _positive_number(raw.get("value"), "value") if key == "zoom" else _finite(raw.get("value"), "value")
+    instance.params[str(key)] = value
     _sync_three_d(project, instance)
     return EditResult(focus_object_id=instance.object_ids[0])
 
 
 def _set_resolution(project: Project, raw: dict[str, object]) -> EditResult:
-    item = object_by_id(project, _id(raw.get("objectId"), "objectId"))
+    item = _object(project, raw)
     if item.type != "surface":
-        raise DocumentError("only a surface has a resolution")
-    value = parse_resolution(raw.get("value"))
+        raise DocumentError("only a surface has a resolution", field="objectId")
+    value = parse_resolution(raw.get("value"), "value")
     _three_d_param(project, item.id, "resolution", value)
     return EditResult(focus_object_id=item.id)
 
 
 def _set_curve_component(project: Project, raw: dict[str, object]) -> EditResult:
-    item = object_by_id(project, _id(raw.get("objectId"), "objectId"))
+    item = _object(project, raw)
     if item.type != "parametric_curve":
-        raise DocumentError("only a curve has components")
+        raise DocumentError("only a curve has components", field="objectId")
     index = raw.get("index")
     if isinstance(index, bool) or not isinstance(index, int) or index not in {0, 1, 2}:
-        raise DocumentError("component index must be 0, 1, or 2")
-    expression = _required_str(raw.get("expression"), "expression")
-    assert_supported(expression, CURVE_VARIABLES)
+        raise DocumentError("index must be 0, 1, or 2", field="index")
+    expression = parse_text(raw.get("expression"), "expression")
+    assert_supported(expression, CURVE_VARIABLES, "expression")
     instance = _three_d_for_object(project, item.id)
     components = instance.params.get("components")
     if not isinstance(components, list) or len(components) != 3:
@@ -464,15 +463,15 @@ def _set_export_profile(project: Project, raw: dict[str, object]) -> EditResult:
     fps = raw.get("fps")
     transparent = raw.get("transparent")
     if not isinstance(fmt, str):
-        raise DocumentError("format must be a string")
+        raise DocumentError("format must be a string", field="format")
     if isinstance(width, bool) or not isinstance(width, int):
-        raise DocumentError("width must be an integer")
+        raise DocumentError("width must be an integer", field="width")
     if isinstance(height, bool) or not isinstance(height, int):
-        raise DocumentError("height must be an integer")
+        raise DocumentError("height must be an integer", field="height")
     if isinstance(fps, bool) or not isinstance(fps, int):
-        raise DocumentError("fps must be an integer")
+        raise DocumentError("fps must be an integer", field="fps")
     if not isinstance(transparent, bool):
-        raise DocumentError("transparent must be a boolean")
+        raise DocumentError("transparent must be a boolean", field="transparent")
     project.export_profile = ExportProfile(fmt, width, height, fps, transparent)
     return EditResult()
 
@@ -523,8 +522,7 @@ def _store_formula_side(instance: TemplateInstance, side: str, item: SceneObject
 
 
 def _delete_object(project: Project, raw: dict[str, object]) -> EditResult:
-    object_id = _id(raw.get("objectId"), "objectId")
-    object_by_id(project, object_id)
+    object_id = _object(project, raw).id
     remove = {object_id}
     _expand_removal(project, remove)
     project.scene.objects = [item for item in project.scene.objects if item.id not in remove]
@@ -601,24 +599,32 @@ def _template_axes(project: Project, axes_id: str, key: str, value: object) -> N
             instance.params[key] = value  # type: ignore[assignment]
 
 
+def _object(project: Project, raw: dict[str, object]) -> SceneObject:
+    return object_by_id(project, _id(raw.get("objectId"), "objectId"), "objectId")
+
+
+def _beat(project: Project, raw: dict[str, object]) -> Beat:
+    return beat_by_id(project, _id(raw.get("beatId"), "beatId"), "beatId")
+
+
 def _formula(project: Project, raw: dict[str, object]) -> SceneObject:
-    item = object_by_id(project, _id(raw.get("objectId"), "objectId"))
+    item = _object(project, raw)
     if item.type != "math_formula":
-        raise DocumentError("only a formula has latex")
+        raise DocumentError("only a formula has latex", field="objectId")
     return item
 
 
 def _positioned(project: Project, raw: dict[str, object]) -> SceneObject:
-    item = object_by_id(project, _id(raw.get("objectId"), "objectId"))
+    item = _object(project, raw)
     if item.type not in {"math_formula", "text"}:
-        raise DocumentError("only a formula or text has an anchor")
+        raise DocumentError("only a formula or text has an anchor", field="objectId")
     return item
 
 
 def _param_beat(project: Project, raw: dict[str, object], action: str) -> Beat:
-    beat = beat_by_id(project, _id(raw.get("beatId"), "beatId"))
+    beat = _beat(project, raw)
     if beat.action != action:
-        raise DocumentError(f"beat {beat.id} is not {action}")
+        raise DocumentError(f"beat {beat.id} is not {action}", field="beatId")
     return beat
 
 
@@ -630,50 +636,29 @@ def _after(raw: dict[str, object]) -> str | None:
 
 def _id(value: object, label: str) -> str:
     if not isinstance(value, str) or value == "":
-        raise DocumentError(f"{label} must be an id")
+        raise DocumentError(f"{label} must be an id", field=label)
     return value
 
 
 def _name(value: object, label: str) -> str:
-    if not isinstance(value, str) or value.strip() == "":
-        raise DocumentError(f"{label} must be a non-empty string")
-    if len(value) > 200:
-        raise DocumentError(f"{label} is longer than 200 characters")
-    return value
-
-
-def _required_str(value: object, label: str) -> str:
-    if not isinstance(value, str):
-        raise DocumentError(f"{label} must be a string")
-    return value
+    name = parse_text(value, label, MAX_NAME_LENGTH)
+    if name.strip() == "":
+        raise DocumentError(f"{label} must not be empty", field=label)
+    return name
 
 
 def _finite(value: object, label: str) -> int | float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise DocumentError(f"{label} must be a number")
-    quantized = quantize(float(value))
-    return quantized
+    return quantize(parse_number(value, label))
 
 
 def _positive_number(value: object, label: str) -> int | float:
     number = _finite(value, label)
     if float(number) <= 0:
-        raise DocumentError(f"{label} must be positive")
+        raise DocumentError(f"{label} must be positive", field=label)
     return number
 
 
 def _shift_value(value: object) -> list[JsonValue]:
     if not isinstance(value, list) or len(value) != 2:
-        raise DocumentError("shift must be two numbers")
+        raise DocumentError("shift must be two numbers", field="shift")
     return [_finite(value[0], "shift"), _finite(value[1], "shift")]
-
-
-def _range_value(value: object) -> list[JsonValue]:
-    if not isinstance(value, list) or len(value) != 3:
-        raise DocumentError("range must be min, max, and step")
-    numbers = [_finite(item, "range") for item in value]
-    if float(numbers[1]) <= float(numbers[0]):
-        raise DocumentError("range max must be greater than min")
-    if float(numbers[2]) <= 0:
-        raise DocumentError("range step must be positive")
-    return list[JsonValue](numbers)

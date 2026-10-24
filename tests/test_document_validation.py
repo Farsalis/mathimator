@@ -1,0 +1,673 @@
+"""Document validation and refusal codes (fix-plan S21 to S23, S49, S50 and S52).
+
+Every refusal is a DocumentError whose ``code`` is the protocol refusal code
+and whose ``field`` names the failing value: the JSON path on load, the edit
+field on an edit. Each rule is checked on the load path and on the edit path.
+No test here starts Manim.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from mathimator_worker.codegen import generate
+from mathimator_worker.document import NOT_UTF8, dumps_project, empty_project, load_bytes, load_text
+from mathimator_worker.document_error import DocumentError
+from mathimator_worker.expr import UNSUPPORTED, expression_to_python
+from mathimator_worker.session import Session
+from mathimator_worker.supervisor import Supervisor, _read_project
+from tests.support import REPO
+
+JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
+
+# Strings that a careless raw-string literal would turn into broken or hostile scene code (F137).
+HOSTILE_TEXT = [
+    "a\\",
+    "\\",
+    '"',
+    '"""',
+    "'''",
+    'x"), __import__("os").system("calc"), MathTex(r"y',
+    "a\nb",
+    "a\rb",
+    "a\r\nb",
+    "a\tb",
+    "a\u2028b",
+    "a\u00a0b",
+    "é ∫ x",
+]
+
+
+# One project.json reader: UTF-8, a stripped BOM, read_failed (D07, F077, F080)
+
+
+def test_a_utf8_bom_is_stripped_and_saves_drop_it() -> None:
+    original = JOURNEY.read_bytes()
+    project = load_bytes(b"\xef\xbb\xbf" + original)
+    assert dumps_project(project).encode("utf-8") == original
+
+
+@pytest.mark.parametrize(
+    ("encoding", "bom"),
+    [("utf-16-le", True), ("utf-16-be", True), ("utf-16-le", False), ("utf-16-be", False), ("cp1252", False)],
+)
+def test_other_encodings_are_refused_as_not_utf8(encoding: str, bom: bool) -> None:
+    # The journey is ASCII, so in UTF-16 without a byte order mark it is also valid UTF-8.
+    text = JOURNEY.read_text(encoding="utf-8")
+    if encoding == "cp1252":
+        text = text.replace("Sine introduction", "Café")
+    data = (("\ufeff" if bom else "") + text).encode(encoding)
+    refused = _refused_bytes(data)
+    assert (refused.code, refused.field, str(refused)) == ("not_utf8", None, NOT_UTF8)
+
+
+def test_an_unreadable_project_json_is_read_failed(tmp_path: Path) -> None:
+    folder = tmp_path / "project.json"
+    folder.mkdir()
+    with pytest.raises(DocumentError) as refused:
+        _read_project(folder)
+    assert refused.value.code == "read_failed"
+    assert str(refused.value).startswith("Could not read project.json: ")
+
+
+@pytest.mark.parametrize(
+    ("text", "detail"),
+    [
+        ('{"schemaVersion": 1,', "Expecting property name enclosed in double quotes at line 1 column 21"),
+        ("[" * 100_000 + "]" * 100_000, "it is nested too deeply"),
+        ('{"seed": ' + "9" * 5000 + "}", "a number is too large"),
+    ],
+    ids=["syntax", "depth", "digits"],
+)
+def test_malformed_json_is_invalid_json(text: str, detail: str) -> None:
+    refused = _refused(text)
+    assert refused.code == "invalid_json"
+    assert str(refused) == f"project.json is not valid JSON: {detail}."
+
+
+# Versions take integers only (F014)
+
+
+@pytest.mark.parametrize("key", ["schemaVersion", "generatorVersion"])
+@pytest.mark.parametrize("value", [True, 1.0, "1", 2, None])
+def test_versions_must_be_the_integer_1(key: str, value: object) -> None:
+    raw = _journey()
+    raw[key] = value
+    refused = _refused(raw)
+    assert (refused.code, refused.field) == ("invalid_document", key)
+    assert str(refused) == f"{key} {json.dumps(value)} is not supported"
+
+
+# One text validator on load and on every edit that stores text (D06, F007)
+
+
+@pytest.mark.parametrize("bad", ["\ud83d", "\x00", "\x1b", "\x7f\x08"])
+def test_unstorable_characters_are_refused_on_load(bad: str) -> None:
+    raw = _journey()
+    raw["scene"]["objects"][2]["params"]["latex"] = f"y = {bad}"
+    refused = _refused(raw)
+    field = "scene.objects[2].params.latex"
+    assert (refused.code, refused.field) == ("invalid_text", field)
+    assert str(refused) == f"{field} contains a character Mathimator cannot store."
+    raw = _journey()
+    raw["name"] = f"Sine {bad}"
+    refused = _refused(raw)
+    assert (refused.code, refused.field) == ("invalid_text", "name")
+
+
+def test_tab_newline_and_carriage_return_are_kept() -> None:
+    raw = _journey()
+    raw["scene"]["objects"][2]["params"]["latex"] = "a\tb\r\nc\nd"
+    project = load_text(json.dumps(raw))
+    assert project.scene.objects[2].params["latex"] == "a\tb\r\nc\nd"
+
+
+@pytest.mark.parametrize(
+    ("edit", "field"),
+    [
+        ({"op": "set_latex", "objectId": "title_1", "latex": "y\x00"}, "latex"),
+        ({"op": "set_project_name", "name": "Sine \ud83d"}, "name"),
+        ({"op": "set_object_name", "objectId": "plot_1", "name": "Plot\x1b"}, "name"),
+        ({"op": "set_expression", "objectId": "plot_1", "expression": "sin(x)\x00"}, "expression"),
+        ({"op": "add_formula", "latex": "\ud83d"}, "latex"),
+        ({"op": "add_text", "text": "bell\x07"}, "text"),
+    ],
+)
+def test_unstorable_characters_are_refused_on_edit(edit: dict[str, object], field: str) -> None:
+    refused = _edit_refused(_session(), edit)
+    assert (refused.code, refused.field) == ("invalid_text", field)
+    assert str(refused) == f"{field} contains a character Mathimator cannot store."
+
+
+# Expression limits (D04, F004)
+
+
+def test_an_expression_of_1000_characters_parses_and_emits() -> None:
+    longest = "+".join(["1"] * 500) + "0"
+    assert len(longest) == 1000
+    emitted = expression_to_python(longest, frozenset({"x"}))
+    assert emitted.startswith("1 + 1 + ") and emitted.endswith(" + 10")
+    product = "*".join(["x"] * 500)
+    assert expression_to_python(product, frozenset({"x"})).count(" * ") == 499
+    with pytest.raises(DocumentError, match=UNSUPPORTED) as refused:
+        expression_to_python(longest + "0", frozenset({"x"}))
+    assert refused.value.code == "unsupported_expression"
+
+
+@pytest.mark.parametrize(("opening", "closing"), [("(", ")"), ("sin(", ")"), ("-", "")])
+def test_nesting_stops_at_64_levels(opening: str, closing: str) -> None:
+    variables = frozenset({"x"})
+    expression_to_python(opening * 64 + "x" + closing * 64, variables)
+    with pytest.raises(DocumentError, match=UNSUPPORTED):
+        expression_to_python(opening * 65 + "x" + closing * 65, variables)
+
+
+def test_an_overflowing_literal_is_unsupported() -> None:
+    with pytest.raises(DocumentError, match=UNSUPPORTED):
+        expression_to_python("1" * 400 + "*x", frozenset({"x"}))
+
+
+def test_expression_limits_on_load_and_edit() -> None:
+    too_deep = "(" * 65 + "x" + ")" * 65
+    raw = _journey()
+    raw["scene"]["objects"][1]["params"]["expression"] = too_deep
+    raw["scene"]["templateInstances"][0]["params"]["expression"] = too_deep
+    refused = _refused(raw)
+    assert (refused.code, refused.field, str(refused)) == (
+        "unsupported_expression",
+        "scene.objects[1].params.expression",
+        UNSUPPORTED,
+    )
+    session = _session()
+    refused = _edit_refused(session, {"op": "set_expression", "objectId": "plot_1", "expression": too_deep})
+    assert (refused.code, refused.field) == ("unsupported_expression", "expression")
+    long_sum = "+".join(["x"] * 400)
+    session.edit({"op": "set_expression", "objectId": "plot_1", "expression": long_sum})
+    assert "lambda x: x + x + " in generate(session.project)
+
+
+# Document numbers: finite, in range, valid at three decimals (D02, F006, F084)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), 10**400])
+def test_non_finite_edit_numbers_are_refused(value: float) -> None:
+    refused = _edit_refused(_session(), {"op": "set_domain", "objectId": "plot_1", "xMin": value, "xMax": 2})
+    assert (refused.code, refused.field, str(refused)) == ("invalid_edit", "xMin", "xMin must be a finite number")
+
+
+@pytest.mark.parametrize(
+    ("literal", "detail"),
+    [
+        ("1e400", "a number is too large"),
+        ("-1e400", "a number is too large"),
+        ("1" + "0" * 400, "a number is too large"),
+        ("NaN", "NaN is not a JSON number"),
+        ("Infinity", "Infinity is not a JSON number"),
+        ("-Infinity", "-Infinity is not a JSON number"),
+    ],
+)
+def test_non_finite_document_numbers_are_invalid_json(literal: str, detail: str) -> None:
+    text = json.dumps(_journey()).replace('"duration": 2', f'"duration": {literal}', 1)
+    refused = _refused(text)
+    assert (refused.code, refused.field, str(refused)) == (
+        "invalid_json",
+        None,
+        f"project.json is not valid JSON: {detail}.",
+    )
+
+
+def test_the_largest_float_is_still_json() -> None:
+    text = json.dumps(_journey()).replace('"duration": 2', '"duration": 1e308', 1)
+    assert _refused(text).code == "limit_exceeded"
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "field", "message"),
+    [
+        (("objects", 0, "yRange"), [-1.5, 1.5, 0.0004], "scene.objects[0].params.yRange", "step rounds to 0"),
+        (("objects", 0, "yRange"), [0, 0.0004, 0.0001], "scene.objects[0].params.yRange", "max rounds to min"),
+        (("objects", 0, "xLength"), 0.0004, "scene.objects[0].params.xLength", "rounds to 0"),
+        (("objects", 1, "xMax"), -6.2796, "scene.objects[1].params.xMax", "rounds to xMin"),
+        (("objects", 0, "yRange"), [1, -1, 1], "scene.objects[0].params.yRange", "max must be greater than min"),
+    ],
+)
+def test_numbers_that_round_to_nothing_are_refused_on_load(
+    path: tuple[str, int, str], value: object, field: str, message: str
+) -> None:
+    raw = _journey()
+    collection, index, key = path
+    raw["scene"][collection][index]["params"][key] = value
+    refused = _refused(raw)
+    assert (refused.code, refused.field) == ("invalid_document", field)
+    assert str(refused).startswith(f"{field} {message}")
+
+
+def test_rounding_checks_cover_3d_ranges_and_zoom() -> None:
+    three_d = json.loads(_three_d_text())
+    three_d["scene"]["templateInstances"][0]["params"]["tRange"] = [0, 0.0004]
+    refused = _refused(three_d)
+    assert refused.field == "scene.templateInstances[0].params.tRange"
+    three_d = json.loads(_three_d_text())
+    three_d["scene"]["camera"]["zoom"] = 0.0004
+    assert _refused(three_d).field == "scene.camera.zoom"
+
+
+@pytest.mark.parametrize(("seed", "accepted"), [(0, True), (2**32 - 1, True), (-1, False), (2**32, False)])
+def test_seed_range(seed: int, accepted: bool) -> None:
+    raw = _journey()
+    raw["seed"] = seed
+    if accepted:
+        assert load_text(json.dumps(raw)).seed == seed
+        return
+    refused = _refused(raw)
+    assert (refused.code, refused.field, str(refused)) == (
+        "invalid_document",
+        "seed",
+        "seed must be from 0 to 4294967295",
+    )
+
+
+# Ticks and plot sampling (D04, F078)
+
+
+def test_an_axis_holds_at_most_500_ticks_on_load() -> None:
+    raw = _journey()
+    raw["scene"]["objects"][0]["params"]["yRange"] = [0, 500, 1]
+    refused = _refused(raw)
+    field = "scene.objects[0].params.yRange"
+    assert (refused.code, refused.field, str(refused)) == ("limit_exceeded", field, f"{field} has more than 500 ticks")
+    raw = _journey()
+    raw["scene"]["templateInstances"][0]["params"]["yRange"] = [-1000, 1000, 1]
+    assert _refused(raw).field == "scene.templateInstances[0].params.yRange"
+    raw = _journey()
+    raw["scene"]["objects"][0]["params"]["yRange"] = [0, 499, 1]
+    raw["scene"]["templateInstances"][0]["params"]["yRange"] = [0, 499, 1]
+    assert load_text(json.dumps(raw)).scene.objects[0].params["yRange"] == [0, 499, 1]
+
+
+def test_an_axis_holds_at_most_500_ticks_on_edit() -> None:
+    session = _session()
+    refused = _edit_refused(
+        session, {"op": "set_axes_range", "objectId": "axes_1", "axis": "y", "value": [-1e6, 1e6, 1]}
+    )
+    assert (refused.code, refused.field, str(refused)) == ("limit_exceeded", "value", "value has more than 500 ticks")
+    refused = _edit_refused(
+        session, {"op": "set_axes_range", "objectId": "axes_1", "axis": "y", "value": [0, 1, 0.0004]}
+    )
+    assert (refused.code, refused.field) == ("invalid_edit", "value")
+    assert str(refused) == "value step rounds to 0 at three decimal places"
+    three_d = Session(empty_project())
+    three_d.edit({"op": "add_three_d_axes"})
+    refused = _edit_refused(three_d, {"op": "set_axes_range", "objectId": "axes_1", "axis": "z", "value": [0, 600, 1]})
+    assert (refused.code, refused.field) == ("limit_exceeded", "value")
+
+
+def test_plot_sampling_is_bounded_on_load_and_edit() -> None:
+    raw = _journey()
+    for params in (raw["scene"]["objects"][0]["params"], raw["scene"]["templateInstances"][0]["params"]):
+        params["xRange"] = [-2, 2, 0.01]
+    refused = _refused(raw)
+    assert (refused.code, refused.field) == ("limit_exceeded", "scene.objects[1].params")
+    assert str(refused) == "scene.objects[1] must span fewer than 500 x steps of axes_1 from xMin to xMax"
+    raw = _journey()
+    raw["scene"]["objects"][1]["params"].update(xMin=-250, xMax=250)
+    assert _refused(raw).code == "limit_exceeded"
+    raw["scene"]["objects"][1]["params"]["xMax"] = 249.999
+    load_text(json.dumps(raw))
+    session = _session()
+    for x_min, x_max in ((-300, 300), (-250, 250)):
+        refused = _edit_refused(session, {"op": "set_domain", "objectId": "plot_1", "xMin": x_min, "xMax": x_max})
+        assert (refused.code, refused.field) == ("limit_exceeded", None)
+    refused = _edit_refused(
+        session, {"op": "set_axes_range", "objectId": "axes_1", "axis": "x", "value": [-4, 4, 0.02]}
+    )
+    assert (refused.code, refused.field) == ("limit_exceeded", None)
+    session.edit({"op": "set_domain", "objectId": "plot_1", "xMin": -249, "xMax": 249})
+
+
+@pytest.mark.parametrize(("collection", "index"), [("objects", 1), ("templateInstances", 0)])
+def test_curve_sampling_is_bounded_on_load(collection: str, index: int) -> None:
+    session = Session(empty_project())
+    session.edit({"op": "add_three_d_axes"})
+    session.edit({"op": "set_three_d_mode", "mode": "curve"})
+    raw = json.loads(dumps_project(session.project))
+    params = raw["scene"][collection][index]["params"]
+    params["tRange"] = [-25, 25]
+    field = f"scene.{collection}[{index}].params.tRange"
+    refused = _refused(raw)
+    assert (refused.code, refused.field, str(refused)) == ("limit_exceeded", field, f"{field} must span less than 50")
+    params["tRange"] = [-25, 24.999]
+    load_text(json.dumps(raw))
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "field"),
+    [
+        ("latex", "x" * 501, "scene.objects[2].params.latex"),
+        ("duration", 0.05, "scene.beats[0].duration"),
+        ("duration", 119, "scene.beats"),
+    ],
+)
+def test_size_limits_on_load(key: str, value: object, field: str) -> None:
+    raw = _journey()
+    if key == "latex":
+        raw["scene"]["objects"][2]["params"]["latex"] = value
+    else:
+        raw["scene"]["beats"][0]["duration"] = value
+    refused = _refused(raw)
+    assert (refused.code, refused.field) == ("limit_exceeded", field)
+
+
+@pytest.mark.parametrize(
+    ("edit", "field"),
+    [
+        ({"op": "set_latex", "objectId": "title_1", "latex": "x" * 501}, "latex"),
+        ({"op": "add_text", "text": "t" * 201}, "text"),
+        ({"op": "set_project_name", "name": "n" * 201}, "name"),
+        ({"op": "set_beat_duration", "beatId": "beat_1", "duration": 0.05}, "duration"),
+        ({"op": "set_beat_duration", "beatId": "beat_1", "duration": 0}, "duration"),
+        ({"op": "set_beat_duration", "beatId": "beat_1", "duration": 119}, "duration"),
+    ],
+)
+def test_size_limits_on_edit(edit: dict[str, object], field: str) -> None:
+    refused = _edit_refused(_session(), edit)
+    assert (refused.code, refused.field) == ("limit_exceeded", field)
+
+
+# A child enters after its axes (F011)
+
+
+def test_a_plot_cannot_enter_before_its_axes() -> None:
+    raw = _journey()
+    beats = raw["scene"]["beats"]
+    beats[0], beats[1] = beats[1], beats[0]
+    refused = _refused(raw)
+    assert (refused.code, refused.field) == ("invalid_document", "scene.beats[0].targets")
+    assert str(refused) == "scene.beats[0] brings plot_1 on screen before its axes axes_1"
+    beats[0]["action"] = "fade_in"
+    assert "before its axes" in str(_refused(raw))
+
+
+def test_a_surface_cannot_enter_before_its_axes() -> None:
+    raw = json.loads(_three_d_text())
+    beats = raw["scene"]["beats"]
+    beats[0], beats[1] = beats[1], beats[0]
+    assert str(_refused(raw)) == "scene.beats[0] brings surface_1 on screen before its axes axes_1"
+
+
+# Every message names the field (F173, F082)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "field"),
+    [
+        (lambda raw: raw["scene"]["beats"][2]["targets"].__setitem__(0, "Title 1"), "scene.beats[2].targets[0]"),
+        (
+            lambda raw: raw["scene"]["templateInstances"][0]["objectIds"].__setitem__(1, 7),
+            "scene.templateInstances[0].objectIds[1]",
+        ),
+        (
+            lambda raw: raw["scene"]["objects"][2]["params"].__setitem__("anchor", "middle"),
+            "scene.objects[2].params.anchor",
+        ),
+        (lambda raw: raw["scene"]["beats"][1].__setitem__("start", 2), "scene.beats[1].start"),
+        (lambda raw: raw["scene"]["objects"][0]["params"].pop("color"), "scene.objects[0].params.color"),
+        (lambda raw: raw.__setitem__("extra", True), "extra"),
+        (lambda raw: raw["scene"]["beats"][1].__setitem__("id", "beat_1"), "scene.beats[1].id"),
+        (lambda raw: raw["scene"].__setitem__("kind", ["scene"]), "scene.kind"),
+        (lambda raw: raw["scene"]["beats"][0].__setitem__("action", {"create": True}), "scene.beats[0].action"),
+        (
+            lambda raw: raw["scene"]["templateInstances"][0]["objectIds"].__setitem__(1, "plot_9"),
+            "scene.templateInstances[0].objectIds",
+        ),
+        (lambda raw: raw["scene"]["objects"][2].__setitem__("id", "axes_1"), "scene.objects[2].id"),
+        (
+            lambda raw: raw["scene"]["templateInstances"][0].__setitem__("objectIds", []),
+            "scene.templateInstances[0].objectIds",
+        ),
+        (lambda raw: raw["scene"]["templateInstances"][0]["beatIds"].pop(), "scene.templateInstances[0].beatIds"),
+    ],
+)
+def test_load_refusals_name_the_json_path(mutate: Any, field: str) -> None:
+    raw = _journey()
+    mutate(raw)
+    refused = _refused(raw)
+    assert refused.code == "invalid_document"
+    assert refused.field == field
+    assert field in str(refused)
+
+
+def test_template_links_name_the_json_path() -> None:
+    field = "scene.templateInstances[0].objectIds"
+    raw = _journey()
+    raw["scene"]["templateInstances"][0]["objectIds"].reverse()
+    refused = _refused(raw)
+    assert (refused.field, str(refused)) == (field, "scene.templateInstances[0] must own an axes and a function plot")
+    raw = json.loads(_three_d_text())
+    raw["scene"]["templateInstances"][0]["objectIds"].reverse()
+    refused = _refused(raw)
+    assert (refused.field, str(refused)) == (field, f"{field} names surface_1, which is not 3D axes")
+    raw["scene"]["templateInstances"][0]["objectIds"] = ["axes_1"]
+    refused = _refused(raw)
+    assert (refused.field, str(refused)) == (field, f"{field} must name two objects")
+
+
+def test_a_per_side_formula_anchor_names_its_path() -> None:
+    session = Session(empty_project())
+    session.edit({"op": "add_formula_transform"})
+    raw = json.loads(dumps_project(session.project))
+    raw["scene"]["templateInstances"][0]["params"]["destinationAnchor"] = "middle"
+    refused = _refused(raw)
+    assert refused.field == "scene.templateInstances[0].params.destinationAnchor"
+    assert str(refused) == 'scene.templateInstances[0].params.destinationAnchor "middle" is not an anchor'
+
+
+# Edit refusals are invalid_edit and name the edit field
+
+
+@pytest.mark.parametrize(
+    ("edit", "field", "message"),
+    [
+        ({"op": "no_such_op"}, "op", "Unknown edit operation no_such_op."),
+        ({}, "op", "Unknown edit operation None."),
+        ({"op": "set_object_color", "objectId": "plot_9", "color": "#FFFFFF"}, "objectId", "unknown object plot_9"),
+        ({"op": "set_object_color", "objectId": "plot_1", "color": "red"}, "color", "color must be #RRGGBB"),
+        ({"op": "set_anchor", "objectId": "title_1", "anchor": "middle"}, "anchor", 'anchor "middle" is not an anchor'),
+        (
+            {"op": "set_axes_range", "objectId": "axes_1", "axis": ["x"], "value": [0, 1, 1]},
+            "axis",
+            "axis must be x or y",
+        ),
+        ({"op": "set_length", "objectId": "axes_1", "axis": {"x": 1}, "value": 2}, "axis", "axis must be x or y"),
+        ({"op": "set_domain", "objectId": "plot_1", "xMin": 2, "xMax": 1}, "xMax", "xMax must be greater than xMin"),
+        ({"op": "set_beat_color", "beatId": "beat_1", "color": "#FFFFFF"}, "beatId", "beat beat_1 is not set_color"),
+        ({"op": "add_formula", "afterBeatId": "beat_9"}, "afterBeatId", "unknown beat beat_9"),
+    ],
+)
+def test_edit_refusals_are_invalid_edit(edit: dict[str, object], field: str, message: str) -> None:
+    refused = _edit_refused(_session(), edit)
+    assert (refused.code, refused.field, str(refused)) == ("invalid_edit", field, message)
+
+
+def test_3d_edit_fields_that_are_not_strings_are_refused() -> None:
+    session = Session(empty_project())
+    session.edit({"op": "add_three_d_axes"})
+    refused = _edit_refused(session, {"op": "set_three_d_mode", "mode": ["curve"]})
+    assert (refused.code, refused.field) == ("invalid_edit", "mode")
+    refused = _edit_refused(session, {"op": "set_camera", "key": ["phi"], "value": 1})
+    assert (refused.code, refused.field) == ("invalid_edit", "key")
+    refused = _edit_refused(session, {"op": "set_camera", "key": "zoom", "value": 0})
+    assert (refused.code, refused.field) == ("invalid_edit", "value")
+
+
+def test_empty_history_codes() -> None:
+    session = _session()
+    with pytest.raises(DocumentError) as undo:
+        session.undo()
+    with pytest.raises(DocumentError) as redo:
+        session.redo()
+    assert (undo.value.code, str(undo.value)) == ("nothing_to_undo", "Nothing to undo.")
+    assert (redo.value.code, str(redo.value)) == ("nothing_to_redo", "Nothing to redo.")
+
+
+# Scene code escaping (F137)
+
+
+@pytest.mark.parametrize("value", HOSTILE_TEXT)
+def test_edited_text_reaches_scene_code_unchanged(value: str) -> None:
+    session = Session(empty_project())
+    session.edit({"op": "add_formula", "latex": value})
+    session.edit({"op": "add_text", "text": value})
+    session.edit({"op": "add_formula_transform"})
+    session.edit({"op": "set_latex", "objectId": "formula_2", "latex": value})
+    session.edit({"op": "set_latex", "objectId": "formula_3", "latex": value})
+    source = generate(session.project)
+    assert _first_arguments(source, "MathTex") == [value, value, value]
+    assert _first_arguments(source, "Text") == [value]
+
+
+@pytest.mark.parametrize("value", ["a\x00b", "\x1b[31m", "\ud83d"])
+def test_codegen_escapes_text_that_validation_would_refuse(value: str) -> None:
+    session = Session(empty_project())
+    session.edit({"op": "add_formula"})
+    session.project.scene.objects[0].params["latex"] = value
+    assert _first_arguments(generate(session.project), "MathTex") == [value]
+
+
+# The supervisor reports codes and fields, and keeps running
+
+
+def test_open_project_reports_document_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    supervisor, events = _supervisor(tmp_path / "bound", monkeypatch)
+    cases = {
+        "bom": b"\xef\xbb\xbf" + JOURNEY.read_bytes(),
+        "utf16": JOURNEY.read_text(encoding="utf-8").encode("utf-16"),
+        "control": JOURNEY.read_text(encoding="utf-8").replace("y = \\\\sin(x)", "y = \\u0000").encode("utf-8"),
+        "syntax": b"{",
+    }
+    for name, data in cases.items():
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / "project.json").write_bytes(data)
+        supervisor.handle_line(json.dumps({"cmd": "open_project", "id": name, "path": str(folder)}))
+    unreadable = tmp_path / "unreadable"
+    (unreadable / "project.json").mkdir(parents=True)
+    supervisor.handle_line(json.dumps({"cmd": "open_project", "id": "unreadable", "path": str(unreadable)}))
+    replies = {str(event["jobId"]): event for event in events}
+    assert replies["bom"]["event"] == "state"
+    assert {key: replies["utf16"][key] for key in ("event", "code", "message")} == {
+        "event": "rejected",
+        "code": "not_utf8",
+        "message": NOT_UTF8,
+    }
+    assert "field" not in replies["utf16"]
+    assert (replies["control"]["code"], replies["control"]["field"]) == (
+        "invalid_text",
+        "scene.objects[2].params.latex",
+    )
+    assert replies["syntax"]["code"] == "invalid_json"
+    assert replies["unreadable"]["code"] == "read_failed"
+    assert str(replies["unreadable"]["message"]).startswith("Could not read project.json: ")
+
+
+def test_edit_refusals_carry_code_and_field(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "project.json").write_bytes(JOURNEY.read_bytes())
+    supervisor, events = _supervisor(project, monkeypatch)
+    edit = {"op": "set_latex", "objectId": "title_1", "latex": "\ud83d"}
+    supervisor.handle_line(json.dumps({"cmd": "edit", "id": "bad", "edit": edit}))
+    supervisor.handle_line(json.dumps({"cmd": "undo", "id": "undo"}))
+    assert events[0] == {
+        "event": "rejected",
+        "jobId": "bad",
+        "code": "invalid_text",
+        "message": "latex contains a character Mathimator cannot store.",
+        "field": "latex",
+    }
+    assert {key: events[1][key] for key in ("code", "message")} == {
+        "code": "nothing_to_undo",
+        "message": "Nothing to undo.",
+    }
+    assert (project / "project.json").read_bytes() == JOURNEY.read_bytes()
+
+
+def test_a_refused_startup_project_keeps_the_worker_serving(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = tmp_path / "utf16"
+    project.mkdir()
+    (project / "project.json").write_bytes(JOURNEY.read_text(encoding="utf-8").encode("utf-16"))
+    supervisor, events = _supervisor(project, monkeypatch, init=False)
+    supervisor.handle_line(json.dumps({"cmd": "get_state", "id": "state"}))
+    assert events[-1]["event"] == "rejected"
+    assert NOT_UTF8 in str(events[-1]["message"])
+
+
+def test_the_log_keeps_characters_utf8_cannot_encode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    supervisor, _events = _supervisor(tmp_path / "log", monkeypatch)
+    supervisor.log("scene.\ud83d is not a known key")
+    assert "scene.\\ud83d is not a known key" in supervisor.log_path.read_text(encoding="utf-8")
+
+
+def _journey() -> dict[str, Any]:
+    raw: dict[str, Any] = json.loads(JOURNEY.read_text(encoding="utf-8"))
+    return raw
+
+
+def _three_d_text() -> str:
+    session = Session(empty_project())
+    session.edit({"op": "add_three_d_axes"})
+    return dumps_project(session.project)
+
+
+def _session() -> Session:
+    return Session(load_text(JOURNEY.read_text(encoding="utf-8")))
+
+
+def _refused(raw: dict[str, Any] | str) -> DocumentError:
+    text = raw if isinstance(raw, str) else json.dumps(raw)
+    with pytest.raises(DocumentError) as refused:
+        load_text(text)
+    return refused.value
+
+
+def _refused_bytes(data: bytes) -> DocumentError:
+    with pytest.raises(DocumentError) as refused:
+        load_bytes(data)
+    return refused.value
+
+
+def _edit_refused(session: Session, edit: dict[str, object]) -> DocumentError:
+    before = dumps_project(session.project)
+    depth = session.can_undo()
+    with pytest.raises(DocumentError) as refused:
+        session.edit(edit)
+    assert dumps_project(session.project) == before
+    assert session.can_undo() == depth
+    return refused.value
+
+
+def _first_arguments(source: str, name: str) -> list[object]:
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name
+    ]
+    calls.sort(key=lambda node: node.lineno)
+    return [node.args[0].value for node in calls if isinstance(node.args[0], ast.Constant)]
+
+
+def _supervisor(
+    project: Path, monkeypatch: pytest.MonkeyPatch, *, init: bool = True
+) -> tuple[Supervisor, list[dict[str, object]]]:
+    monkeypatch.setenv("MATHIMATOR_SKIP_PROCESS_TABLE", "1")
+    project.mkdir(parents=True, exist_ok=True)
+    supervisor = Supervisor(project, sys.executable, project.parent / f"{project.name}.log", init)
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(supervisor, "emit", events.append)
+    return supervisor, events

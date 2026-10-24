@@ -296,7 +296,11 @@ def _position_lines(variable: str, params: Mapping[str, object]) -> list[str]:
 
 
 def _raw_string(value: str) -> str:
-    if "\n" not in value and "\r" not in value and '"' not in value and not value.endswith("\\"):
+    """A raw string literal for plain LaTeX, otherwise ``repr``, which escapes anything a raw string cannot hold.
+
+    ``isprintable`` is false for line breaks, tab, NUL and the other controls.
+    """
+    if value.isprintable() and '"' not in value and not value.endswith("\\"):
         return 'r"' + value + '"'
     return repr(value)
 

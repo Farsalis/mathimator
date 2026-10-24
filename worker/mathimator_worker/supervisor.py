@@ -41,6 +41,7 @@ from mathimator_worker.document import (
     export_artifact_name,
     export_folder_name,
     export_key,
+    load_bytes,
     load_text,
     scene_hash,
     scene_stamp,
@@ -147,7 +148,8 @@ class Supervisor:
         line = f"{stamp} {message}\n"
         with self._log_lock:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.log_path.open("a", encoding="utf-8") as handle:
+            # A lone surrogate from a refused document must not stop the log.
+            with self.log_path.open("a", encoding="utf-8", errors="backslashreplace") as handle:
                 handle.write(line)
 
     def emit(self, event: dict[str, object]) -> None:
@@ -234,8 +236,8 @@ class Supervisor:
     def _load_initial(self) -> None:
         if self.project_file.is_file():
             try:
-                project = load_text(self.project_file.read_text(encoding="utf-8"))
-            except (OSError, DocumentError) as exc:
+                project = _read_project(self.project_file)
+            except DocumentError as exc:
                 self.session = None
                 self._index = None
                 self._startup_error = str(exc)
@@ -288,7 +290,7 @@ class Supervisor:
                 self._save_sidecars_locked()
                 payload = self._state_locked(job_id)
             except DocumentError as exc:
-                self._reject(job_id, str(exc))
+                self._reject_document(job_id, exc)
                 return
         self._attach_focus(payload, result)
         self.emit(payload)
@@ -308,7 +310,7 @@ class Supervisor:
                 self._save_sidecars_locked()
                 payload = self._state_locked(job_id)
             except DocumentError as exc:
-                self._reject(job_id, str(exc))
+                self._reject_document(job_id, exc)
                 return
         self.emit(payload)
 
@@ -339,14 +341,10 @@ class Supervisor:
     def _open_project(self, job_id: str, path: Path) -> None:
         if path.is_file() and path.name == "project.json":
             path = path.parent
-        project_file = path / "project.json"
         try:
-            project = load_text(project_file.read_text(encoding="utf-8"))
-        except OSError as exc:
-            self._reject(job_id, f"could not read project.json: {exc.strerror or exc}")
-            return
+            project = _read_project(path / "project.json")
         except DocumentError as exc:
-            self._reject(job_id, str(exc))
+            self._reject_document(job_id, exc)
             return
         self._stop_preview_only()
         with self._doc_lock:
@@ -362,6 +360,12 @@ class Supervisor:
 
     def _reject(self, job_id: str, message: str) -> None:
         self.emit({"event": "rejected", "jobId": job_id, "message": message})
+
+    def _reject_document(self, job_id: str, exc: DocumentError) -> None:
+        event: dict[str, object] = {"event": "rejected", "jobId": job_id, "code": exc.code, "message": str(exc)}
+        if exc.field is not None:
+            event["field"] = exc.field
+        self.emit(event)
 
     def _attach_focus(self, payload: dict[str, object], result: EditResult) -> None:
         if result.focus_beat_id is None and result.focus_object_id is None:
@@ -1311,6 +1315,15 @@ def _frame_count_problem(frames: Path, reported: int | None) -> str | None:
     if written != reported:
         return f"manim reported {reported} PNG frames, but {frames} holds {written}"
     return None
+
+
+def _read_project(project_file: Path) -> Project:
+    """Read, decode and validate project.json for startup and ``open_project``."""
+    try:
+        data = project_file.read_bytes()
+    except OSError as exc:
+        raise DocumentError(f"Could not read project.json: {exc.strerror or exc}.", code="read_failed") from exc
+    return load_bytes(data)
 
 
 def _marker_start(marker: Path) -> float | None:
