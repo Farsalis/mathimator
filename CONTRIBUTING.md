@@ -87,8 +87,10 @@ preview or the formulas.
 - A change to the commands or events between the shell and the worker updates
   both sides, `tests/fixtures/protocol/commands.json`, which the Python, Rust
   and TypeScript tests check, `requests.json` beside it, which the Python and
-  Rust tests check, and spec section 6. An incompatible change also bumps the
-  protocol version in the worker and in the shell.
+  Rust tests check, and spec section 6. It also rewrites `replies.json`, the
+  lines the worker writes for `requests.json`, which the TypeScript tests read:
+  `uv run pytest tests/test_shell_fixture.py --update-golden`. An incompatible
+  change also bumps the protocol version in the worker and in the shell.
 - The pinned versions change only by hand and in every copy at once: Manim
   0.22.0, Typst 0.15.0, CPython 3.14.9 with 3.13.17 as the fallback, uv
   0.13.5, Rust 1.93.0, Node 24, Tauri 2.12.x, React 19 and Vite 8.

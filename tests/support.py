@@ -1,9 +1,9 @@
 """Helpers shared by every test module.
 
 Repo paths, the render interpreter, the supervisor client, the reader of an
-in-process supervisor's stdout, fake interpreters, the fake ``manim`` package,
-minimal complete clips, unreadable files, links, and video probes. ``OUT``
-and the scene paths belong to the phase 1 tests.
+in-process supervisor's stdout, the shared request lines, fake interpreters,
+the fake ``manim`` package, minimal complete clips, unreadable files, links,
+and video probes. ``OUT`` and the scene paths belong to the phase 1 tests.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,8 @@ REFERENCE = SCENES / "reference_60.py"
 LAST_BEAT = SCENES / "reference_60_last_beat.py"
 RUNTIME_ERROR = SCENES / "runtime_error.py"
 WIN32_FIXTURES = REPO / "tests" / "fixtures" / "win32"
+FAKE_MANIM = REPO / "tests" / "fixtures" / "fake_manim" / "manim"
+SHARED_REQUESTS = REPO / "tests" / "fixtures" / "protocol" / "requests.json"
 # The lines that end a job; exactly one of them does (C7.1).
 TERMINAL_EVENTS = frozenset({"done", "error", "rejected"})
 # The stderr lines a SupervisorClient keeps for its failure messages.
@@ -124,113 +126,16 @@ def write_clip(path: Path) -> Path:
     return path
 
 
-_FAKE_MANIM = '''\
-"""Write the groups of files plan.json lists, print its log and exit with its code.
-
-seen.json records the run marker and what the media folder held when this
-process started, the folder, arguments and environment it started with, and
-the function behind each scene writer method that manim_main replaces. Like
-Manim, it writes one file after another, so each file gets a later mtime than
-the one before. After each group but the last, and after the last too in a
-held plan, it writes held-<n>.txt and waits for go-<n>.txt. A plan with a
-child first starts a process that sleeps with this one's stdout and stderr,
-like a TeX child that outlives Manim, and writes its pid to child.txt. Like
-Manim at the end of a render, it then marks each segment that a segment list
-it wrote names as used, in list order, and in that list's folder keeps at most
-max_files_cached segments, as the --config_file sets it or Manim's default of
-100, deleting the least recently used; -1 keeps them all.
-"""
-import configparser
-import json
-import os
-import subprocess
-import sys
-import time
-from pathlib import Path
-
-from manim.scene.scene_file_writer import SceneFileWriter
-
-ENVIRONMENT = ("HOME", "USERPROFILE", "shell_escape", "openin_any", "openout_any")
-SEGMENTS = (".mov", ".mp4", ".webm")
-here = Path(__file__).parent
-plan = json.loads((here / "plan.json").read_text(encoding="utf-8"))
-media = Path(sys.argv[sys.argv.index("--media_dir") + 1])
-marker = media.parent / "manim-run.json"
-seen = {
-    "marker": json.loads(marker.read_text(encoding="utf-8")) if marker.is_file() else None,
-    "files": sorted(path.relative_to(media).as_posix() for path in media.rglob("*") if path.is_file()),
-    "cwd": os.getcwd(),
-    "argv": sys.argv[1:],
-    "env": {name: os.environ.get(name) for name in ENVIRONMENT},
-    "writer": {name: getattr(SceneFileWriter, name).__name__ for name in ("_concat_manifest_bytes", "write_frame")},
-}
-(here / "seen.json").write_text(json.dumps(seen), encoding="utf-8")
-if plan["child"]:
-    sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
-    child = subprocess.Popen(sleeper, stdout=sys.stdout, stderr=sys.stderr)
-    (here / "child.txt").write_text(str(child.pid), encoding="utf-8")
-groups = plan["groups"]
-stamp = 0
-listed = set()
-for number, group in enumerate(groups):
-    for name, data in group.items():
-        target = Path(name)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(bytes.fromhex(data))
-        stamp = max(stamp + 1_000_000, time.time_ns())
-        os.utime(target, ns=(stamp, stamp))
-        if target.name == "partial_movie_file_list.txt":
-            listed.add(target.parent)
-    if number < len(groups) - 1 or plan["hold"]:
-        (here / f"held-{number}.txt").write_text("", encoding="utf-8")
-        while not (here / f"go-{number}.txt").exists():
-            time.sleep(0.02)
-settings = configparser.ConfigParser()
-if "--config_file" in sys.argv:
-    settings.read(sys.argv[sys.argv.index("--config_file") + 1], encoding="utf-8")
-cached = settings.getint("CLI", "max_files_cached", fallback=100)
-for folder in listed:
-    for line in (folder / "partial_movie_file_list.txt").read_text(encoding="utf-8").splitlines():
-        if line.startswith("file "):
-            used = folder / line.rpartition("/")[2].removesuffix("'")
-            stamp = max(stamp + 1_000_000, time.time_ns())
-            os.utime(used, ns=(stamp, used.stat().st_mtime_ns))
-    segments = sorted(
-        (path for path in folder.iterdir() if path.suffix in SEGMENTS), key=lambda path: path.stat().st_atime
-    )
-    excess = len(segments) - cached if cached != -1 else 0
-    for path in segments[: max(excess, 0)]:
-        path.unlink()
-for line in plan["log"]:
-    print(line, flush=True)
-sys.exit(plan["exit"])
-'''
-
-
-_FAKE_WRITER = """\
-class SceneFileWriter:
-    @staticmethod
-    def _concat_manifest_bytes(input_files):
-        raise NotImplementedError
-
-    def write_frame(self, pixels, *, repeat=1):
-        raise NotImplementedError
-"""
-
-
 class FakeManim:
-    """A ``manim`` package on PYTHONPATH that stands in for Manim under ``mathimator_worker.manim_main``.
+    """A copy of the ``manim`` package in ``FAKE_MANIM``, on PYTHONPATH, that stands in for Manim.
 
-    Its scene writer has only the methods that ``manim_main`` replaces.
+    Its scene writer has only the methods that ``mathimator_worker.manim_main``
+    replaces. Each copy reads the plan written beside it.
     """
 
     def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.package = root / "manim"
-        (self.package / "scene").mkdir(parents=True)
-        (self.package / "__init__.py").write_text("", encoding="utf-8")
-        (self.package / "__main__.py").write_text(_FAKE_MANIM, encoding="utf-8")
-        (self.package / "scene" / "__init__.py").write_text("", encoding="utf-8")
-        (self.package / "scene" / "scene_file_writer.py").write_text(_FAKE_WRITER, encoding="utf-8")
+        shutil.copytree(FAKE_MANIM, self.package)
         monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(root), str(WORKER)]))
 
     def plan(
@@ -257,6 +162,10 @@ class FakeManim:
             "child": child,
         }
         (self.package / "plan.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def auto(self, beats: int) -> None:
+        """Render ``beats`` complete MP4 partials, their segment list and the movie, where the command line asks."""
+        (self.package / "plan.json").write_text(json.dumps({"auto": {"beats": beats}}), encoding="utf-8")
 
     def child_pid(self) -> int:
         return int((self.package / "child.txt").read_text(encoding="utf-8"))
@@ -413,16 +322,51 @@ class Stdout:
             time.sleep(0.02)
 
 
+def shared_requests(places: Mapping[str, str]) -> list[dict[str, Any]]:
+    """The rows of requests.json, a request ``line`` and the lines it ``expect``s, with each placeholder filled in.
+
+    ``places`` gives the folder of every placeholder the file lists.
+    """
+    shared = json.loads(SHARED_REQUESTS.read_text(encoding="utf-8"))
+    assert set(shared["placeholders"]) == set(places)
+    rows: list[dict[str, Any]] = replaced(shared["requests"], places)
+    return rows
+
+
+def replaced(value: Any, replacements: Mapping[str, str]) -> Any:
+    """The JSON ``value`` with each key of ``replacements`` replaced by its value in every string it holds."""
+    if isinstance(value, dict):
+        return {key: replaced(item, replacements) for key, item in value.items()}
+    if isinstance(value, list):
+        return [replaced(item, replacements) for item in value]
+    if isinstance(value, str):
+        for old, new in replacements.items():
+            value = value.replace(old, new)
+    return value
+
+
+def holds(actual: object, expected: object) -> bool:
+    """Whether ``actual`` holds ``expected``: every key of an expected object, at any depth, and otherwise its value."""
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and all(
+            key in actual and holds(actual[key], value) for key, value in expected.items()
+        )
+    return type(actual) is type(expected) and actual == expected
+
+
 class SupervisorClient:
     """A supervisor in its own process, spoken to over stdin and stdout as the shell speaks to it.
 
-    The last lines of its stderr are kept, so a wait that fails shows the
-    traceback of a supervisor that died. A wait fails as soon as stdout closes.
+    ``raw_lines`` keeps each line of ``events`` as the bytes the shell reads,
+    newline included. The last lines of its stderr are kept, so a wait that
+    fails shows the traceback of a supervisor that died. A wait fails as soon
+    as stdout closes.
     """
 
     def __init__(self, proc: subprocess.Popen[bytes]) -> None:
         self.proc = proc
         self.events: list[dict[str, object]] = []
+        self.raw_lines: list[bytes] = []
         self._stderr_tail: deque[str] = deque(maxlen=_STDERR_LINES)
         self._closed = False
         self._condition = threading.Condition()
@@ -444,6 +388,7 @@ class SupervisorClient:
             if not isinstance(event, dict):
                 event = {"event": "error", "jobId": None, "message": f"non-object stdout: {text}"}
             with self._condition:
+                self.raw_lines.append(raw)
                 self.events.append(event)
                 self._condition.notify_all()
         with self._condition:
@@ -457,8 +402,9 @@ class SupervisorClient:
             self._stderr_tail.append(raw.decode("utf-8", errors="replace").rstrip())
 
     def send(self, message: dict[str, object]) -> None:
+        """Write ``message`` as one line, in the bytes the shell writes (protocol.rs ``Request::line``)."""
         assert self.proc.stdin is not None
-        payload = (json.dumps(message) + "\n").encode("utf-8")
+        payload = (json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
         self.proc.stdin.write(payload)
         self.proc.stdin.flush()
 
@@ -495,6 +441,7 @@ class SupervisorClient:
         return f"{reason}; exit code {self.proc.poll()}\nlast events: {events}\nstderr:\n{stderr}"
 
     def close(self) -> None:
+        """End the supervisor, then read the rest of its output, so ``events`` holds every line it wrote."""
         if self.proc.poll() is None and self.proc.stdin is not None:
             self.proc.stdin.close()
         try:
@@ -502,6 +449,8 @@ class SupervisorClient:
         except subprocess.TimeoutExpired:
             self.proc.kill()
             self.proc.wait(timeout=5)
+        self._thread.join(timeout=5)
+        self._stderr.join(timeout=5)
 
 
 def scene_path(project: Path) -> Path:

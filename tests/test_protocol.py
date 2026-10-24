@@ -39,11 +39,14 @@ from mathimator_worker.supervisor import NOT_A_PROJECT, Supervisor, _Job
 from tests.support import (
     REFERENCE,
     REPO,
+    SHARED_REQUESTS,
     FakeManim,
     Stdout,
     complete_clip,
     handwritten_project,
+    holds,
     link_folder,
+    shared_requests,
     unreadable,
     video_render,
 )
@@ -51,7 +54,6 @@ from tests.support import (
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 SHARED_COMMANDS = REPO / "tests" / "fixtures" / "protocol" / "commands.json"
 SHARED_EXPORT_CHOICES = REPO / "tests" / "fixtures" / "protocol" / "export-choices.json"
-SHARED_REQUESTS = REPO / "tests" / "fixtures" / "protocol" / "requests.json"
 NO_PROJECT = f"No project is open. {NOT_A_PROJECT}"
 TEX_ERROR = "Formulas and axis labels cannot render on this PC: ! I can't find file `check'. Reinstall Mathimator."
 _JOURNEY_TEXT = JOURNEY.read_text(encoding="utf-8")
@@ -332,24 +334,16 @@ def test_the_shared_requests_get_the_replies_they_expect(
     supervisor = _supervisor(tmp_path / "project", monkeypatch)
     other = tmp_path / "other"
     other.mkdir()
-    places = {"{project}": str(supervisor.project), "{other}": str(other.resolve())}
-    shared = json.loads(SHARED_REQUESTS.read_text(encoding="utf-8"))
-    assert set(shared["placeholders"]) == set(places)
     clips = [complete_clip(".mp4")] * 2
     fake_manim.plan(
         {**video_render(supervisor.layout, "480p15", clips), **video_render(supervisor.layout, "1080p30", clips)}
     )
-    for shared_row in shared["requests"]:
-        text = json.dumps(shared_row)
-        for placeholder, path in places.items():
-            # Each path goes into the JSON text escaped, backslashes included.
-            text = text.replace(placeholder, json.dumps(path)[1:-1])
-        row = json.loads(text)
+    for row in shared_requests({"{project}": str(supervisor.project), "{other}": str(other.resolve())}):
         _run(supervisor, **row["line"])
         replies = stdout.of(row["line"].get("id"))
         assert len(replies) == len(row["expect"]), (row["line"], replies)
         for expected, reply in zip(row["expect"], replies, strict=True):
-            assert _has(reply, expected), (row["line"], reply)
+            assert holds(reply, expected), (row["line"], reply)
 
 
 def test_the_export_choices_and_duration_limits_match_the_shared_list() -> None:
@@ -1029,15 +1023,6 @@ def _project_bytes(supervisor: Supervisor) -> bytes | None:
 
 def _rename(name: str) -> dict[str, object]:
     return {"op": "set_project_name", "name": name}
-
-
-def _has(actual: object, expected: object) -> bool:
-    """Whether ``actual`` holds ``expected``: every key of an expected object, at any depth, and otherwise its value."""
-    if isinstance(expected, dict):
-        return isinstance(actual, dict) and all(
-            key in actual and _has(actual[key], value) for key, value in expected.items()
-        )
-    return type(actual) is type(expected) and actual == expected
 
 
 def _with_index(project: Path, clip: str) -> Path:

@@ -1,4 +1,4 @@
-"""Shared test setup: no Job Objects by default, Typst tests skipped without Typst, and the fake Manim.
+"""Shared test setup: no Job Objects by default, Typst tests skipped without Typst, the fake Manim, and --update-golden.
 
 Windows enables the job unless ``MATHIMATOR_WIN32_JOBS=0``. The reap tests in
 ``test_win32_job.py`` stay skipped unless ``MATHIMATOR_WIN32_TESTS=1``, and
@@ -10,9 +10,10 @@ skipped off Windows where there is no ``/proc`` to walk, as on macOS, which is
 untested (D47).
 
 The ``fake_manim`` fixture puts ``support.FakeManim`` on PYTHONPATH for the
-tests that run jobs in-process without Manim, ``stdout`` reads what an
-in-process supervisor wrote, and ``link_kind`` runs a test once for each kind
-of folder link.
+tests that run jobs without Manim, ``stdout`` reads what an in-process
+supervisor wrote, and ``link_kind`` runs a test once for each kind of folder
+link. ``--update-golden`` makes ``test_shell_fixture.py`` rewrite the golden
+``tests/fixtures/protocol/replies.json`` instead of comparing with it.
 """
 
 from __future__ import annotations
@@ -25,6 +26,14 @@ from pathlib import Path
 import pytest
 
 from tests.support import LINK_KINDS, FakeManim, Stdout
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--update-golden",
+        action="store_true",
+        help="rewrite tests/fixtures/protocol/replies.json from the worker's replies in test_shell_fixture.py",
+    )
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
