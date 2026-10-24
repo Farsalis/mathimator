@@ -17,7 +17,6 @@ from mathimator_worker.document_error import DocumentError
 from mathimator_worker.progress import discard_unfinished_partials
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import Supervisor, _Job
-from mathimator_worker.tex_failure import format_render_failure
 from mathimator_worker.win32_job import jobs_enabled
 from tests.support import read_argv, start_supervisor, write_fake_interpreter
 
@@ -81,21 +80,6 @@ def test_object_ids_reject_keywords_and_generated_names() -> None:
             assert "not a valid generated name" in str(exc)
         else:
             raise AssertionError(f"{bad} was accepted")
-
-
-def test_latex_failure_includes_the_tex_log_line() -> None:
-    tail = "ValueError: latex error converting to dvi\n! LaTeX Error: File `qrcode.sty' not found.\n"
-    message = format_render_failure(1, tail)
-    assert message.startswith("LaTeX failed.\n")
-    assert "qrcode.sty" in message
-    assert "manim exited with status" not in message
-
-
-def test_other_manim_failures_keep_the_status(tmp_path: Path) -> None:
-    del tmp_path
-    message = format_render_failure(2, "RuntimeError: boom")
-    assert message.startswith("manim exited with status 2")
-    assert "boom" in message
 
 
 def test_stop_joins_for_one_second(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

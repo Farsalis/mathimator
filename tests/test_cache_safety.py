@@ -23,10 +23,22 @@ import pytest
 from mathimator_worker import clip_check
 from mathimator_worker.clip_check import ClipChecker, clip_is_complete
 from mathimator_worker.codegen import generate
-from mathimator_worker.document import dumps_project, export_artifact_name, export_folder_name, load_text
-from mathimator_worker.progress import ManimProgress
+from mathimator_worker.document import (
+    beat_chain_keys,
+    dumps_project,
+    export_artifact_name,
+    export_folder_name,
+    load_text,
+)
 from mathimator_worker.session import Session
-from mathimator_worker.supervisor import Supervisor, _Job, _remove_tree, partial_movie_dir, png_frames_dir
+from mathimator_worker.supervisor import (
+    Supervisor,
+    _export_problem,
+    _Job,
+    _remove_tree,
+    partial_movie_dir,
+    png_frames_dir,
+)
 from tests.support import REPO, FakeManim, complete_clip, ebml_element, iso_box, video_render, write_clip
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
@@ -118,28 +130,6 @@ def test_clip_checker_reads_a_clip_again_only_when_it_changes(tmp_path: Path, mo
     assert not checker.complete(tmp_path / "x\u0000y.mp4")
 
 
-def test_progress_stops_at_an_incomplete_partial(tmp_path: Path) -> None:
-    media = tmp_path / "media"
-    folder = partial_movie_dir(media, "scene", "480p15")
-    folder.mkdir(parents=True)
-    first = write_clip(folder / "a.mp4")
-    second = folder / "b.mp4"
-    second.write_bytes(_cut_off_clip(".mp4"))
-    third = write_clip(folder / "c.mp4")
-    progress = ManimProgress(media)
-    events = progress.feed(
-        "".join(
-            f"Animation {index} : Partial movie file written in '{path}'\n"
-            for index, path in enumerate([first, second, third])
-        )
-    )
-    assert events == [(0, first)]
-    assert progress.incomplete == [second]
-    assert progress.feed("\n") == []
-    assert progress.beats == {0: first}
-    assert progress.incomplete == [second]
-
-
 def test_an_incomplete_partial_never_makes_its_beat_fresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project = _project(tmp_path / "index")
     session = Session(load_text((project / "project.json").read_text(encoding="utf-8")))
@@ -162,6 +152,8 @@ def test_an_incomplete_partial_never_makes_its_beat_fresh(tmp_path: Path, monkey
         }
         for index, (beat, path) in enumerate(zip(session.project.scene.beats, [complete, cut_off], strict=False))
     ]
+    for beat, key in zip(beats, beat_chain_keys(session.project, "preview"), strict=False):
+        beat["partialKey"] = key
     (cache / "preview-index.json").write_text(json.dumps({"output": None, "beats": beats}), encoding="utf-8")
     (cache / "rendered.json").write_text(json.dumps(session.rendered_payload()), encoding="utf-8")
     supervisor, _events = _supervisor(project, monkeypatch)
@@ -205,26 +197,6 @@ def test_an_export_that_used_an_incomplete_clip_is_not_published(
     assert "incomplete clip" in str(failed["message"])
     partials = [path for path in files if path.suffix == ".webm" and "partial_movie_files" in path.parts]
     assert [path.exists() for path in partials] == [True, False, True, True]
-    assert not (project / ".mathimator" / "exports").exists()
-
-
-def test_an_incomplete_clip_in_another_quality_folder_is_removed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
-) -> None:
-    project = _project(tmp_path / "elsewhere")
-    supervisor, events = _supervisor(project, monkeypatch)
-    folder = partial_movie_dir(supervisor.media_dir, "scene", "480p15")
-    folder.mkdir(parents=True)
-    digest = "9" * 64
-    cut_off = folder / f"{digest}.mp4"
-    cut_off.write_bytes(_cut_off_clip(".mp4"))
-    files = video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4)
-    fake_manim.plan(files, [f"Animation 0 : Using cached data (hash : {digest})"])
-    _run(supervisor, "export", "export-1")
-    failed = _terminal(events, "export-1")
-    assert failed["message"] == f"manim used an incomplete clip {cut_off.name}; it was removed, so render again"
-    assert not cut_off.exists()
-    assert all(path.is_file() for path in files)
     assert not (project / ".mathimator" / "exports").exists()
 
 
@@ -410,10 +382,10 @@ def test_a_failed_run_discards_its_cut_off_partial(
     finished = folder / ("e" * 64 + suffix)
     cut_off = folder / ("f" * 64 + suffix)
     listing = folder / "partial_movie_file_list.txt"
-    # The log parser reads only MP4 segment lines, so the WebM segment is kept for its complete container.
+    # The finished partial stays for the next render, whatever its container (D13, C14 Q3).
     fake_manim.plan(
         {finished: complete_clip(suffix), cut_off: _cut_off_clip(suffix), listing: b""},
-        [f"Animation 0 : Partial movie file written in '{finished}'", "RuntimeError: killed"],
+        ["RuntimeError: killed"],
         exit_code=1,
     )
     _run(supervisor, command, "job-1")
@@ -528,8 +500,7 @@ def test_mp4_export_publishes_from_a_project_under_a_480p15_folder(
     job.media_dir = supervisor.media_dir
     job.quality = "1080p30"
     job.captured = supervisor.session.project
-    with supervisor._doc_lock:
-        assert supervisor._publish_export_locked(job, preview) is None
+    assert _export_problem(job, preview, Path(done["path"])) == "the render is the preview"
 
 
 def _cut_off_clip(suffix: str) -> bytes:

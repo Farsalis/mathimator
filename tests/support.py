@@ -114,12 +114,18 @@ def write_clip(path: Path) -> Path:
 
 
 _FAKE_MANIM = '''\
-"""Write the files plan.json lists, print its log and exit with its code.
+"""Write the groups of files plan.json lists, print its log and exit with its code.
 
-seen.json records what the media folder held when this process started. A
-held plan writes held.txt after its files and waits for go.txt before it logs.
+seen.json records what the media folder held when this process started.
+Like Manim, it writes one file after another, so each file gets a later mtime
+than the one before. After each group but the last, and after the last too in
+a held plan, it writes held-<n>.txt and waits for go-<n>.txt. A plan with a
+child first starts a process that sleeps with this one's stdout and stderr,
+like a TeX child that outlives Manim, and writes its pid to child.txt.
 """
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -132,14 +138,23 @@ seen = {
     "files": sorted(path.relative_to(media).as_posix() for path in media.rglob("*") if path.is_file()),
 }
 (here / "seen.json").write_text(json.dumps(seen), encoding="utf-8")
-for name, data in plan["files"].items():
-    target = Path(name)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(bytes.fromhex(data))
-if plan["hold"]:
-    (here / "held.txt").write_text("", encoding="utf-8")
-    while not (here / "go.txt").exists():
-        time.sleep(0.02)
+if plan["child"]:
+    sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+    child = subprocess.Popen(sleeper, stdout=sys.stdout, stderr=sys.stderr)
+    (here / "child.txt").write_text(str(child.pid), encoding="utf-8")
+groups = plan["groups"]
+stamp = 0
+for number, group in enumerate(groups):
+    for name, data in group.items():
+        target = Path(name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(bytes.fromhex(data))
+        stamp = max(stamp + 1_000_000, time.time_ns())
+        os.utime(target, ns=(stamp, stamp))
+    if number < len(groups) - 1 or plan["hold"]:
+        (here / f"held-{number}.txt").write_text("", encoding="utf-8")
+        while not (here / f"go-{number}.txt").exists():
+            time.sleep(0.02)
 for line in plan["log"]:
     print(line, flush=True)
 sys.exit(plan["exit"])
@@ -157,15 +172,32 @@ class FakeManim:
         monkeypatch.setenv("PYTHONPATH", str(root))
 
     def plan(
-        self, files: dict[Path, bytes], log: list[str] | None = None, exit_code: int = 0, *, hold: bool = False
+        self,
+        files: dict[Path, bytes],
+        log: list[str] | None = None,
+        exit_code: int = 0,
+        *,
+        hold: bool = False,
+        later: list[dict[Path, bytes]] | None = None,
+        child: bool = False,
     ) -> None:
+        """Write ``files``, then each group of ``later`` once the hold before it is released.
+
+        ``hold`` holds after the last group as well, before the log and the
+        exit. ``child`` starts a sleeping child that shares the output pipes.
+        """
+        groups = [files, *(later or [])]
         payload = {
-            "files": {str(path): data.hex() for path, data in files.items()},
+            "groups": [{str(path): data.hex() for path, data in group.items()} for group in groups],
             "log": log or [],
             "exit": exit_code,
             "hold": hold,
+            "child": child,
         }
         (self.package / "plan.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def child_pid(self) -> int:
+        return int((self.package / "child.txt").read_text(encoding="utf-8"))
 
     def seen(self) -> dict[str, Any]:
         return json.loads((self.package / "seen.json").read_text(encoding="utf-8"))
@@ -173,14 +205,14 @@ class FakeManim:
     def ran(self) -> bool:
         return (self.package / "seen.json").exists()
 
-    def wait_until_held(self) -> None:
+    def wait_until_held(self, number: int = 0) -> None:
         deadline = time.monotonic() + 60
-        while not (self.package / "held.txt").exists():
-            assert time.monotonic() < deadline, "the fake manim never reached its hold"
+        while not (self.package / f"held-{number}.txt").exists():
+            assert time.monotonic() < deadline, f"the fake manim never reached hold {number}"
             time.sleep(0.02)
 
-    def release(self) -> None:
-        (self.package / "go.txt").write_text("", encoding="utf-8")
+    def release(self, number: int = 0) -> None:
+        (self.package / f"go-{number}.txt").write_text("", encoding="utf-8")
 
 
 def video_render(media: Path, quality: str, clips: list[bytes], suffix: str = ".mp4") -> dict[Path, bytes]:

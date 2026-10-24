@@ -114,6 +114,16 @@ def error(job_id: str | None, code: str, message: str, details: str | None = Non
     return event
 
 
+def queued(job_id: str) -> dict[str, object]:
+    """A job held because the render before it did not stop within 1 s (D19). It starts when that one ends."""
+    return {
+        "event": "queued",
+        "jobId": job_id,
+        "code": "stopping_previous",
+        "message": "Waiting for the previous render to stop.",
+    }
+
+
 def cancelled(job_id: str) -> dict[str, object]:
     """The terminal line of a cancelled job. Readers decide on the code; the message stays for older ones."""
     return error(job_id, "cancelled", "cancelled")

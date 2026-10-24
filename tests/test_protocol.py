@@ -20,6 +20,8 @@ import pytest
 from mathimator_worker import process_group
 from mathimator_worker import supervisor as supervisor_module
 from mathimator_worker.document import NOT_UTF8
+from mathimator_worker.preview_index import PreviewIndex
+from mathimator_worker.progress import ManimProgress
 from mathimator_worker.protocol import PROTOCOL_VERSION, REQUEST_FIELDS
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import NOT_A_PROJECT, Supervisor, _Job
@@ -171,8 +173,8 @@ def test_a_reply_json_cannot_hold_becomes_an_internal_error(
     supervisor = _supervisor(tmp_path / "project", monkeypatch)
     state_event = Session.state_event
 
-    def with_nan(self: Session, job_id: str, project_path: str) -> dict[str, object]:
-        event = state_event(self, job_id, project_path)
+    def with_nan(self: Session, job_id: str, project_path: str, index: PreviewIndex | None) -> dict[str, object]:
+        event = state_event(self, job_id, project_path, index)
         event["derived"] = {"total": float("nan")}
         return event
 
@@ -335,7 +337,7 @@ def test_cancel_ends_a_running_job_with_one_cancelled_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4), hold=True)
+    fake_manim.plan({}, later=[video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)])
     _send(supervisor, cmd="render_preview", id="preview-1")
     job = _current(supervisor)
     stdout.wait_for("preview-1", "started")
@@ -376,7 +378,7 @@ def test_an_automatic_cancel_ends_the_preview_with_one_cancelled_line(
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
     media = supervisor.media_dir
     clips = [complete_clip(".mp4")] * 4
-    fake_manim.plan({**video_render(media, "480p15", clips), **video_render(media, "1080p30", clips)}, hold=True)
+    fake_manim.plan({}, later=[{**video_render(media, "480p15", clips), **video_render(media, "1080p30", clips)}])
     _send(supervisor, cmd="render_preview", id="preview-1")
     preview = _current(supervisor)
     stdout.wait_for("preview-1", "started")
@@ -437,7 +439,7 @@ def test_a_cancel_whose_kill_helper_fails_still_ends_the_job(
 
     monkeypatch.setattr(supervisor_module, "terminate_process_group", helper_gone)
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4), hold=True)
+    fake_manim.plan({}, later=[video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)])
     _send(supervisor, cmd="render_preview", id="preview-1")
     job = _current(supervisor)
     stdout.wait_for("preview-1", "started")
@@ -464,7 +466,7 @@ def test_a_cancelled_job_closes_its_job_object_once(
     monkeypatch.setattr(supervisor_module, "terminate_job", terminated.append)
     monkeypatch.setattr(supervisor_module, "close_job", closed.append)
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4), hold=True)
+    fake_manim.plan({}, later=[video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)])
     _send(supervisor, cmd="render_preview", id="preview-1")
     job = _current(supervisor)
     stdout.wait_for("preview-1", "started")
@@ -508,10 +510,10 @@ def test_a_failure_after_manim_started_kills_it_and_releases_its_job(
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
     fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4), hold=True)
 
-    def broken(media_dir: Path) -> None:
+    def broken(progress: ManimProgress) -> list[tuple[int, Path]]:
         raise RuntimeError("progress bug")
 
-    monkeypatch.setattr(supervisor_module, "ManimProgress", broken)
+    monkeypatch.setattr(ManimProgress, "poll", broken)
     _send(supervisor, cmd="render_preview", id="preview-1")
     job = _current(supervisor)
     _join(job)

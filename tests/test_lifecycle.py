@@ -13,7 +13,6 @@ import shutil
 import statistics
 import subprocess
 import sys
-import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -23,7 +22,7 @@ import pytest
 
 from mathimator_worker import process_group
 from mathimator_worker import supervisor as supervisor_module
-from mathimator_worker.document import dumps_project, empty_project, load_text
+from mathimator_worker.document import beat_chain_keys, dumps_project, empty_project, load_text
 from mathimator_worker.project_folder import ProjectLock, replace
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import (
@@ -33,7 +32,6 @@ from mathimator_worker.supervisor import (
     PROJECT_UNAVAILABLE,
     Supervisor,
     _Job,
-    partial_movie_dir,
 )
 from tests.support import REPO, FakeManim, Stdout, complete_clip, video_render, write_clip
 
@@ -573,9 +571,18 @@ def test_a_stored_path_outside_the_project_is_dropped(tmp_path: Path, start: Sta
     outside = write_clip(tmp_path / "secret.mp4")
     inside = write_clip(_made(cache / "media" / "beat.mp4"))
     stored = [str(outside), "../secret.mp4", ".mathimator/cache/media/beat.mp4", "//server/share/beat.mp4"]
+    keys = beat_chain_keys(session.project, "preview")
     beats = [
-        {"id": f"beat_{number}", "index": number - 1, "partial": path, "lastGood": path, "fresh": True}
-        for number, path in enumerate(stored, start=1)
+        {
+            "id": f"beat_{number}",
+            "index": number - 1,
+            "partial": path,
+            "lastGood": path,
+            "fresh": True,
+            "partialKey": key,
+            "lastGoodKey": key,
+        }
+        for number, (path, key) in enumerate(zip(stored, keys, strict=True), start=1)
     ]
     (cache / "preview-index.json").write_text(json.dumps({"output": str(outside), "beats": beats}), encoding="utf-8")
     (cache / "rendered.json").write_text(json.dumps(session.rendered_payload()), encoding="utf-8")
@@ -583,18 +590,6 @@ def test_a_stored_path_outside_the_project_is_dropped(tmp_path: Path, start: Sta
     index = stdout.last()["index"]
     assert index["output"] is None
     assert [beat["partial"] for beat in index["beats"]] == [None, None, str(inside.resolve()), None]
-
-
-def test_a_job_of_an_earlier_binding_records_nothing(tmp_path: Path, start: Start, stdout: Stdout) -> None:
-    supervisor = start(_journey(tmp_path / "first"))
-    earlier = _prepared(supervisor)
-    # The second project's bytes are the same, so only the binding generation tells the jobs apart.
-    _send(supervisor, cmd="open_project", id="open", path=str(_journey(tmp_path / "second")))
-    clip = write_clip(_made(partial_movie_dir(supervisor.media_dir, "scene", "480p15") / f"{'a' * 64}.mp4"))
-    supervisor._note_partial(earlier, 0, clip)
-    assert _index(supervisor).beats[0].partial is None
-    supervisor._note_partial(_prepared(supervisor), 0, clip)
-    assert _index(supervisor).beats[0].partial == str(clip)
 
 
 # Clear cache (D55, D58, G5.8)
@@ -715,19 +710,6 @@ def _current(supervisor: Supervisor) -> _Job:
 def _join(job: _Job) -> None:
     job.thread.join(timeout=60)
     assert not job.thread.is_alive()
-
-
-def _prepared(supervisor: Supervisor) -> _Job:
-    """A preview job prepared under the current binding, as its thread would prepare it."""
-    job = _Job("preview-1", "preview", threading.Thread(target=lambda: None), threading.Event())
-    with supervisor._doc_lock:
-        assert supervisor._prepare_job_locked(job)
-    return job
-
-
-def _index(supervisor: Supervisor) -> Any:
-    assert supervisor._index is not None
-    return supervisor._index
 
 
 def _binding_lock(supervisor: Supervisor) -> ProjectLock:

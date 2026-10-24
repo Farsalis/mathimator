@@ -45,6 +45,7 @@ from mathimator_worker.document import (
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import assert_supported
 from mathimator_worker.jsonio import JsonValue
+from mathimator_worker.preview_index import PreviewIndex
 from mathimator_worker.templates import (
     add_axes_function,
     add_formula,
@@ -72,7 +73,6 @@ class EditResult:
 class Session:
     def __init__(self, project: Project) -> None:
         self.project = project
-        self.preview_index: dict[str, object] | None = None
         self._undo: list[Project] = []
         self._redo: list[Project] = []
         self.rendered: dict[str, Rendered] = {}
@@ -158,6 +158,18 @@ class Session:
             mismatch = len(record.keys) if len(keys) > len(record.keys) else len(keys)
         return [index >= mismatch for index in range(count)]
 
+    def output_current(self, profile: str) -> bool:
+        """Whether the last full render of ``profile`` was of the document as it is now, beat for beat (F010).
+
+        Unlike the dirty flags, a document with fewer beats than that render does not count.
+        """
+        record = self.rendered.get(profile)
+        return (
+            record is not None
+            and record.stamp == scene_stamp(self.project)
+            and record.keys == beat_cache_keys(self.project, profile)
+        )
+
     def rendered_payload(self) -> dict[str, object]:
         return {
             profile: {"stamp": record.stamp, "keys": list(record.keys)} for profile, record in self.rendered.items()
@@ -178,7 +190,8 @@ class Session:
                 continue
             self.rendered[profile] = Rendered(stamp=stamp, keys=list(keys))
 
-    def state_event(self, job_id: str, project_path: str) -> dict[str, object]:
+    def state_event(self, job_id: str, project_path: str, index: PreviewIndex | None) -> dict[str, object]:
+        """The ``state`` reply, with the preview index the supervisor keeps (C5.1)."""
         durations = [beat.duration for beat in self.project.scene.beats]
         try:
             source: str | None = generate(self.project)
@@ -198,7 +211,7 @@ class Session:
                 "canUndo": self.can_undo(),
                 "canRedo": self.can_redo(),
             },
-            "index": self.preview_index,
+            "index": None if index is None else index.to_dict(),
             # The generated scene.py, which View code shows (D25).
             "source": source,
         }

@@ -26,7 +26,6 @@ from mathimator_worker.process_group import (
     process_name,
     terminate_process_group,
 )
-from mathimator_worker.progress import ManimProgress
 from tests.support import (
     LAST_BEAT,
     OUT,
@@ -43,7 +42,6 @@ from tests.support import (
     scene_path,
     sha256_file,
     start_supervisor,
-    write_clip,
 )
 
 PREVIEW_TIMEOUT_S = 60 * 60
@@ -154,59 +152,6 @@ def test_last_beat_scene_differs_only_in_final_color() -> None:
     assert "self.wait(8)" in original
     assert 'set_color("#E07A5F")' in original
     assert "np.array([0.0, -0.4, 0.0])" in original
-
-
-def test_progress_parser_emits_written_partials_in_order(tmp_path: Path) -> None:
-    media = tmp_path / "media"
-    partial_dir = media / "videos" / "reference_60" / "480p15" / "partial_movie_files" / "MainScene"
-    partial_dir.mkdir(parents=True)
-    first = partial_dir / "aaa.mp4"
-    second = partial_dir / "bbb.mp4"
-    write_clip(first)
-    write_clip(second)
-    movie = media / "videos" / "reference_60" / "480p15" / "MainScene.mp4"
-    movie.parent.mkdir(parents=True, exist_ok=True)
-    movie.write_bytes(b"movie")
-    progress = ManimProgress(media)
-    events = progress.feed(
-        f"Animation 0 : Partial movie file written in '{first}'\n"
-        f"Animation 1 : Partial movie file written in '{second}'\n"
-        f"\nFile ready at '{movie}'\n"
-    )
-    assert [index for index, _path in events] == [0, 1]
-    assert events[0][1] == first
-    assert events[1][1] == second
-    assert progress.output_path == movie
-
-
-def test_progress_parser_resolves_cached_hash(tmp_path: Path) -> None:
-    media = tmp_path / "media"
-    partial_dir = media / "videos" / "reference_60" / "480p15" / "partial_movie_files" / "MainScene"
-    partial_dir.mkdir(parents=True)
-    digest = "ab" * 32
-    cached = partial_dir / f"{digest}.mp4"
-    write_clip(cached)
-    progress = ManimProgress(media)
-    events = progress.feed(f"Animation 0 : Using cached data (hash : {digest})\n")
-    assert events == [(0, cached)]
-
-
-def test_progress_parser_reads_manifest_order(tmp_path: Path) -> None:
-    media = tmp_path / "media"
-    partial_dir = media / "videos" / "reference_60" / "480p15" / "partial_movie_files" / "MainScene"
-    partial_dir.mkdir(parents=True)
-    files = []
-    for index in range(3):
-        path = partial_dir / f"part-{index}.mp4"
-        files.append(write_clip(path))
-    manifest = partial_dir / "partial_movie_file_list.txt"
-    body = "# This file records the segment order used by Manim.\n" + "".join(
-        f"file 'file:{path.as_posix()}'\n" for path in files
-    )
-    manifest.write_text(body, encoding="utf-8")
-    progress = ManimProgress(media)
-    events = progress.flush_manifest()
-    assert [path for _index, path in events] == files
 
 
 @pytest.mark.process_table

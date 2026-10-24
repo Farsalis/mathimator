@@ -1,0 +1,219 @@
+Manim Community v0.22.0
+
+[10/22/26 22:14:40] INFO     Writing                     tex_file_writing.py:110
+                             \special{dvisvgm:raw <g                            
+                             id='unique000'>}x\special{d                        
+                             visvgm:raw </g>} to                                
+                             C:\Users\j.logan\CursorProjec                        
+                             ts\Cloud\Mathimator\out\pha                        
+                             se5\lesson-60\.mathimator\c                        
+                             ache\media\Tex\bdbd54e1f23b                        
+                             9d16.tex                                           
+[10/22/26 22:14:41] INFO     Writing                     tex_file_writing.py:110
+                             \special{dvisvgm:raw <g                            
+                             id='unique000'>}y\special{d                        
+                             visvgm:raw </g>} to                                
+                             C:\Users\j.logan\CursorProjec                        
+                             ts\Cloud\Mathimator\out\pha                        
+                             se5\lesson-60\.mathimator\c                        
+                             ache\media\Tex\f2bbd9b948e2                        
+                             98ee.tex                                           
+[10/22/26 22:14:42] INFO     Animation 0 : Partial      scene_file_writer.py:173
+                             movie file written in                              
+                             'C:\Users\j.logan\CursorProj                         
+                             ects\Cloud\Mathimator\out\                         
+                             phase5\lesson-60\.mathimat                         
+                             or\cache\media\videos\scen                         
+                             e\480p15\partial_movie_fil                         
+                             es\MainScene\17ef5ddee5749                         
+                             28856a8edc6cea5c01a2d5b7d8                         
+                             3a6b01b81797dc359b958b186.                         
+                             mp4'                                               
+[10/22/26 22:14:43] INFO     Animation 1 : Partial      scene_file_writer.py:173
+                             movie file written in                              
+                             'C:\Users\j.logan\CursorProj                         
+                             ects\Cloud\Mathimator\out\                         
+                             phase5\lesson-60\.mathimat                         
+                             or\cache\media\videos\scen                         
+                             e\480p15\partial_movie_fil                         
+                             es\MainScene\a1fbb2709f2d4                         
+                             402fd546e27afb51211d8ce6d3                         
+                             353511a29e2f1ecb4ba335723.                         
+                             mp4'                                               
+                    INFO     Writing                     tex_file_writing.py:110
+                             \special{dvisvgm:raw <g                            
+                             id='unique000'>}y =                                
+                             \sin(x)\special{dvisvgm:raw                        
+                             </g>} to                                           
+                             C:\Users\j.logan\CursorProjec                        
+                             ts\Cloud\Mathimator\out\pha                        
+                             se5\lesson-60\.mathimator\c                        
+                             ache\media\Tex\f6465e42771c                        
+                             44d7.tex                                           
+[10/22/26 22:14:44] INFO     Animation 2 : Partial      scene_file_writer.py:173
+                             movie file written in                              
+                             'C:\Users\j.logan\CursorProj                         
+                             ects\Cloud\Mathimator\out\                         
+                             phase5\lesson-60\.mathimat                         
+                             or\cache\media\videos\scen                         
+                             e\480p15\partial_movie_fil                         
+                             es\MainScene\25a52f83ebe37                         
+                             ddff42a8a365772ac82b8f6e49                         
+                             49b18def4c59cb526723ecfe9.                         
+                             mp4'                                               
+[10/22/26 22:14:45] INFO     Animation 3 : Partial      scene_file_writer.py:173
+                             movie file written in                              
+                             'C:\Users\j.logan\CursorProj                         
+                             ects\Cloud\Mathimator\out\                         
+                             phase5\lesson-60\.mathimat                         
+                             or\cache\media\videos\scen                         
+                             e\480p15\partial_movie_fil                         
+                             es\MainScene\de4c051d5f8af                         
+                             1b956d5de2098cd34d27887dec                         
+                             d19c2170e10ce789b64aea1b6.                         
+                             mp4'                                               
+                    INFO     Animation 4 : Partial      scene_file_writer.py:173
+                             movie file written in                              
+                             'C:\Users\j.logan\CursorProj                         
+                             ects\Cloud\Mathimator\out\                         
+                             phase5\lesson-60\.mathimat                         
+                             or\cache\media\videos\scen                         
+                             e\480p15\partial_movie_fil                         
+                             es\MainScene\f1232b3cbfa1d                         
+                             4ebaea0db5d755131ebfef4ff4                         
+                             c1b8ecb4d112dd1e5a569f1fb.                         
+                             mp4'                                               
+[10/22/26 22:14:46] INFO     Animation 5 : Partial      scene_file_writer.py:173
+                             movie file written in                              
+                             'C:\Users\j.logan\CursorProj                         
+                             ects\Cloud\Mathimator\out\                         
+                             phase5\lesson-60\.mathimat                         
+                             or\cache\media\videos\scen                         
+                             e\480p15\partial_movie_fil                         
+                             es\MainScene\cdeae60337ca6                         
+                             a2622db67e3b541784192365a9                         
+                             78ac22487c2e73cd35f42b2c4.                         
+                             mp4'                                               
+                    INFO     Writing                     tex_file_writing.py:110
+                             \special{dvisvgm:raw <g                            
+                             id='unique000'>}y =                                
+                             \cos(x)\special{dvisvgm:raw                        
+                             </g>} to                                           
+                             C:\Users\j.logan\CursorProjec                        
+                             ts\Cloud\Mathimator\out\pha                        
+                             se5\lesson-60\.mathimator\c                        
+                             ache\media\Tex\91dcc28ee4a4                        
+                             4c52.tex                                           
+┌───────────────────── Traceback (most recent call last) ──────────────────────┐
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \cli\render\commands.py:122 in render                                        │
+│                                                                              │
+│   119 │   │   │   │   │   scene = SceneClass()                               │
+│   120 │   │   │   │   │   # Attach explicitly, but preserve custom Scene.ren │
+│   121 │   │   │   │   │   Manager(scene)                                     │
+│ > 122 │   │   │   │   │   scene.render()                                     │
+│   123 │   except Exception:                                                  │
+│   124 │   │   error_console.print_exception()                                │
+│   125 │   │   sys.exit(1)                                                    │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \scene\scene.py:320 in render                                                │
+│                                                                              │
+│    317 │   │   bool                                                          │
+│    318 │   │   │   Whether an interactive rerun was requested.               │
+│    319 │   │   """                                                           │
+│ >  320 │   │   return self._get_manager().render(preview)                    │
+│    321 │                                                                     │
+│    322 │   def _get_manager(self) -> Manager[Self]:                          │
+│    323 │   │   """Return this scene's manager, creating it for legacy entry  │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \manager.py:155 in render                                                    │
+│                                                                              │
+│   152 │   │                                                                  │
+│   153 │   │   self.setup()                                                   │
+│   154 │   │   try:                                                           │
+│ > 155 │   │   │   self.construct()                                           │
+│   156 │   │   except EndSceneEarlyException:                                 │
+│   157 │   │   │   # Reaching the configured animation boundary ends the scen │
+│   158 │   │   │   pass                                                       │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \manager.py:193 in construct                                                 │
+│                                                                              │
+│   190 │                                                                      │
+│   191 │   def construct(self) -> None:                                       │
+│   192 │   │   """Run the managed scene's :meth:`~manim.scene.scene.Scene.con │
+│ > 193 │   │   self.scene.construct()                                         │
+│   194 │                                                                      │
+│   195 │   def post_construct(self) -> None:                                  │
+│   196 │   │   """Finalize output after scene construction and tear-down.     │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\out\phase5\lesson-60\.mathima │
+│ tor\codegen\scene.py:38 in construct                                         │
+│                                                                              │
+│   35 │   │                                                                   │
+│   36 │   │   self.play(plot_1.animate.set_color("#E07A5F"), run_time=8)      │
+│   37 │   │   self.wait(8)                                                    │
+│ > 38 │   │   eq_2 = MathTex(r"y = \cos(x)", color="#FFFFFF")                 │
+│   39 │   │   eq_2.to_edge(UP)                                                │
+│   40 │   │   self.play(TransformMatchingTex(eq_1, eq_2), run_time=8)         │
+│   41 │   │   self.wait(6)                                                    │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \mobject\text\tex_mobject.py:306 in __init__                                 │
+│                                                                              │
+│   303 │   │   │   joined_string = self._join_tex_strings_with_unique_delimin │
+│   304 │   │   │   │   self.tex_strings, self.substrings_to_isolate           │
+│   305 │   │   │   )                                                          │
+│ > 306 │   │   │   super().__init__(                                          │
+│   307 │   │   │   │   joined_string,                                         │
+│   308 │   │   │   │   tex_environment=self.tex_environment,                  │
+│   309 │   │   │   │   tex_template=self.tex_template,                        │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \mobject\text\tex_mobject.py:81 in __init__                                  │
+│                                                                              │
+│    78 │   │   self.tex_template: TexTemplate = tex_template                  │
+│    79 │   │                                                                  │
+│    80 │   │   self.tex_string = tex_string                                   │
+│ >  81 │   │   file_name = tex_to_svg_file(                                   │
+│    82 │   │   │   self._get_modified_expression(tex_string),                 │
+│    83 │   │   │   environment=self.tex_environment,                          │
+│    84 │   │   │   tex_template=self.tex_template,                            │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \utils\tex_file_writing.py:65 in tex_to_svg_file                             │
+│                                                                              │
+│    62 │   if svg_file.exists():                                              │
+│    63 │   │   return svg_file                                                │
+│    64 │                                                                      │
+│ >  65 │   dvi_file = compile_tex(                                            │
+│    66 │   │   tex_file,                                                      │
+│    67 │   │   tex_template.tex_compiler,                                     │
+│    68 │   │   tex_template.output_format,                                    │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \utils\tex_file_writing.py:217 in compile_tex                                │
+│                                                                              │
+│   214 │   │   │   cp = subprocess.run(command, stdout=subprocess.DEVNULL)    │
+│   215 │   │   │   if cp.returncode != 0:                                     │
+│   216 │   │   │   │   log_file = tex_file.with_suffix(".log")                │
+│ > 217 │   │   │   │   print_all_tex_errors(log_file, compiler, tex_file)     │
+│   218 │   │   │   │   raise ValueError(                                      │
+│   219 │   │   │   │   │   f"{compiler} error converting to"                  │
+│   220 │   │   │   │   │   f" {output_format[1:]}. See log output above or"   │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \utils\tex_file_writing.py:287 in print_all_tex_errors                       │
+│                                                                              │
+│   284                                                                        │
+│   285 def print_all_tex_errors(log_file: Path, tex_compiler: str, tex_file:  │
+│   286 │   if not log_file.exists():                                          │
+│ > 287 │   │   raise RuntimeError(                                            │
+│   288 │   │   │   f"{tex_compiler} failed but did not produce a log file. "  │
+│   289 │   │   │   "Check your LaTeX installation.",                          │
+│   290 │   │   )                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+RuntimeError: latex failed but did not produce a log file. Check your LaTeX 
+installation.

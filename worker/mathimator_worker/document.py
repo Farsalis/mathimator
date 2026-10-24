@@ -470,6 +470,20 @@ def beat_cache_keys(project: Project, profile: str) -> list[str]:
     ]
 
 
+def beat_chain_keys(project: Project, profile: str) -> list[str]:
+    """Each beat's identity together with everything before it: the scene stamp and the keys of beats 0 to i.
+
+    A partial movie shows the scene as every earlier beat left it, so it
+    belongs to a document only while this key is unchanged (F135).
+    """
+    chain = scene_stamp(project)
+    keys: list[str] = []
+    for key in beat_cache_keys(project, profile):
+        chain = _sha256(chain + key)
+        keys.append(chain)
+    return keys
+
+
 def scene_hash(project: Project) -> str:
     """Hash of schema, generator, seed, and scene. Display names are omitted.
 

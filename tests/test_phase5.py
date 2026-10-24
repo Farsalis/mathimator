@@ -23,7 +23,6 @@ from mathimator_worker.document import (
     load_text,
 )
 from mathimator_worker.document_error import DocumentError
-from mathimator_worker.progress import ManimProgress
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import find_export_output
 from tests.support import REPO, start_supervisor, write_fake_interpreter
@@ -138,16 +137,6 @@ def test_preview_mp4_is_not_selected_for_gif_or_a_1080p_export(tmp_path: Path) -
     assert find_export_output(media, "scene", "1080p30", "mp4") == hd
     assert find_export_output(media, "scene", "1080p30", "gif") is None
     assert find_export_output(media, "scene", "480p15", "mp4") == preview
-
-
-def test_progress_parser_keeps_a_gif_ready_path(tmp_path: Path) -> None:
-    media = tmp_path / "media"
-    media.mkdir()
-    gif = tmp_path / "MainScene_ManimCE_v0.22.0.gif"
-    gif.write_bytes(b"gif")
-    progress = ManimProgress(media)
-    progress.feed(f"\nFile ready at '{gif}'\n")
-    assert progress.output_path == gif
 
 
 def test_gif_and_webm_exports_are_not_refused(tmp_path: Path) -> None:

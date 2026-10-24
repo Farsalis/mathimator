@@ -1,136 +1,164 @@
-"""Turn Manim's log into ordered partial-movie events.
+"""Follow a Manim run through the files it writes, never through its log (D13, F022).
 
-Manim 0.22 logs each finished segment as
-``Animation N : Partial movie file written in '<path>'`` and each cache hit as
-``Animation N : Using cached data (hash : <digest>)``. With one encoder in
-flight those lines are the beat order. The supervisor also reads
-``partial_movie_file_list.txt`` when the render ends, which is the segment
-order Manim concatenated. A partial counts only when its container is
-complete (``clip_check``). The first one that is not stops the beat order and
-is kept in ``incomplete``.
+Manim writes one partial movie per beat into the ``partial_movie_files/MainScene``
+folder of the job's quality, one at a time (``--max-inflight-encoders 1``), and
+reuses a partial that already exists instead of writing it again. Before Manim
+starts, ``ManimProgress`` records the size and mtime of every file in that
+quality folder. A file that is new or changed since then is one this run wrote,
+so the comparison needs no clock (G5.10) and leaves other runs' files alone
+(F030, G5.7). A partial counts as finished once one with a later mtime exists,
+and only when its container is complete (``clip_check``). When Manim exits, the
+segment list it wrote, ``partial_movie_file_list.txt``, gives the full beat
+order, including the partials it reused from its cache.
 """
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
-from pathlib import Path
+import stat
+from collections import Counter, deque
+from pathlib import Path, PurePosixPath
 
-from mathimator_worker.clip_check import clip_is_complete
+from mathimator_worker.clip_check import SEGMENT_SUFFIXES, ClipChecker
+from mathimator_worker.project_folder import remove_file
 
-_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_WRITTEN = re.compile(
-    r"Animation\s+(\d+)\s*:\s*Partial movie file written in\s+'([^']+?\.mp4)'",
-    re.IGNORECASE,
-)
-_CACHED = re.compile(
-    r"Animation\s+(\d+)\s*:\s*Using cached data\s*\(\s*hash\s*:\s*([0-9a-fA-F\s]+)\s*\)",
-    re.IGNORECASE,
-)
-_READY = re.compile(r"File ready at\s+'([^']+)'", re.IGNORECASE)
-_IMAGES = re.compile(r"\d+\s+images ready at\s+(\S.*?)\s*$", re.IGNORECASE)
-# Rich wraps the folder over several lines, but the count stays beside "images".
-_FRAMES = re.compile(r"(\d+)\s+images ready at", re.IGNORECASE)
+MANIFEST = "partial_movie_file_list.txt"
+
+# A file's size and mtime in nanoseconds.
+Stamp = tuple[int, int]
 
 
-@dataclass
 class ManimProgress:
-    media_dir: Path
-    beats: dict[int, Path] = field(default_factory=dict)
-    output_path: Path | None = None
-    frame_count: int | None = None
-    incomplete: list[Path] = field(default_factory=list)
-    _buffer: str = field(default="", init=False, repr=False)
+    """One Manim run, followed through its quality folder ``video_dir`` (C7.2).
 
-    def feed(self, text: str) -> list[tuple[int, Path]]:
-        self._buffer += text
-        self._buffer = _ANSI.sub("", self._buffer)
-        found = self._beats_in_buffer()
-        for match in _READY.finditer(self._buffer):
-            candidate = clean_logged_path(match.group(1))
-            if "partial_movie_files" in candidate.parts:
-                continue
-            self.output_path = candidate
-        for match in _IMAGES.finditer(self._buffer):
-            self.output_path = clean_logged_path(match.group(1))
-        for match in _FRAMES.finditer(self._buffer):
-            self.frame_count = int(match.group(1))
-        return self._take_in_order(found)
+    ``ready`` are the beats whose partial is current already, so Manim reuses
+    it, and ``waiting`` are the beats Manim renders, in order. ``waiting`` is
+    None when they are not known (hand-written mode); the beats then wait for
+    the segment list. Beats are handed out once each, in increasing order: a
+    beat whose predecessors are not ready yet waits for them.
+    """
 
-    def flush_manifest(self) -> list[tuple[int, Path]]:
-        manifest = newest_manifest(self.media_dir)
-        if manifest is None:
+    def __init__(self, video_dir: Path, clips: ClipChecker, ready: dict[int, Path], waiting: list[int] | None) -> None:
+        self._video_dir = video_dir
+        self._partials = video_dir / "partial_movie_files" / "MainScene"
+        self._clips = clips
+        self._before = file_stamps(video_dir, "**/*")
+        self._ready = dict(ready)
+        self._waiting = None if waiting is None else deque(waiting)
+        self._taken: set[Path] = set()
+        self._sent = 0
+
+    def poll(self) -> list[tuple[int, Path]]:
+        """The beats that are ready while Manim runs, in increasing order.
+
+        Each finished partial belongs to the next beat Manim renders. A
+        finished partial that is not complete, one more than the beats Manim
+        renders, or one that shares its mtime with another, means that order
+        no longer holds or is not known, so the remaining beats wait for the
+        segment list. The names never give the order.
+        """
+        if self._waiting is not None:
+            stamps = file_stamps(self._partials, "*")
+            written = [path for path in written_since(self._before, stamps) if path.suffix.lower() in SEGMENT_SUFFIXES]
+            mtimes = {path: stamps[path][1] for path in written}
+            # Every partial as new as the newest may still be being written.
+            newest = max(mtimes.values(), default=0)
+            finished = [path for path in written if mtimes[path] < newest and path not in self._taken]
+            ticks = Counter(mtimes[path] for path in finished)
+            for path in finished:
+                self._taken.add(path)
+                # Partials that finished in one clock tick have no known order.
+                if not self._waiting or ticks[mtimes[path]] > 1 or not self._clips.complete(path):
+                    self._waiting = None
+                    break
+                self._ready[self._waiting.popleft()] = path
+        return self._take()
+
+    def segments(self) -> list[Path]:
+        """The partials in the segment list this run wrote, in beat order, or none when it wrote none.
+
+        Only the file names are read from the list, and each is spelled inside
+        this run's folder, so no path in an event is one Manim wrote (C5).
+        """
+        manifest = self._partials / MANIFEST
+        if manifest not in self._written(self._partials, MANIFEST):
             return []
-        ordered = read_manifest(manifest)
-        found = {index: path for index, path in enumerate(ordered)}
-        return self._take_in_order(found)
+        return [self._partials / name for name in read_manifest(manifest)]
 
-    def _beats_in_buffer(self) -> dict[int, Path]:
-        found: dict[int, Path] = {}
-        for match in _WRITTEN.finditer(self._buffer):
-            found[int(match.group(1))] = clean_logged_path(match.group(2))
-        for match in _CACHED.finditer(self._buffer):
-            index = int(match.group(1))
-            if index in found:
+    def finish(self, segments: list[Path]) -> list[tuple[int, Path]]:
+        """At a clean exit: the beats not handed out yet, taken from the segment list, which holds the full order."""
+        self._ready.update(enumerate(segments))
+        return self._take()
+
+    def discard(self) -> tuple[list[Path], list[tuple[Path, OSError]]]:
+        """Delete what this run wrote that may be cut off, after a cancel or a failure (D13, G1.1).
+
+        That is an incomplete partial, which only the newest one can be, the
+        segment list and the scene movie. Complete partials stay, so the next
+        render reuses them. Return the files removed and those that could not
+        be, each with its error (G5.10).
+        """
+        removed: list[Path] = []
+        failed: list[tuple[Path, OSError]] = []
+        for path in self._written(self._video_dir, "**/*"):
+            if not self._cut_off(path):
                 continue
-            digest = re.sub(r"\s+", "", match.group(2))
-            path = find_partial(self.media_dir, digest)
-            if path is not None:
-                found[index] = path
-        return found
+            try:
+                remove_file(path)
+            except OSError as exc:
+                failed.append((path, exc))
+            else:
+                removed.append(path)
+        return removed, failed
 
-    def _take_in_order(self, found: dict[int, Path]) -> list[tuple[int, Path]]:
-        events: list[tuple[int, Path]] = []
-        while True:
-            index = len(self.beats)
-            path = found.get(index)
-            if path is None or not path.is_file():
-                break
-            if "partial_movie_files" not in path.parts:
-                break
-            if not self._complete(path):
-                break
-            self.beats[index] = path
-            events.append((index, path))
-        return events
+    def _cut_off(self, path: Path) -> bool:
+        if path.parent == self._partials:
+            if path.name == MANIFEST:
+                return True
+            return path.suffix.lower() in SEGMENT_SUFFIXES and not self._clips.complete(path)
+        return path.parent == self._video_dir and path.name.startswith("MainScene")
 
-    def _complete(self, path: Path) -> bool:
-        if path in self.incomplete:
-            return False
-        if clip_is_complete(path):
-            return True
-        self.incomplete.append(path)
-        return False
+    def _written(self, folder: Path, pattern: str) -> list[Path]:
+        return written_since(self._before, file_stamps(folder, pattern))
+
+    def _take(self) -> list[tuple[int, Path]]:
+        """The ready beats from the next one to hand out, up to the first that is not ready."""
+        beats: list[tuple[int, Path]] = []
+        while self._sent in self._ready:
+            beats.append((self._sent, self._ready[self._sent]))
+            self._sent += 1
+        return beats
 
 
-def clean_logged_path(raw: str) -> Path:
-    collapsed = raw.replace("\n", "").replace("\r", "").strip()
-    direct = Path(collapsed)
-    if direct.is_file():
-        return direct
-    squashed = Path(re.sub(r"\s+", "", collapsed))
-    if squashed.is_file():
-        return squashed
-    return direct
+def file_stamps(folder: Path, pattern: str) -> dict[Path, Stamp]:
+    """Each file below ``folder`` that matches ``pattern``, with its size and mtime. A missing folder has none."""
+    stamps: dict[Path, Stamp] = {}
+    for path in folder.glob(pattern):
+        try:
+            info = path.stat()
+        except OSError:
+            continue
+        if stat.S_ISREG(info.st_mode):
+            stamps[path] = (info.st_size, info.st_mtime_ns)
+    return stamps
 
 
-def find_partial(media_dir: Path, digest: str) -> Path | None:
-    if not digest:
-        return None
-    name = f"{digest}.mp4"
-    matches = [path for path in media_dir.rglob(name) if "partial_movie_files" in path.parts and path.is_file()]
-    if not matches:
-        return None
-    matches.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-    return matches[0]
+def written_since(before: dict[Path, Stamp], now: dict[Path, Stamp]) -> list[Path]:
+    """The files in ``now`` that ``before`` lacks or holds with another stamp, oldest first.
+
+    Manim writes one file after another, so their mtimes give the order it wrote them in.
+    """
+    written = [path for path, stamp in now.items() if before.get(path) != stamp]
+    return sorted(written, key=lambda path: (now[path][1], path.name))
 
 
-def newest_manifest(media_dir: Path) -> Path | None:
-    manifests = [path for path in media_dir.rglob("partial_movie_file_list.txt") if path.is_file()]
-    if not manifests:
-        return None
-    manifests.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-    return manifests[0]
+def read_manifest(path: Path) -> list[str]:
+    """The file names in Manim's segment list, in order. Each entry is ``file 'file:<posix path>'``."""
+    names: list[str] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        entry = line.strip()
+        if entry.startswith("file '") and entry.endswith("'") and len(entry) > 7:
+            names.append(PurePosixPath(entry[6:-1].replace("\\", "/")).name)
+    return names
 
 
 _VIDEO_SUFFIXES = {".mp4", ".gif", ".webm", ".mov"}
@@ -141,11 +169,12 @@ def discard_unfinished_partials(
     started: float,
     finished: set[Path],
 ) -> list[Path]:
-    """Delete media files a killed Manim left half-written.
+    """Delete the media a run that was cut off by a quit, a crash or a kill left behind (G1.1).
 
-    Manim treats any existing partial-movie file as a cache hit. Cancelling
-    during an animation leaves a short file, and the next render concatenates
-    it. GIF and MP4 assembly then fail while decoding that file.
+    Without a running job there is no snapshot to compare with, so this takes
+    every partial, scene movie and segment list written since ``started``, the
+    time the run marker records. Manim treats any existing partial-movie file
+    as a cache hit, and a cut-off one breaks every later render of its beat.
     """
     if not media_dir.is_dir():
         return []
@@ -159,7 +188,7 @@ def discard_unfinished_partials(
         is_scene_movie = (
             path.name.startswith("MainScene.") and suffix in _VIDEO_SUFFIXES and "partial_movie_files" not in path.parts
         )
-        is_manifest = path.name == "partial_movie_file_list.txt"
+        is_manifest = path.name == MANIFEST
         if not is_partial and not is_scene_movie and not is_manifest:
             continue
         try:
@@ -177,20 +206,3 @@ def discard_unfinished_partials(
             continue
         removed.append(path)
     return removed
-
-
-def read_manifest(path: Path) -> list[Path]:
-    ordered: list[Path] = []
-    text = path.read_text(encoding="utf-8", errors="replace")
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("file "):
-            continue
-        quoted = stripped.split("'", 2)
-        if len(quoted) < 2:
-            continue
-        raw = quoted[1]
-        if raw.startswith("file:"):
-            raw = raw[5:]
-        ordered.append(Path(raw))
-    return ordered

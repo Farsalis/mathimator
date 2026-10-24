@@ -5,8 +5,9 @@ is bound to the folder (D58). The lock, not the file, means "in use", and the
 OS drops it when the process dies. The folder's ``(st_dev, st_ino)`` tells a
 moved or replaced folder from the one that was bound (D57). project.json is
 replaced through a unique temporary file in the same folder, synced before the
-rename (C13.2 E3). Nothing here creates a project folder: folders are made
-only inside one that exists.
+rename (C13.2 E3), and a finished export is published the same way (C7.2).
+Nothing here creates a project folder: folders are made only inside one that
+exists.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import shutil
 import stat
 import sys
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 
@@ -142,7 +144,7 @@ def write_atomically(path: Path, data: bytes) -> None:
 
     On failure the temporary file is gone, ``path`` is as it was, and OSError is raised.
     """
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    temporary = _temporary(path, "tmp")
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
     try:
         with os.fdopen(fd, "wb") as handle:
@@ -156,16 +158,59 @@ def write_atomically(path: Path, data: bytes) -> None:
         raise
 
 
+def copy_atomically(source: Path, target: Path) -> None:
+    """Replace ``target`` with a copy of ``source``, a file or a folder, through a temporary copy beside it.
+
+    A folder cannot be replaced in one step, so the old one is moved aside
+    first and moved back when the copy cannot take its place. On failure the
+    temporary copy is gone, ``target`` is as it was, and OSError is raised.
+    """
+    temporary = _temporary(target, "tmp")
+    try:
+        if not source.is_dir():
+            shutil.copyfile(source, temporary)
+            replace(temporary, target)
+            return
+        shutil.copytree(source, temporary)
+        aside = _temporary(target, "old")
+        if target.exists():
+            replace(target, aside)
+        try:
+            replace(temporary, target)
+        except BaseException:
+            if aside.exists():
+                replace(aside, target)
+            raise
+        remove_quietly(aside)
+    except BaseException:
+        remove_quietly(temporary)
+        raise
+
+
 def replace(source: Path, target: Path) -> None:
     """``os.replace``, retried for about 0.5 s while Windows reports a file in use (errors 5 and 32, G5.9)."""
+    _retry_in_use(lambda: os.replace(source, target))
+
+
+def remove_file(path: Path) -> None:
+    """Delete a file that may not exist, retried for about 0.5 s while Windows reports it in use (G5.10)."""
+    _retry_in_use(lambda: path.unlink(missing_ok=True))
+
+
+def _retry_in_use(action: Callable[[], None]) -> None:
     for wait in (*_REPLACE_WAITS, None):
         try:
-            os.replace(source, target)
+            action()
             return
         except PermissionError as exc:
             if wait is None or getattr(exc, "winerror", None) not in _IN_USE_ERRORS:
                 raise
             time.sleep(wait)
+
+
+def _temporary(path: Path, kind: str) -> Path:
+    """A unique hidden name beside ``path``."""
+    return path.with_name(f".{path.name}.{secrets.token_hex(8)}.{kind}")
 
 
 def remove_quietly(path: Path | None) -> None:

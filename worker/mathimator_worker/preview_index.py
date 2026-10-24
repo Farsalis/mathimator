@@ -8,6 +8,10 @@ In memory and in ``state`` the paths are absolute. On disk they are relative
 to the project folder, so a copied or moved project still finds its own
 media (F092). A stored path that does not lie inside the project's media or
 last-good folder is dropped when the index is read (D18, F035).
+
+Each file carries the chain key of the beat it was rendered for
+(``document.beat_chain_keys``), so a file counts as fresh only for the
+document it shows (F135). The keys stay on disk and are not sent in ``state``.
 """
 
 from __future__ import annotations
@@ -27,8 +31,12 @@ class IndexBeat:
     partial: str | None
     last_good: str | None
     fresh: bool
+    # The chain keys the partial and the last good file were rendered for.
+    partial_key: str | None
+    last_good_key: str | None
 
     def to_dict(self) -> dict[str, object]:
+        """The beat as ``state`` sends it."""
         return {
             "id": self.id,
             "index": self.index,
@@ -46,14 +54,20 @@ class PreviewIndex:
     beats: list[IndexBeat]
 
     def to_dict(self) -> dict[str, object]:
+        """The index as ``state`` sends it."""
         return {
             "output": self.output,
             "beats": [beat.to_dict() for beat in self.beats],
         }
 
     def stored(self, root: Path) -> dict[str, object]:
-        """The ``preview-index.json`` form: every path relative to ``root``, with forward slashes."""
-        return self.with_paths(lambda path: _relative(path, root)).to_dict()
+        """The ``preview-index.json`` form: every path relative to ``root``, with forward slashes, and the keys."""
+        relative = self.with_paths(lambda path: _relative(path, root))
+        beats = [
+            {**beat.to_dict(), "partialKey": beat.partial_key, "lastGoodKey": beat.last_good_key}
+            for beat in relative.beats
+        ]
+        return {"output": relative.output, "beats": beats}
 
     def with_paths(self, convert: Callable[[str], str | None]) -> PreviewIndex:
         """A copy with every path passed through ``convert``. A path it maps to None is dropped."""
@@ -91,6 +105,8 @@ def load_index(raw: object, root: Path, folders: Sequence[Path]) -> PreviewIndex
                 partial=_as_string(item.get("partial")),
                 last_good=_as_string(item.get("lastGood")),
                 fresh=item.get("fresh") is True,
+                partial_key=_as_string(item.get("partialKey")),
+                last_good_key=_as_string(item.get("lastGoodKey")),
             )
         )
     stored = PreviewIndex(output=_as_string(raw.get("output")), beats=beats)
