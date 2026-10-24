@@ -11,8 +11,9 @@
 # Typst, with a SHA-256 for every download. The interpreter is PYTHON_VERSION,
 # or PYTHON_FALLBACK_VERSION only when a locked package has no wheel for it.
 # runtime.json is written last, after the bundle has passed its checks.
-# scripts/generate_notices.py writes THIRD_PARTY_NOTICES.txt afterwards, and
-# scripts/check_bundle.py checks the finished bundle before `tauri build`.
+# `tauri build` then runs scripts/generate_notices.py, which writes
+# THIRD_PARTY_NOTICES.txt, and scripts/check_bundle.py, which checks the
+# finished bundle, before it makes the installer (beforeBundleCommand).
 #
 # Windows assets:
 #   uv-x86_64-pc-windows-msvc.zip

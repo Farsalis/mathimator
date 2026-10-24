@@ -4,7 +4,9 @@ Everything in packaging/bundle ships in the installer as runtime/.
 
     check_bundle.py [BUNDLE]
 
-changes nothing. Run it right before `tauri build`. It fails unless:
+changes nothing. On Windows, `tauri build` runs it right after
+scripts/generate_notices.py, before it makes the installer
+(beforeBundleCommand in tauri.windows.conf.json). It fails unless:
 
 - runtime.json is a JSON object (contract C9.6) whose platform is this
   machine's, such as windows-x86_64. Its python, worker, sample, typst and

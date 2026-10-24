@@ -692,21 +692,23 @@ async fn switch_project(
         Left::Unsaved => Ok(open
             .await?
             .map_or(DialogReply::CANCELLED, DialogReply::Worker)),
-        Left::Saved(state) => Ok(DialogReply::Worker(after_save_as(host, state, open.await))),
+        Left::Saved(state) => Ok(after_save_as(host, state, open.await)),
         Left::Stayed(reply) => Ok(reply),
     }
 }
 
 /// What Open, Sample or New returns after a Save As in the leave warning, which already moved
-/// the project. When the command binds no other project, the UI gets the Save As state, so that
-/// it follows the move, and why the command failed becomes a notice.
+/// the project. When the command binds no other project, the UI gets the Save As state as
+/// `{savedAs}`, so that it follows the move as after Save As, and why the command failed becomes
+/// a notice.
 fn after_save_as(
     host: &dyn Host,
     saved: Value,
     opened: Result<Option<Value>, ShellError>,
-) -> Value {
+) -> DialogReply {
+    let saved = DialogReply::SavedAs { saved_as: saved };
     let reason = match opened {
-        Ok(Some(reply)) if event_of(&reply) == Some("state") => return reply,
+        Ok(Some(reply)) if event_of(&reply) == Some("state") => return DialogReply::Worker(reply),
         Ok(Some(reply)) => message_of(&reply),
         Ok(None) => return saved,
         Err(err) => err.message,
@@ -1394,6 +1396,13 @@ mod tests {
         json!({"event": "state", "jobId": "rpc-3", "projectPath": "C:\\Lessons\\waves"})
     }
 
+    /// The reply that tells the UI to follow the Save As rather than an Open.
+    fn saved_as() -> DialogReply {
+        DialogReply::SavedAs {
+            saved_as: saved_state(),
+        }
+    }
+
     #[test]
     fn a_switch_after_save_as_returns_its_own_state_or_the_saved_one_when_cancelled() {
         let opened =
@@ -1401,9 +1410,9 @@ mod tests {
         let host = Notified::default();
         assert_eq!(
             after_save_as(&host, saved_state(), Ok(Some(opened.clone()))),
-            opened
+            DialogReply::Worker(opened)
         );
-        assert_eq!(after_save_as(&host, saved_state(), Ok(None)), saved_state());
+        assert_eq!(after_save_as(&host, saved_state(), Ok(None)), saved_as());
         assert!(lock(&host.0).is_empty());
     }
 
@@ -1419,12 +1428,9 @@ mod tests {
         let host = Notified::default();
         assert_eq!(
             after_save_as(&host, saved_state(), Ok(Some(refused))),
-            saved_state()
+            saved_as()
         );
-        assert_eq!(
-            after_save_as(&host, saved_state(), Err(failed)),
-            saved_state()
-        );
+        assert_eq!(after_save_as(&host, saved_state(), Err(failed)), saved_as());
         assert_eq!(
             *lock(&host.0),
             [

@@ -14,7 +14,8 @@
 # or PYTHON_FALLBACK_VERSION only when a locked package has no wheel for it.
 # runtime.json is written last, after the bundle has passed its checks.
 # scripts/generate_notices.py writes THIRD_PARTY_NOTICES.txt afterwards, and
-# scripts/check_bundle.py checks the finished bundle before `tauri build`.
+# scripts/check_bundle.py checks the finished bundle. On Windows, `tauri
+# build` runs both before it makes the installer (beforeBundleCommand).
 
 set -euo pipefail
 

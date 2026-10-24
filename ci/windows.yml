@@ -102,21 +102,29 @@ test:windows:
       junit: reports/junit-python-windows.xml
 
 # Only Windows compiles the shell's cfg(windows) code, so Clippy runs here as
-# well as in test:rust (D37). MATHIMATOR_WIN32_TESTS=1 lets the ignored Job
-# Object reap test run. The default custom-protocol feature embeds
-# desktop/dist, which the job builds itself: build:ui runs only with the UI and
-# Rust lanes.
+# well as in test:rust (D37). cargo test runs the ignored tests too:
+# MATHIMATOR_WIN32_TESTS=1 lets the Job Object reap test run, and
+# MATHIMATOR_REAL_WORKER_TESTS=1 the tests that start the repository's Python
+# from .venv as a debug shell does: the real worker against the shell, its
+# project lock included (TR24), and the interpreter behind the venv launcher
+# (D16). The worker needs only the standard library, so a bare venv of the
+# pinned Python serves them. The default custom-protocol feature embeds
+# desktop/dist, which the job builds itself: build:ui runs only with the UI
+# and Rust lanes.
 test:rust:windows:
   extends: [.windows, .on-tags-or-demand]
   stage: test
   timeout: 1h 30m
   variables:
     MATHIMATOR_WIN32_TESTS: "1"
+    MATHIMATOR_REAL_WORKER_TESTS: "1"
   cache:
+    - !reference [.windows-uv-cache, cache]
     - !reference [.windows-cargo-cache, cache]
     - !reference [.windows-npm-cache, cache]
   script:
-    - ./ci/windows-tools.ps1 -Node -Rust
+    - ./ci/windows-tools.ps1 -Uv -Node -Rust
+    - uv venv
     - cd desktop
     - npm ci --prefer-offline --no-audit --no-fund
     - npm run build

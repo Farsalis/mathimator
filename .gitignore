@@ -2,7 +2,8 @@
 out/
 .venv
 
-# Phase 5 bundle products. The recipe is packaging/build-bundle.sh.
+# The phase 5 runtime bundle, which packaging/build-bundle.ps1 builds, by
+# itself or as the first step of ci/package-windows.ps1.
 # The directory stays in the tree: tauri.windows.conf.json maps it as a
 # resource, and the Windows build script rejects a missing path.
 packaging/bundle/*

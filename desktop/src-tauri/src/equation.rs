@@ -359,19 +359,33 @@ fn is_space(byte: u8) -> bool {
 }
 
 /// `<project>/.mathimator/equation` (D52). It is made inside the project folder, never the folder
-/// itself, so a project moved or deleted meanwhile is not brought back (G5.3).
+/// itself, so a project moved or deleted meanwhile is not brought back (G5.3). A link in place of
+/// either folder is refused, as the worker refuses to bind one (O10), so that no glyph is written
+/// outside the project.
 fn equation_folder(project: &Path) -> Result<PathBuf, String> {
     let mut folder = project.to_owned();
     for name in [".mathimator", "equation"] {
         folder.push(name);
         match fs::create_dir(&folder) {
             Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists && is_link(&folder) => {
+                return Err(format!(
+                    "Mathimator cannot use {}: it is a link to another location, and Mathimator \
+                     keeps its files inside the project. Delete the link and try again.",
+                    folder.display()
+                ));
+            }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists && folder.is_dir() => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Err(MOVED.to_owned()),
             Err(err) => return Err(format!("Could not create {}: {err}", folder.display())),
         }
     }
     Ok(folder)
+}
+
+/// Whether `path` is a symbolic link or, on Windows, a junction.
+fn is_link(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
 /// `typst compile` of `<name>.typ` to `<name>.svg` in `folder`, with no console window. Typst
@@ -791,6 +805,49 @@ mod tests {
         let folder = project.join(".mathimator").join("equation");
         assert_eq!(made, Ok(folder.clone()));
         assert_eq!(again, Ok(folder));
+    }
+
+    /// Makes `link` a link to the folder `target`: a junction on Windows, which any account may
+    /// make, and a symbolic link elsewhere.
+    fn link_folder(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            let made = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .args([link, target])
+                .stdout(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(made.success(), "mklink /J {}", link.display());
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[test]
+    fn a_link_in_place_of_an_equation_folder_is_refused() {
+        let scratch = scratch("equation-link");
+        let elsewhere = scratch.join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        let projects = [scratch.join("state"), scratch.join("equation")];
+        let state = projects[0].join(".mathimator");
+        let equation = projects[1].join(".mathimator").join("equation");
+        for link in [&state, &equation] {
+            fs::create_dir_all(link.parent().unwrap()).unwrap();
+            link_folder(link, &elsewhere);
+        }
+        let refused = projects.map(|project| equation_folder(&project));
+        let written = names_in(&elsewhere);
+        let _ = fs::remove_dir_all(&scratch);
+        let refusal = |link: &Path| {
+            Err(format!(
+                "Mathimator cannot use {}: it is a link to another location, and Mathimator keeps \
+                 its files inside the project. Delete the link and try again.",
+                link.display()
+            ))
+        };
+        assert_eq!(refused, [refusal(&state), refusal(&equation)]);
+        assert!(written.is_empty(), "{written:?}");
     }
 
     #[test]

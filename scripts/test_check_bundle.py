@@ -306,6 +306,26 @@ def test_both_build_scripts_compile_the_bundle_this_way() -> None:
     assert shell_line in (packaging / "build-bundle.sh").read_text(encoding="utf-8")
 
 
+def test_the_installer_build_writes_the_notices_then_checks_the_bundle_it_ships() -> None:
+    """`tauri build` runs both scripts with the bundled interpreter before it makes the installer (F061)."""
+    repo = check_bundle.REPO
+    shell = repo / "desktop" / "src-tauri"
+    config = json.loads((shell / "tauri.windows.conf.json").read_text(encoding="utf-8"))
+    hook = config["build"]["beforeBundleCommand"]
+    # Tauri takes the hook's folder from desktop/src-tauri, and cmd.exe runs it.
+    assert (shell / hook["cwd"]).resolve() == repo
+    python = r"packaging\bundle\python\python.exe"
+    assert hook["script"].split(" && ") == [
+        rf"{python} -I -B scripts\generate_notices.py",
+        rf"{python} -I -B scripts\check_bundle.py",
+    ]
+    # The interpreter that build-bundle.ps1 names in runtime.json, in the folder that both scripts default to and
+    # the installer ships.
+    assert '    python = "python/python.exe"\n' in (repo / "packaging" / "build-bundle.ps1").read_text(encoding="utf-8")
+    (shipped,) = config["bundle"]["resources"]
+    assert (shell / shipped).resolve() == repo / "packaging" / "bundle"
+
+
 def test_unexpected_entries_and_stray_bytecode_fail_until_pruned(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     bundle = make_bundle(tmp_path, repo)

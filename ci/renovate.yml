@@ -1,8 +1,9 @@
 # Renovate (D76): a pipeline schedule with the variable SCHEDULE_KIND=renovate
 # runs this job and nothing else (.gitlab-ci.yml). It opens dependency update
 # merge requests by the rules in renovate.json5. It needs two masked CI/CD
-# variables: RENOVATE_TOKEN, a project access token with the api and
-# write_repository scopes, and GITHUB_COM_TOKEN, a read-only GitHub token for
+# variables: RENOVATE_TOKEN, a personal access token of a bot user with the
+# api, read_user and write_repository scopes (gitlab.com's Free tier has no
+# project access tokens), and GITHUB_COM_TOKEN, a read-only GitHub token for
 # the release lookups on github.com (the pre-commit hooks) and the changelogs.
 
 renovate:

@@ -1,4 +1,10 @@
 {
+  "build": {
+    "beforeBundleCommand": {
+      "script": "packaging\\bundle\\python\\python.exe -I -B scripts\\generate_notices.py && packaging\\bundle\\python\\python.exe -I -B scripts\\check_bundle.py",
+      "cwd": "../.."
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],

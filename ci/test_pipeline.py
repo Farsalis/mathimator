@@ -15,6 +15,7 @@ import configparser
 import functools
 import re
 import subprocess
+import sys
 import tomllib
 from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
@@ -345,6 +346,29 @@ def test_pre_commit_skips_name_hooks() -> None:
     assert skipped <= hooks, f"SKIP names no hook: {sorted(skipped - hooks)}"
 
 
+def test_the_mypy_hooks_install_what_the_checked_files_import() -> None:
+    # A hook runs mypy in an environment of its own, which holds its
+    # additional_dependencies alone: mypy, and each package that a file mypy
+    # checks imports, at the dev group's pins. CI skips these hooks, so
+    # nothing else would notice a missing one.
+    config = yaml.safe_load((REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    project = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    pins = {re.split(r"[^\w-]", pin, maxsplit=1)[0]: pin for pin in project["dependency-groups"]["dev"]}
+    checked = [path for folder in project["tool"]["mypy"]["files"] for path in (REPO / folder).rglob("*.py")]
+    imported = {
+        name
+        for path in checked
+        for name in re.findall(r"^\s*(?:import|from) (\w+)", path.read_text(encoding="utf-8"), re.MULTILINE)
+    }
+    local = {path.stem for path in checked} | {path.parent.name for path in checked}
+    packages = {"mypy", *(imported - set(sys.stdlib_module_names) - local)}
+    assert "pytest" in packages
+    hooks = [hook for repo in config["repos"] for hook in repo["hooks"] if hook.get("entry") == "mypy"]
+    assert [hook["id"] for hook in hooks] == ["mypy", "mypy-linux"]
+    for hook in hooks:
+        assert sorted(hook["additional_dependencies"]) == sorted(pins[name] for name in packages), hook["id"]
+
+
 def test_toolchain_images_match_their_pins() -> None:
     toolchain = (REPO / "desktop" / "src-tauri" / "rust-toolchain.toml").read_text(encoding="utf-8")
     assert _image_version(".uv", "ghcr.io/astral-sh/uv") == _pins()["UV_VERSION"]
@@ -502,6 +526,24 @@ def test_the_windows_fast_lane_runs_pytest_in_a_short_folder() -> None:
     # its parent, so the folder sits at the drive root.
     (pytest,) = [line for line in _resolve("test:windows")["script"] if line.startswith("uv run pytest ")]
     assert re.search(r" --basetemp=[A-Z]:\\\w+ ", pytest)
+
+
+def test_the_windows_rust_lane_runs_every_ignored_shell_test() -> None:
+    # cargo test --include-ignored runs the shell's ignored tests, and each
+    # returns early unless the variable its reason names is 1, so every
+    # reason names one. Those that start the repository's Python find it in
+    # .venv, as a debug shell does.
+    source = "\n".join(path.read_text(encoding="utf-8") for path in (REPO / "desktop/src-tauri/src").rglob("*.rs"))
+    reasons = re.findall(r'#\[ignore(?: = "([^"]*)")?', source)
+    assert all(re.search(r"\bneeds \w+=1\b", reason) for reason in reasons), reasons
+    gates = {gate for reason in reasons for gate in re.findall(r"\bneeds (\w+)=1\b", reason)}
+    assert "MATHIMATOR_REAL_WORKER_TESTS" in gates
+    job = _resolve("test:rust:windows")
+    assert {gate: job["variables"].get(gate) for gate in gates} == dict.fromkeys(gates, "1")
+    script = job["script"]
+    (tools,) = [line for line in script if line.startswith("./ci/windows-tools.ps1 ")]
+    assert "-Uv" in tools.split()
+    assert script.index(tools) < script.index("uv venv") < script.index("cargo test --locked -- --include-ignored")
 
 
 def test_the_ui_lane_reports_its_coverage() -> None:

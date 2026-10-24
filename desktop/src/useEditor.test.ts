@@ -247,7 +247,7 @@ describe("useEditor worker status", () => {
   });
 
   it("shows the unavailable view when a command fails with worker_unavailable", async () => {
-    const reason = "The previous worker did not stop. Restart Mathimator.";
+    const reason = "The previous worker did not stop. Choose Retry to try again, or restart Mathimator.";
     script({
       get_state: [stateReply("C:/first")],
       undo_document: [new Rejection({ code: "worker_unavailable", message: reason })],
@@ -526,6 +526,31 @@ describe("useEditor projects", () => {
     await afterDebounce();
     expect(callsOf("render_preview")).toBe(0);
   });
+
+  it.each([
+    ["onOpen", "open_project_dialog"],
+    ["onOpenSample", "open_sample"],
+    ["onNew", "new_project"],
+  ] as const)(
+    "follows a Save As in the leave warning of %s that opened no other project (O9)",
+    async (action, command) => {
+      script({ get_state: [stateReply("C:/temp")], [command]: [{ savedAs: stateReply("C:/kept") }] });
+      const result = await started();
+      act(() => {
+        result.current.select({ kind: "object", id: "plot_1" });
+        result.current.setPlayhead(1);
+        result.current.onViewCode();
+      });
+      await act(() => result.current[action]());
+      expect(result.current.state?.projectPath).toBe("C:/kept");
+      expect(result.current.selection).toEqual({ kind: "object", id: "plot_1" });
+      expect(result.current.playhead).toBe(1);
+      expect(result.current.panel).toBe("code");
+      expect(result.current.error).toBeNull();
+      await afterDebounce();
+      expect(callsOf("render_preview")).toBe(0);
+    },
+  );
 
   it("ignores a beat_ready of the preview that Save As overtook (C9.2, F135)", async () => {
     script({

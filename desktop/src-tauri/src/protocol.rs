@@ -77,6 +77,13 @@ pub enum DialogReply {
     Written {
         path: String,
     },
+    /// `{savedAs: state}`: Open, Sample or New saved the project in the leave warning, then bound
+    /// no other project. The `state` is the Save As reply, so the UI follows the move as after
+    /// Save As (O9).
+    SavedAs {
+        #[serde(rename = "savedAs")]
+        saved_as: Value,
+    },
 }
 
 impl DialogReply {
@@ -218,11 +225,16 @@ mod tests {
     #[test]
     fn dialog_replies_serialize_as_the_contract_shapes() {
         let refused = json!({"event": "rejected", "jobId": "rpc-3", "code": "lock_failed"});
+        let saved =
+            json!({"event": "state", "jobId": "rpc-4", "projectPath": "C:\\Lessons\\waves"});
         let replies = [
             DialogReply::Worker(refused.clone()),
             DialogReply::CANCELLED,
             DialogReply::Written {
                 path: "C:\\Lessons\\scene.py".to_owned(),
+            },
+            DialogReply::SavedAs {
+                saved_as: saved.clone(),
             },
         ]
         .map(|reply| serde_json::to_value(reply).unwrap());
@@ -232,6 +244,7 @@ mod tests {
                 refused,
                 json!({"cancelled": true}),
                 json!({"path": "C:\\Lessons\\scene.py"}),
+                json!({"savedAs": saved}),
             ]
         );
     }

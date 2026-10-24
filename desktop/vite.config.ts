@@ -37,7 +37,8 @@ export default defineConfig({
     include: ["src/**/*.test.{ts,tsx}"],
     // Where the junit reporter of `npm run test:ci` writes, for the CI test report.
     outputFile: { junit: "reports/junit-vitest.xml" },
-    // Coverage is reported, never enforced (D78): the text total for the badge, Cobertura for merge request diffs.
+    // Coverage is reported, never enforced (D78): the text total, which the merge request shows, and Cobertura for
+    // its diff.
     coverage: {
       provider: "v8",
       include: ["src/**/*.{ts,tsx}"],

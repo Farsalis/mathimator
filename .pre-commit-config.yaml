@@ -38,15 +38,16 @@ repos:
 
   # mypy reads its files and its win32 platform from pyproject.toml; the second
   # pass checks the POSIX branches, as CI does. The worker and scripts/ are
-  # stdlib-only, so the isolated hook environment needs only mypy. Keep the
-  # pin equal to the mypy pin in the dev dependency group.
+  # stdlib-only, but the scripts' tests import pytest, so the isolated hook
+  # environment needs mypy and pytest. Keep both pins equal to the dev
+  # dependency group's (ci/test_pipeline.py checks them).
   - repo: local
     hooks:
       - id: mypy
         name: mypy --strict (win32)
         entry: mypy
         language: python
-        additional_dependencies: [mypy==2.4.0]
+        additional_dependencies: [mypy==2.4.0, pytest==9.1.1]
         files: ^(worker/|scripts/|pyproject\.toml$)
         pass_filenames: false
       - id: mypy-linux
@@ -54,7 +55,7 @@ repos:
         entry: mypy
         args: [--platform, linux]
         language: python
-        additional_dependencies: [mypy==2.4.0]
+        additional_dependencies: [mypy==2.4.0, pytest==9.1.1]
         files: ^(worker/|scripts/|pyproject\.toml$)
         pass_filenames: false
 

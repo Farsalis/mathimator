@@ -3,10 +3,12 @@
     generate_notices.py [BUNDLE] [--output FILE]
 
 BUNDLE defaults to packaging/bundle and FILE to BUNDLE/THIRD_PARTY_NOTICES.txt,
-which the installer ships as runtime/THIRD_PARTY_NOTICES.txt (D75). Run it
-after the bundle is built and before `tauri build`: scripts/check_bundle.py
-fails until it has run. The bundle build scripts delete the file, so a rebuilt
-bundle never ships the notices of an older one.
+which the installer ships as runtime/THIRD_PARTY_NOTICES.txt (D75). On
+Windows, `tauri build` runs it on the built bundle, then
+scripts/check_bundle.py, which fails until it has run, before it makes the
+installer (beforeBundleCommand in tauri.windows.conf.json). The bundle build
+scripts delete the file, so a rebuilt bundle never ships the notices of an
+older one.
 
 The notices list, each with its version and declared licence:
 

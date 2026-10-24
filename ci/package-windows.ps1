@@ -9,7 +9,8 @@
 #      THIRD_PARTY_NOTICES.txt (D75), then scripts/check_bundle.py, which
 #      fails on a bundle that is stale, incomplete or for another platform
 #      (D30, D64).
-#   4. tauri build makes the installer.
+#   4. tauri build makes the installer. It runs both scripts again first, as
+#      its beforeBundleCommand (tauri.windows.conf.json).
 #   5. out/package receives the installer, THIRD_PARTY_NOTICES.txt and
 #      SHA256SUMS for both.
 #
@@ -56,7 +57,10 @@ Invoke-In $Desktop "npm" @("ci", "--prefer-offline", "--no-audit", "--no-fund")
 # rustup reads the toolchain from desktop/src-tauri, so cargo runs there.
 Invoke-In $ShellCrate "cargo" @("fetch", "--locked")
 
-# -I -B: the scripts read no PYTHON* variable and leave no bytecode behind.
+# tauri build runs these two again, after its cargo build, as its
+# beforeBundleCommand. Running them here as well is deliberate: a bundle that
+# would fail the check fails in seconds rather than after that build. -I -B:
+# the scripts read no PYTHON* variable and leave no bytecode behind.
 $runtime = Get-Content -Raw (Join-Path $Bundle "runtime.json") | ConvertFrom-Json
 $python = Join-Path $Bundle $runtime.python
 Invoke-Checked $python @("-I", "-B", (Join-Path $Root "scripts\generate_notices.py"), $Bundle)

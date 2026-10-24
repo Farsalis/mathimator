@@ -20,7 +20,7 @@ import {
   type Handshake,
   type JobFailure,
 } from "./jobSession";
-import { asString, fieldsOf } from "./parse";
+import { asString, fieldsOf, isRecord } from "./parse";
 import { patchBeat } from "./playback";
 import {
   parseAppStatus,
@@ -257,6 +257,17 @@ export function useEditor() {
     setError(null);
     setPanel("inspector");
     schedulePreview();
+  }
+
+  /**
+   * Applies the state of Save As (D29, O9). It names the new folder but holds the same document, so it runs no Open
+   * reset: the selection, the playhead, the open panel and the note stay, and the export path names the export's copy.
+   * The current preview goes stale all the same, as for any state of another folder (C9.2).
+   */
+  function applySavedAs(next: EditorState): void {
+    publish(savedAs(jobs.current, applied.current?.projectPath ?? next.projectPath, next.projectPath));
+    adopt(next);
+    setError(null);
   }
 
   /**
@@ -562,30 +573,26 @@ export function useEditor() {
 
   /**
    * Open, Sample and New. The shell first offers to save a touched temp project (C14 Q2); a cancel there, or in the
-   * folder picker, returns null and changes nothing.
+   * folder picker, returns null and changes nothing. When the project was saved there but no other project opened,
+   * the shell returns the Save As state as `{savedAs}`, and the UI follows the move as after Save As.
    */
   function openProject(command: OpenCommand): Promise<void> {
     return queue.enqueue(async () => {
       const reply = await invokeWorker(command);
-      if (reply !== null) {
+      if (isRecord(reply) && "savedAs" in reply) {
+        applySavedAs(parseEditorState(reply.savedAs));
+      } else if (reply !== null) {
         applyOpened(parseEditorState(reply));
       }
     });
   }
 
-  /**
-   * Save As (D29, O9). The reply names the new folder but holds the same document, so it runs no Open reset: the
-   * selection, the playhead, the open panel and the note stay, and the export path names the export's copy. The
-   * current preview goes stale all the same, as for any state of another folder (C9.2).
-   */
+  /** Save As (D29). A cancel in the folder picker returns null and changes nothing. */
   function onSaveAs(): Promise<void> {
     return queue.enqueue(async () => {
       const reply = await invokeWorker("save_project_as_dialog");
       if (reply !== null) {
-        const next = parseEditorState(reply);
-        publish(savedAs(jobs.current, applied.current?.projectPath ?? next.projectPath, next.projectPath));
-        adopt(next);
-        setError(null);
+        applySavedAs(parseEditorState(reply));
       }
     });
   }
