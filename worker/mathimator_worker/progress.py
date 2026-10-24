@@ -4,12 +4,15 @@ Manim writes one partial movie per beat into the ``partial_movie_files/MainScene
 folder of the job's quality, one at a time (``--max-inflight-encoders 1``), and
 reuses a partial that already exists instead of writing it again. Before Manim
 starts, ``ManimProgress`` records the size and mtime of every file in that
-quality folder. A file that is new or changed since then is one this run wrote,
-so the comparison needs no clock (G5.10) and leaves other runs' files alone
-(F030, G5.7). A partial counts as finished once one with a later mtime exists,
-and only when its container is complete (``clip_check``). When Manim exits, the
-segment list it wrote, ``partial_movie_file_list.txt``, gives the full beat
-order, including the partials it reused from its cache.
+quality folder and in its partials folder (``run_files``). A file that is new
+or changed since then is one this run wrote, so the comparison needs no clock
+(G5.10) and leaves other runs' files alone (F030, G5.7). A partial counts as
+finished once one with a later mtime exists, and only when its container is
+complete (``clip_check``). When Manim exits, the segment list it wrote,
+``partial_movie_file_list.txt``, gives the full beat order, including the
+partials it reused from its cache. The run marker keeps the same record, so a
+bind after a crash discards what the cut-off run wrote by the same comparison
+(``discard_written``).
 """
 
 from __future__ import annotations
@@ -22,9 +25,13 @@ from mathimator_worker.clip_check import SEGMENT_SUFFIXES, ClipChecker
 from mathimator_worker.project_folder import remove_file
 
 MANIFEST = "partial_movie_file_list.txt"
+# The folder of a quality folder that Manim writes the partial movies of MainScene into.
+_PARTIALS = Path("partial_movie_files", "MainScene")
 
 # A file's size and mtime in nanoseconds.
 Stamp = tuple[int, int]
+# The files a discard removed, and those it could not remove, each with its error.
+Discarded = tuple[list[Path], list[tuple[Path, OSError]]]
 
 
 class ManimProgress:
@@ -39,9 +46,9 @@ class ManimProgress:
 
     def __init__(self, video_dir: Path, clips: ClipChecker, ready: dict[int, Path], waiting: list[int] | None) -> None:
         self._video_dir = video_dir
-        self._partials = video_dir / "partial_movie_files" / "MainScene"
+        self._partials = video_dir / _PARTIALS
         self._clips = clips
-        self._before = file_stamps(video_dir, "**/*")
+        self._before = run_files(video_dir)
         self._ready = dict(ready)
         self._waiting = None if waiting is None else deque(waiting)
         self._taken: set[Path] = set()
@@ -89,33 +96,13 @@ class ManimProgress:
         self._ready.update(enumerate(segments))
         return self._take()
 
-    def discard(self) -> tuple[list[Path], list[tuple[Path, OSError]]]:
-        """Delete what this run wrote that may be cut off, after a cancel or a failure (D13, G1.1).
+    def snapshot(self) -> dict[str, list[int]]:
+        """What the quality folder held before Manim started, as the run marker keeps it (``stamps_record``)."""
+        return stamps_record(self._video_dir, self._before)
 
-        That is an incomplete partial, which only the newest one can be, the
-        segment list and the scene movie. Complete partials stay, so the next
-        render reuses them. Return the files removed and those that could not
-        be, each with its error (G5.10).
-        """
-        removed: list[Path] = []
-        failed: list[tuple[Path, OSError]] = []
-        for path in self._written(self._video_dir, "**/*"):
-            if not self._cut_off(path):
-                continue
-            try:
-                remove_file(path)
-            except OSError as exc:
-                failed.append((path, exc))
-            else:
-                removed.append(path)
-        return removed, failed
-
-    def _cut_off(self, path: Path) -> bool:
-        if path.parent == self._partials:
-            if path.name == MANIFEST:
-                return True
-            return path.suffix.lower() in SEGMENT_SUFFIXES and not self._clips.complete(path)
-        return path.parent == self._video_dir and path.name.startswith("MainScene")
+    def discard(self) -> Discarded:
+        """Delete what this run wrote that may be cut off, after a cancel or a failure (``discard_written``)."""
+        return discard_written(self._video_dir, self._before, self._clips)
 
     def _written(self, folder: Path, pattern: str) -> list[Path]:
         return written_since(self._before, file_stamps(folder, pattern))
@@ -151,6 +138,72 @@ def written_since(before: dict[Path, Stamp], now: dict[Path, Stamp]) -> list[Pat
     return sorted(written, key=lambda path: (now[path][1], path.name))
 
 
+def run_files(video_dir: Path) -> dict[Path, Stamp]:
+    """The files in the quality folder ``video_dir`` and in its partials folder, the two a run writes into."""
+    return file_stamps(video_dir, "*") | file_stamps(video_dir / _PARTIALS, "*")
+
+
+def discard_written(video_dir: Path, before: dict[Path, Stamp], clips: ClipChecker) -> Discarded:
+    """Delete what an unfinished run wrote into its quality folder ``video_dir`` that may be cut off (D13, G1.1).
+
+    The run wrote the files that ``before``, what ``run_files`` listed when it
+    started, lacks or holds with another stamp. What may be cut off is an
+    incomplete partial, which only the newest one can be, the segment list
+    and the scene movie. Complete partials stay, so the next render reuses
+    them. Nothing is deleted through a link from ``video_dir`` down, so a
+    link planted in the quality folder cannot point a discard outside the
+    project (O10). Return the files removed and those that could not be
+    (G5.10).
+    """
+    removed: list[Path] = []
+    failed: list[tuple[Path, OSError]] = []
+    for path in written_since(before, run_files(video_dir)):
+        if _through_link(path.parent, video_dir) or not _cut_off(path, video_dir, clips):
+            continue
+        try:
+            remove_file(path)
+        except OSError as exc:
+            failed.append((path, exc))
+        else:
+            removed.append(path)
+    return removed, failed
+
+
+def _cut_off(path: Path, video_dir: Path, clips: ClipChecker) -> bool:
+    if path.parent == video_dir / _PARTIALS:
+        if path.name == MANIFEST:
+            return True
+        return path.suffix.lower() in SEGMENT_SUFFIXES and not clips.complete(path)
+    return path.parent == video_dir and path.name.startswith("MainScene")
+
+
+def _through_link(folder: Path, video_dir: Path) -> bool:
+    """Whether a folder from ``video_dir`` down to ``folder``, both included, is a symbolic link or a junction."""
+    return any(
+        path.is_symlink() or path.is_junction() for path in (folder, *folder.parents) if path.is_relative_to(video_dir)
+    )
+
+
+def stamps_record(folder: Path, stamps: dict[Path, Stamp]) -> dict[str, list[int]]:
+    """``stamps`` as JSON, each path relative to ``folder`` in POSIX form, so a moved project still reads it."""
+    return {path.relative_to(folder).as_posix(): list(stamp) for path, stamp in stamps.items()}
+
+
+def read_stamps(folder: Path, record: object) -> dict[Path, Stamp] | None:
+    """The stamps in a ``stamps_record`` of ``folder``, or None when ``record`` is not one.
+
+    The paths are only compared with the files found in ``folder``, never opened or deleted.
+    """
+    if not isinstance(record, dict):
+        return None
+    stamps: dict[Path, Stamp] = {}
+    for name, stamp in record.items():
+        if not (isinstance(stamp, list) and len(stamp) == 2 and all(isinstance(part, int) for part in stamp)):
+            return None
+        stamps[folder / name] = (stamp[0], stamp[1])
+    return stamps
+
+
 def read_manifest(path: Path) -> list[str]:
     """The file names in Manim's segment list, in order.
 
@@ -179,42 +232,3 @@ def _unquote(token: str) -> str:
         else:
             characters.append(character)
     return "".join(characters)
-
-
-_VIDEO_SUFFIXES = {".mp4", ".gif", ".webm", ".mov"}
-
-
-def discard_unfinished_partials(media_dir: Path, started: float) -> list[Path]:
-    """Delete the media a run that was cut off by a quit, a crash or a kill left behind (G1.1).
-
-    Without a running job there is no snapshot to compare with, so this takes
-    every partial, scene movie and segment list written since ``started``, the
-    time the run marker records. Manim treats any existing partial-movie file
-    as a cache hit, and a cut-off one breaks every later render of its beat.
-    """
-    if not media_dir.is_dir():
-        return []
-    removed: list[Path] = []
-    for path in media_dir.rglob("*"):
-        if not path.is_file():
-            continue
-        suffix = path.suffix.lower()
-        is_partial = "partial_movie_files" in path.parts and suffix in _VIDEO_SUFFIXES
-        is_scene_movie = (
-            path.name.startswith("MainScene.") and suffix in _VIDEO_SUFFIXES and "partial_movie_files" not in path.parts
-        )
-        is_manifest = path.name == MANIFEST
-        if not is_partial and not is_scene_movie and not is_manifest:
-            continue
-        try:
-            modified = path.stat().st_mtime
-        except OSError:
-            continue
-        if modified < started - 1:
-            continue
-        try:
-            path.unlink()
-        except OSError:
-            continue
-        removed.append(path)
-    return removed

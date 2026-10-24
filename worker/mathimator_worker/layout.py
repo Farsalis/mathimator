@@ -77,9 +77,14 @@ class ProjectLayout:
         """The folder the export of ``project`` is published to: ``exports/<key16>``."""
         return self.exports_dir / export_folder_name(project)
 
+    @property
+    def videos_dir(self) -> Path:
+        """The folder of Manim's quality folders."""
+        return self.media_dir / "videos" / self.scene_path.stem
+
     def video_dir(self, quality: str) -> Path:
         """The quality folder Manim writes a render's partial movies and its movie into."""
-        return self.media_dir / "videos" / self.scene_path.stem / quality
+        return self.videos_dir / quality
 
     def partial_movie_dir(self, quality: str) -> Path:
         return self.video_dir(quality) / "partial_movie_files" / SCENE_CLASS

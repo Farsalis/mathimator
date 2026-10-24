@@ -10,6 +10,7 @@ import contextlib
 import json
 import os
 import shutil
+import stat
 import statistics
 import subprocess
 import sys
@@ -629,6 +630,27 @@ def test_clear_cache_reports_files_another_program_holds(tmp_path: Path, start: 
     assert (held.exists(), loose.exists()) == (True, False)
     assert (supervisor.project / ".mathimator" / "lock").is_file()
     assert f"could not remove {held}" in supervisor.log_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows refuses to delete a read-only file")
+def test_clear_cache_removes_read_only_files(tmp_path: Path, start: Start, stdout: Stdout) -> None:
+    supervisor = start(_journey(tmp_path / "journey"), log=False)
+    state = supervisor.project / ".mathimator"
+    # A copied or shared project folder can carry the read-only attribute (S26).
+    read_only = [
+        _made(state / "codegen" / "__pycache__" / "scene.cpython-314.pyc"),
+        _made(state / "cache" / "media" / "videos" / "scene" / "480p15" / "MainScene.mp4"),
+        _made(state / "logs" / "worker.log.1"),
+    ]
+    for path in read_only:
+        path.write_bytes(b"old")
+        path.chmod(stat.S_IREAD)
+    (state / "codegen").chmod(stat.S_IREAD)
+    _send(supervisor, cmd="clear_cache", id="clear")
+    cleared = stdout.last()
+    assert (cleared["event"], "warning" in cleared) == ("state", False)
+    assert [path.exists() for path in read_only] == [False] * len(read_only)
+    assert not (state / "codegen").exists()
 
 
 # The worker log (D55)

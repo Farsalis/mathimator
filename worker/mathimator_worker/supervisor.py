@@ -40,9 +40,10 @@ from __future__ import annotations
 
 import contextlib
 import json
-import math
 import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -74,7 +75,15 @@ from mathimator_worker.layout import ProjectLayout
 from mathimator_worker.manim_paths import manim_root
 from mathimator_worker.preview_index import PreviewIndex, load_index, rebuild_index
 from mathimator_worker.process_group import terminate_process_group, warm_process_table
-from mathimator_worker.progress import ManimProgress, discard_unfinished_partials, file_stamps, written_since
+from mathimator_worker.progress import (
+    Discarded,
+    ManimProgress,
+    Stamp,
+    discard_written,
+    file_stamps,
+    read_stamps,
+    written_since,
+)
 from mathimator_worker.project_folder import (
     ProjectLock,
     ProjectLocked,
@@ -119,6 +128,8 @@ _POLL_SECONDS = 0.1
 _DRAIN_SECONDS = 0.5
 # The output lines a failure keeps as its details (D23).
 _TAIL_LINES = 80
+# The name of a quality folder Manim renders into: <height>p<fps>.
+_QUALITY = re.compile(r"\d+p\d+")
 
 
 @dataclass
@@ -294,20 +305,29 @@ class Supervisor:
                 self._binding.lock.release()
 
     def _sweep_interrupted_run(self) -> None:
-        """Remove what a Manim run cut off by a quit, a crash or a kill left behind (G1.1)."""
-        started = _marker_start(self.layout.run_marker)
-        if started is None:
+        """Remove what a Manim run cut off by a quit, a crash or a kill left behind (G1.1, G5.10).
+
+        The run marker records what the run's quality folder held before
+        Manim started, so this removes what a discard of the run would have,
+        and compares no clock. While a file is still there, the marker stays,
+        so the next bind sweeps again.
+        """
+        marker = self.layout.run_marker
+        if not marker.exists():
             return
-        self.log(f"sweeping media from an interrupted run started={started}")
+        self.log("sweeping media from an interrupted run")
         try:
-            removed = discard_unfinished_partials(self.layout.media_dir, started)
+            folders, frames = _interrupted_run(self.layout, read_record(marker))
         except OSError as exc:
-            # The marker stays, so the next bind sweeps again.
-            self.log(f"could not sweep {self.layout.media_dir}: {exc}")
+            self.log(f"could not sweep {self.layout.videos_dir}: {exc}")
             return
-        for path in removed:
-            self.log(f"removed unfinished media {path}")
-        self._remove_run_marker(self.layout.run_marker)
+        swept = [
+            self._log_discarded(discard_written(folder, before, self._clips)) for folder, before in folders.items()
+        ]
+        if frames:
+            swept.append(self._remove_frames(self.layout.png_frames_dir))
+        if all(swept):
+            self._remove_run_marker(marker)
 
     def _warm_process_control(self) -> None:
         try:
@@ -919,14 +939,18 @@ class Supervisor:
         """Delete the cache, the generated code, the glyph files and every log but the active one (D55).
 
         The active log is emptied. project.json, exports/, the lock and the
-        temp-project marker stay. Return what could not be removed, each with
-        the OS reason.
+        temp-project marker stay. A read-only file or folder is made writable
+        first (S26). Return what could not be removed, each with the OS reason.
         """
         left: list[str] = []
 
-        def collect(function: object, path: str, exc: BaseException) -> None:
-            if not isinstance(exc, FileNotFoundError):
-                left.append(f"{path}: {exc}")
+        def collect(function: Callable[[str], object], path: str, exc: BaseException) -> None:
+            try:
+                _retry_read_only(function, path, exc)
+            except FileNotFoundError:
+                pass
+            except OSError as failure:
+                left.append(f"{path}: {failure}")
 
         for folder in self.layout.derived_dirs:
             shutil.rmtree(folder, onexc=collect)
@@ -941,12 +965,12 @@ class Supervisor:
                 try:
                     child.unlink()
                 except OSError as exc:
-                    collect(child.unlink, str(child), exc)
+                    collect(os.unlink, str(child), exc)
         with self._log_lock:
             try:
                 os.truncate(self.log_path, 0)
             except OSError as exc:
-                collect(os.truncate, str(self.log_path), exc)
+                left.append(f"{self.log_path}: {exc}")
         for item in left:
             self.log(f"could not remove {item}")
         return left
@@ -1002,11 +1026,13 @@ class Supervisor:
         if job.cancel.is_set():
             return
         assert job.layout is not None
+        # What the quality folder holds before Manim starts, which tells the files this run writes.
+        progress = ManimProgress(job.video_dir, self._clips, job.ready, job.waiting)
         marker = job.layout.run_marker
-        if not self._write_run_marker(job, marker, time.time()):
+        if not self._write_run_marker(job, marker, progress):
             return
         try:
-            self._run_manim(job, argv)
+            self._run_manim(job, argv, progress)
         finally:
             self._remove_run_marker(marker)
 
@@ -1054,11 +1080,16 @@ class Supervisor:
         self.log(f"removed incomplete clip {path}")
         return True
 
-    def _write_run_marker(self, job: _Job, marker: Path, started: float) -> bool:
-        """Record the run before Manim starts, so a later bind can sweep it (G1.1, G1.2)."""
+    def _write_run_marker(self, job: _Job, marker: Path, progress: ManimProgress) -> bool:
+        """Record the run before Manim starts, so a later bind can sweep it (G1.1, G1.2, G5.10).
+
+        The record names the run's quality folder and format, and holds what
+        that folder holds now (``ManimProgress.snapshot``).
+        """
+        record = {"quality": job.quality, "format": job.output_format, "files": progress.snapshot()}
         temporary = marker.with_suffix(".json.tmp")
         try:
-            temporary.write_text(json.dumps({"started": started}) + "\n", encoding="utf-8", newline="\n")
+            temporary.write_text(json.dumps(record) + "\n", encoding="utf-8", newline="\n")
             os.replace(temporary, marker)
         except OSError as exc:
             with contextlib.suppress(OSError):
@@ -1073,7 +1104,7 @@ class Supervisor:
         except OSError as exc:
             self.log(f"could not remove {marker}: {exc}")
 
-    def _run_manim(self, job: _Job, argv: list[str]) -> None:
+    def _run_manim(self, job: _Job, argv: list[str], progress: ManimProgress) -> None:
         assert job.layout is not None and job.manim_dir is not None
         tex = job.layout.media_dir / "Tex"
         if sys.platform == "win32":
@@ -1090,8 +1121,6 @@ class Supervisor:
             startupinfo = None
             creationflags = 0
             start_new_session = True
-        # What the folders hold before Manim starts, which tells the files this run writes.
-        progress = ManimProgress(job.video_dir, self._clips, job.ready, job.waiting)
         tex_logs = file_stamps(tex, "*.log")
         try:
             proc = subprocess.Popen(
@@ -1123,11 +1152,11 @@ class Supervisor:
         finally:
             self._release_job(job)
         if job.cancel.is_set():
-            self._discard(progress)
+            self._discard(job, progress)
         elif return_code != 0:
             # Manim may have been killed from outside or crashed natively, so
             # its newest partial can be cut off (G1.1).
-            self._discard(progress)
+            self._discard(job, progress)
             tex_log = failed_tex_log(written_since(tex_logs, file_stamps(tex, "*.log")))
             message = format_render_failure(return_code, output, tex_log)
             self._end(job, error(job.job_id, "render_failed", message, output.rstrip() or None))
@@ -1191,13 +1220,36 @@ class Supervisor:
                 if job.profile == "preview" and not job.cancel.is_set():
                     self._report_beats(job, progress.poll())
 
-    def _discard(self, progress: ManimProgress) -> None:
-        """Delete what a cancelled or failed run left that may be cut off, and log it (D13, G5.10)."""
-        removed, failed = progress.discard()
+    def _discard(self, job: _Job, progress: ManimProgress) -> None:
+        """Delete what a cancelled or failed run left that may be cut off, and log it (D13, G5.10).
+
+        A PNG sequence is whole only when the run succeeds, so Manim's PNG folder goes too (F021).
+        """
+        self._log_discarded(progress.discard())
+        if job.output_format == "png_sequence":
+            assert job.layout is not None
+            self._remove_frames(job.layout.png_frames_dir)
+
+    def _log_discarded(self, discarded: Discarded) -> bool:
+        """Log what a discard removed and what it could not. Return False when a file is still there."""
+        removed, failed = discarded
         for path in removed:
             self.log(f"removed unfinished media {path}")
         for path, exc in failed:
             self.log(f"could not remove unfinished media {path}: {exc}")
+        return not failed
+
+    def _remove_frames(self, frames: Path) -> bool:
+        """Delete Manim's PNG folder, whose sequence may be cut off (F021). Return False when it is still there."""
+        if not frames.exists():
+            return True
+        try:
+            _remove_tree(frames)
+        except OSError as exc:
+            self.log(f"could not remove unfinished media {frames}: {exc}")
+            return False
+        self.log(f"removed unfinished media {frames}")
+        return True
 
     def _finish_run(self, job: _Job, progress: ManimProgress, output: str) -> None:
         """Check what a run that exited 0 wrote, then record the preview or publish the export."""
@@ -1222,6 +1274,7 @@ class Supervisor:
             assert job.captured is not None
             problem = frame_count_problem(movie, output, export_frame_count(job.captured))
             if problem is not None:
+                self._discard(job, progress)
                 self._end(job, error(job.job_id, "render_failed", problem))
                 return
         if job.profile == "export":
@@ -1564,32 +1617,36 @@ def _scene_source(project: Project) -> str:
         raise DocumentError(str(exc)) from exc
 
 
-def _marker_start(marker: Path) -> float | None:
-    """Return the start time a run marker records, or None when there is no marker.
+def _interrupted_run(layout: ProjectLayout, record: object) -> tuple[dict[Path, dict[Path, Stamp]], bool]:
+    """What the run marker ``record`` says an interrupted run may have written (G1.1, G5.10).
 
-    A marker that cannot be read counts from its own mtime, which is just
-    before the run started.
+    That is each quality folder it wrote into, with what the folder held
+    before the run, and whether it wrote Manim's PNG folder. A record that
+    cannot be read says nothing, so every quality folder counts as empty
+    before the run, and the PNG folder as written. A quality folder that is a
+    link, or holds one, is never swept through it (``discard_written``).
     """
-    try:
-        raw = json.loads(marker.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, ValueError, RecursionError):
-        raw = None
-    started = raw.get("started") if isinstance(raw, dict) else None
-    if isinstance(started, (int, float)) and not isinstance(started, bool) and math.isfinite(started):
-        return float(started)
-    try:
-        return marker.stat().st_mtime
-    except OSError:
-        return None
+    if isinstance(record, dict):
+        quality = record.get("quality")
+        if isinstance(quality, str) and _QUALITY.fullmatch(quality):
+            folder = layout.video_dir(quality)
+            before = read_stamps(folder, record.get("files"))
+            if before is not None:
+                return {folder: before}, record.get("format") == "png_sequence"
+    videos = layout.videos_dir
+    if not videos.is_dir():
+        return {}, True
+    return {folder: {} for folder in videos.iterdir() if folder.is_dir()}, True
 
 
 def _remove_tree(path: Path) -> None:
-    """Delete a folder that may not exist, retrying for about 0.5 s while Windows reports it in use."""
+    """Delete a folder that may not exist, retrying for about 0.5 s while Windows reports it in use.
+
+    A read-only file or folder in it is made writable first (S26).
+    """
     for attempt in range(5):
         try:
-            shutil.rmtree(path)
+            shutil.rmtree(path, onexc=_retry_read_only)
             return
         except FileNotFoundError:
             return
@@ -1597,6 +1654,26 @@ def _remove_tree(path: Path) -> None:
             if attempt == 4:
                 raise
             time.sleep(0.1)
+
+
+def _retry_read_only(function: Callable[[str], object], path: str, exc: BaseException) -> None:
+    """``shutil.rmtree``'s ``onexc``: make a read-only file or folder writable, then remove it again (S26).
+
+    Windows will not delete either while it is read-only, as a copied or
+    shared project folder can carry them. A link is never changed, and any
+    other failure, including one of a call that lists or opens a folder, is
+    raised again.
+    """
+    if function not in (os.unlink, os.rmdir) or not isinstance(exc, PermissionError):
+        raise exc
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        raise exc from None
+    if mode & stat.S_IWRITE or stat.S_ISLNK(mode) or os.path.isjunction(path):
+        raise exc
+    os.chmod(path, stat.S_IMODE(mode) | stat.S_IWRITE)
+    function(path)
 
 
 def _remove_tex_inputs(tex: Path) -> None:

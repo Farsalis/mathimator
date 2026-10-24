@@ -6,6 +6,7 @@ The Job Object tests live in ``test_win32_job.py`` and stay skipped unless
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -15,13 +16,21 @@ from pathlib import Path
 
 import pytest
 
+from mathimator_worker.clip_check import ClipChecker
 from mathimator_worker.document import dumps_project, empty_project, load_text
 from mathimator_worker.document_error import DocumentError
-from mathimator_worker.progress import discard_unfinished_partials
+from mathimator_worker.progress import MANIFEST, discard_written, read_stamps, run_files, stamps_record
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import Supervisor, _Job
 from mathimator_worker.win32_job import jobs_enabled
-from tests.support import SupervisorClient, read_argv, start_supervisor, write_fake_interpreter
+from tests.support import (
+    SupervisorClient,
+    complete_clip,
+    link_folder,
+    read_argv,
+    start_supervisor,
+    write_fake_interpreter,
+)
 
 
 def test_delete_object_removes_targeting_beats_as_one_undo() -> None:
@@ -158,28 +167,77 @@ def test_a_wait_fails_as_soon_as_the_supervisor_dies_and_shows_its_stderr() -> N
     client.close()
 
 
+_PARTIALS = "partial_movie_files/MainScene"
+_CUT_OFF = b"\x00" * 48
+
+
 @pytest.mark.parametrize(
-    ("relative", "age", "swept"),
+    ("relative", "data", "earlier", "discarded"),
     [
-        pytest.param(f"partial_movie_files/MainScene/{'b' * 64}.mp4", 0, True, id="partial-of-the-run"),
-        pytest.param(f"partial_movie_files/MainScene/{'a' * 64}.mp4", 30, False, id="older-partial"),
-        pytest.param("MainScene.mp4", 0, True, id="movie-of-the-run"),
-        pytest.param("partial_movie_files/MainScene/partial_movie_file_list.txt", 0, True, id="segment-list"),
-        pytest.param("notes.txt", 0, False, id="not-media"),
+        pytest.param(f"{_PARTIALS}/{'b' * 64}.mp4", _CUT_OFF, False, True, id="cut-off-partial"),
+        pytest.param(f"{_PARTIALS}/{'c' * 64}.mp4", complete_clip(".mp4"), False, False, id="complete-partial"),
+        pytest.param(f"{_PARTIALS}/{'a' * 64}.mp4", _CUT_OFF, True, False, id="earlier-partial"),
+        pytest.param("MainScene.gif", b"GIF89a", False, True, id="movie"),
+        pytest.param("MainScene.mp4", complete_clip(".mp4"), True, False, id="earlier-movie"),
+        pytest.param(f"{_PARTIALS}/partial_movie_file_list.txt", b"", False, True, id="segment-list"),
+        pytest.param("notes.txt", b"", False, False, id="not-media"),
     ],
 )
-def test_the_sweep_takes_only_media_written_since_the_run_started(
-    tmp_path: Path, relative: str, age: float, swept: bool
+def test_a_discard_takes_only_what_the_run_wrote_that_may_be_cut_off(
+    tmp_path: Path, relative: str, data: bytes, earlier: bool, discarded: bool
 ) -> None:
-    """Each rule of the interrupted-run sweep on its own, so a broken one cannot hide behind another (F140)."""
-    media = tmp_path / "media"
-    path = media / "videos" / "scene" / "480p15" / relative
+    """Each rule of the discard on its own, so a broken one cannot hide behind another (F140).
+
+    A cancel, a failure and the interrupted-run sweep all discard this way (G5.10).
+    """
+    video = tmp_path / "videos" / "scene" / "480p15"
+    path = video / relative
     path.parent.mkdir(parents=True)
-    path.write_bytes(b"\x00" * 48)
-    written = time.time() - age
-    os.utime(path, (written, written))
-    removed = discard_unfinished_partials(media, time.time() - 2)
-    assert (removed, path.exists()) == (([path], False) if swept else ([], True))
+    path.write_bytes(data)
+    before = run_files(video) if earlier else {}
+    assert discard_written(video, before, ClipChecker()) == (([path], []) if discarded else ([], []))
+    assert path.exists() is not discarded
+
+
+@pytest.mark.parametrize(
+    "linked",
+    [
+        pytest.param("", id="quality-folder"),
+        pytest.param("partial_movie_files", id="partial-movie-files"),
+        pytest.param(_PARTIALS, id="partials"),
+    ],
+)
+def test_a_discard_never_deletes_through_a_link(tmp_path: Path, linked: str) -> None:
+    """A link planted in the quality folder never lets a discard delete outside the project (O10)."""
+    outside = tmp_path / "outside"
+    (outside / _PARTIALS).mkdir(parents=True)
+    foreign = [outside / _PARTIALS / f"{'b' * 64}.mp4", outside / _PARTIALS / MANIFEST, outside / "MainScene.mp4"]
+    for path in foreign:
+        path.write_bytes(_CUT_OFF)
+    video = tmp_path / "videos" / "scene" / "480p15"
+    link = video / linked
+    link.parent.mkdir(parents=True)
+    link_folder(link, outside / linked)
+    # The movie of a run is still discarded when only its partials folder is linked.
+    movie = video / "MainScene.mp4"
+    if linked:
+        movie.write_bytes(_CUT_OFF)
+    assert discard_written(video, {}, ClipChecker()) == ([movie] if linked else [], [])
+    assert all(path.is_file() for path in foreign)
+
+
+def test_the_run_marker_keeps_stamps_relative_to_the_quality_folder(tmp_path: Path) -> None:
+    video = tmp_path / "videos" / "scene" / "480p15"
+    partial = video / _PARTIALS / ("a" * 64 + ".mp4")
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(complete_clip(".mp4"))
+    stamps = run_files(video)
+    record = json.loads(json.dumps(stamps_record(video, stamps)))
+    # The project was moved or copied before the next bind.
+    moved = tmp_path / "moved"
+    assert read_stamps(moved, record) == {moved / _PARTIALS / partial.name: stamps[partial]}
+    for broken in ([1, 2], {"MainScene.mp4": [1]}, {"MainScene.mp4": "1 2"}, {"MainScene.mp4": [1.5, 2]}):
+        assert read_stamps(video, broken) is None
 
 
 def _argv_count(log_path: Path) -> int:

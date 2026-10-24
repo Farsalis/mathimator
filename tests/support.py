@@ -125,14 +125,14 @@ def write_clip(path: Path) -> Path:
 _FAKE_MANIM = '''\
 """Write the groups of files plan.json lists, print its log and exit with its code.
 
-seen.json records what the media folder held when this process started,
-the folder, arguments and environment it started with, and the function behind
-each scene writer method that manim_main replaces. Like Manim, it writes
-one file after another, so each file gets a later mtime than the one before.
-After each group but the last, and after the last too in a held plan, it
-writes held-<n>.txt and waits for go-<n>.txt. A plan with a child first
-starts a process that sleeps with this one's stdout and stderr, like a TeX
-child that outlives Manim, and writes its pid to child.txt.
+seen.json records the run marker and what the media folder held when this
+process started, the folder, arguments and environment it started with, and
+the function behind each scene writer method that manim_main replaces. Like
+Manim, it writes one file after another, so each file gets a later mtime than
+the one before. After each group but the last, and after the last too in a
+held plan, it writes held-<n>.txt and waits for go-<n>.txt. A plan with a
+child first starts a process that sleeps with this one's stdout and stderr,
+like a TeX child that outlives Manim, and writes its pid to child.txt.
 """
 import json
 import os
@@ -147,8 +147,9 @@ ENVIRONMENT = ("HOME", "USERPROFILE", "shell_escape", "openin_any", "openout_any
 here = Path(__file__).parent
 plan = json.loads((here / "plan.json").read_text(encoding="utf-8"))
 media = Path(sys.argv[sys.argv.index("--media_dir") + 1])
+marker = media.parent / "manim-run.json"
 seen = {
-    "marker": (media.parent / "manim-run.json").is_file(),
+    "marker": json.loads(marker.read_text(encoding="utf-8")) if marker.is_file() else None,
     "files": sorted(path.relative_to(media).as_posix() for path in media.rglob("*") if path.is_file()),
     "cwd": os.getcwd(),
     "argv": sys.argv[1:],
@@ -259,6 +260,16 @@ def video_render(layout: ProjectLayout, quality: str, clips: list[bytes], suffix
     files[folder / "partial_movie_file_list.txt"] = concat_manifest_bytes([str(path) for path in files])
     files[folder.parent.parent / f"MainScene{suffix}"] = complete_clip(suffix)
     return files
+
+
+def link_folder(link: Path, target: Path) -> None:
+    """A link to a folder that any account can make: a junction on Windows, a symbolic link elsewhere."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
 
 
 @contextlib.contextmanager

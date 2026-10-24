@@ -40,6 +40,7 @@ from tests.support import (
     Stdout,
     complete_clip,
     handwritten_project,
+    link_folder,
     start_supervisor,
     video_render,
     write_clip,
@@ -220,11 +221,11 @@ def test_a_link_in_the_tex_folder_goes_and_what_it_points_to_stays(tmp_path: Pat
     (outside / "notes.tex").write_text("mine", encoding="utf-8")
     tex = tmp_path / "media" / "Tex"
     tex.mkdir(parents=True)
-    _link_folder(tex / "linked", outside)
+    link_folder(tex / "linked", outside)
     _remove_tex_inputs(tex)
     assert list(tex.iterdir()) == []
     tex.rmdir()
-    _link_folder(tex, outside)
+    link_folder(tex, outside)
     _remove_tex_inputs(tex)
     assert not os.path.lexists(tex)
     assert [path.name for path in outside.iterdir()] == ["notes.tex"]
@@ -563,16 +564,6 @@ def _cache_export(root: Path, project: Project) -> None:
     folder.mkdir(parents=True)
     write_clip(folder / "scene.mp4")
     (folder / "export.json").write_text(json.dumps({"exportKey": export_key(project)}), encoding="utf-8")
-
-
-def _link_folder(link: Path, target: Path) -> None:
-    """A link to a folder that any account can make: a junction on Windows, a symbolic link elsewhere."""
-    if sys.platform == "win32":
-        import _winapi
-
-        _winapi.CreateJunction(str(target), str(link))
-    else:
-        link.symlink_to(target, target_is_directory=True)
 
 
 def _refuse(project: object) -> str:

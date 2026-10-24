@@ -11,10 +11,12 @@ import importlib.util
 import json
 import os
 import py_compile
+import stat
 import struct
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
@@ -28,8 +30,9 @@ from mathimator_worker.exports import _export_problem
 from mathimator_worker.identity import beat_chain_keys, export_folder_name
 from mathimator_worker.layout import ProjectLayout
 from mathimator_worker.manim_paths import short_path
+from mathimator_worker.progress import MANIFEST
 from mathimator_worker.session import Session
-from mathimator_worker.supervisor import Supervisor, _Job, _remove_tree
+from mathimator_worker.supervisor import Supervisor, _Job, _remove_tree, _retry_read_only
 from tests.support import (
     REPO,
     TERMINAL_EVENTS,
@@ -37,6 +40,7 @@ from tests.support import (
     complete_clip,
     ebml_element,
     iso_box,
+    link_folder,
     video_render,
     write_clip,
 )
@@ -248,6 +252,77 @@ def test_a_render_replaces_a_planted_codegen_folder(tmp_path: Path, monkeypatch:
     assert scene.read_text(encoding="utf-8") == generate(supervisor.session.project)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows refuses to delete a read-only file")
+def test_a_render_replaces_a_read_only_codegen_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
+) -> None:
+    supervisor, events = _supervisor(_project(tmp_path / "read-only"), monkeypatch)
+    scene = supervisor.layout.scene_path
+    bytecode = Path(importlib.util.cache_from_source(str(scene)))
+    bytecode.parent.mkdir(parents=True)
+    bytecode.write_bytes(b"planted")
+    scene.write_text("REAL = True\n", encoding="utf-8")
+    # A copied or shared project folder can carry the read-only attribute (S26).
+    for path in (bytecode, bytecode.parent, scene):
+        path.chmod(stat.S_IREAD)
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
+    _run(supervisor, "render_preview", "preview-1")
+    assert _terminal(events, "preview-1")["event"] == "done"
+    assert not bytecode.parent.exists()
+    assert supervisor.session is not None
+    assert scene.read_text(encoding="utf-8") == generate(supervisor.session.project)
+
+
+# Read-only files (S26). The tree removals call the handler only on Windows,
+# so these call it directly.
+
+
+@pytest.mark.parametrize("function", [os.unlink, os.rmdir], ids=["file", "folder"])
+def test_a_read_only_file_or_folder_is_made_writable_and_removed(
+    tmp_path: Path, function: Callable[[str], object]
+) -> None:
+    path = _read_only(tmp_path / "read-only", folder=function is os.rmdir)
+    _retry_read_only(function, str(path), PermissionError(13, "Access is denied", str(path)))
+    assert not os.path.lexists(path)
+
+
+@pytest.mark.parametrize(
+    ("function", "failure", "writable"),
+    [
+        pytest.param(os.unlink, PermissionError(13, "The file is in use"), True, id="writable-file"),
+        pytest.param(os.unlink, OSError(16, "Device or resource busy"), False, id="not-a-refusal"),
+        pytest.param(os.scandir, PermissionError(13, "Access is denied"), False, id="listing"),
+        pytest.param(os.open, PermissionError(13, "Access is denied"), False, id="opening"),
+    ],
+)
+def test_the_read_only_handler_raises_any_other_failure_again(
+    tmp_path: Path, function: Callable[[str], object], failure: OSError, writable: bool
+) -> None:
+    # rmtree reports a folder it could not list or open with the call that failed.
+    path = _read_only(tmp_path / "kept", folder=function is not os.unlink)
+    if writable:
+        path.chmod(stat.S_IREAD | stat.S_IWRITE)
+    with pytest.raises(OSError) as raised:
+        _retry_read_only(function, str(path), failure)
+    assert raised.value is failure
+    assert bool(path.stat().st_mode & stat.S_IWRITE) is writable
+
+
+def test_the_read_only_handler_never_changes_a_link_or_its_target(tmp_path: Path) -> None:
+    target = _read_only(tmp_path / "outside", folder=True)
+    link = tmp_path / "linked"
+    link_folder(link, target)
+    if os.chmod in os.supports_follow_symlinks:
+        # Windows refuses to delete a read-only junction, as it does a read-only folder.
+        os.chmod(link, stat.S_IREAD | stat.S_IEXEC, follow_symlinks=False)
+    refused = PermissionError(13, "Access is denied", str(link))
+    with pytest.raises(PermissionError) as raised:
+        _retry_read_only(os.rmdir, str(link), refused)
+    assert raised.value is refused
+    assert os.path.lexists(link)
+    assert not target.stat().st_mode & stat.S_IWRITE
+
+
 # Startup path (G4.1, G4.10)
 
 
@@ -269,43 +344,136 @@ def test_startup_resolves_a_short_path_alias(tmp_path: Path, monkeypatch: pytest
     assert job.manim_dir == folder / ".mathimator" / "codegen"
 
 
-# Interrupted-run marker (G1.1, G1.2)
+# Interrupted-run marker (G1.1, G1.2, G5.10)
 
 
-def test_startup_sweeps_media_left_by_an_interrupted_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_startup_sweeps_media_left_by_an_interrupted_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
+) -> None:
     project = _project(tmp_path / "crashed")
-    started = time.time() - 120
-    marker = _write_marker(project, json.dumps({"started": started}))
-    kept, left = _interrupted_media(project / ".mathimator" / "cache" / "media", started)
     supervisor, _events = _supervisor(project, monkeypatch)
-    assert kept.is_file()
-    assert [path.exists() for path in left] == [False] * len(left)
-    assert not marker.exists()
-    assert "removed unfinished media" in supervisor.log_path.read_text(encoding="utf-8")
+    folder = supervisor.layout.partial_movie_dir("1080p30")
+    folder.mkdir(parents=True)
+    earlier = [write_clip(folder / ("a" * 64 + ".mp4")), write_clip(folder.parent.parent / "MainScene.mp4")]
+    # Another quality folder, which the export does not write into.
+    other = supervisor.layout.partial_movie_dir("480p15")
+    other.mkdir(parents=True)
+    elsewhere = [_written(other / ("e" * 64 + ".mp4"), _cut_off_clip(".mp4")), _written(other / MANIFEST, b"")]
+    finished, cut_off, listing = folder / ("b" * 64 + ".mp4"), folder / ("c" * 64 + ".mp4"), folder / MANIFEST
+    run = {finished: complete_clip(".mp4"), cut_off: _cut_off_clip(".mp4"), listing: b""}
+    _crash(supervisor, monkeypatch, fake_manim, run)
+    # A file server whose clock runs an hour behind stamped the run's partial in the past.
+    _aged(cut_off, time.time() - 3600)
+    restarted, _events = _supervisor(project, monkeypatch)
+    assert (cut_off.exists(), listing.exists()) == (False, False)
+    # A complete partial of the run stays, so the next render reuses it.
+    assert all(path.is_file() for path in [finished, *earlier, *elsewhere])
+    assert not restarted.layout.run_marker.exists()
+    assert f"removed unfinished media {cut_off}\n" in restarted.log_path.read_text(encoding="utf-8")
 
 
-def test_a_marker_that_cannot_be_read_sweeps_from_its_mtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    project = _project(tmp_path / "garbled")
-    started = time.time() - 120
-    marker = _aged(_write_marker(project, '{"started": '), started)
-    kept, left = _interrupted_media(project / ".mathimator" / "cache" / "media", started)
+def test_startup_sweeps_the_frames_of_an_interrupted_png_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
+) -> None:
+    project = _project(tmp_path / "frames", export=_PNG_PROFILE)
+    supervisor, _events = _supervisor(project, monkeypatch)
+    frames = supervisor.layout.png_frames_dir
+    _crash(supervisor, monkeypatch, fake_manim, _png_render(frames, 30))
+    assert frames.is_dir()
     _supervisor(project, monkeypatch)
-    assert kept.is_file()
-    assert [path.exists() for path in left] == [False] * len(left)
+    assert not frames.exists()
+    assert not supervisor.layout.run_marker.exists()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param('{"quality": ', id="truncated"),
+        pytest.param('{"started": 1792800000.0}\n', id="older-build"),
+        pytest.param('{"quality": "../../../../../../outside", "format": "mp4", "files": {}}', id="outside"),
+        pytest.param('{"quality": "480p15", "format": "mp4", "files": {"MainScene.mp4": [1]}}', id="bad-stamp"),
+    ],
+)
+def test_a_marker_that_cannot_be_read_sweeps_every_quality_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    project = _project(tmp_path / "garbled")
+    layout = ProjectLayout(project)
+    outside = _foreign_quality_folder(tmp_path / "outside")
+    kept: list[Path] = []
+    swept: list[Path] = []
+    for quality in ("480p15", "1080p30"):
+        folder = layout.partial_movie_dir(quality)
+        folder.mkdir(parents=True)
+        kept.append(write_clip(folder / ("a" * 64 + ".mp4")))
+        swept.append(_written(folder / ("b" * 64 + ".mp4"), _cut_off_clip(".mp4")))
+        swept += [_written(folder / MANIFEST, b""), write_clip(folder.parent.parent / "MainScene.mp4")]
+    link_folder(layout.video_dir("720p30"), tmp_path / "outside")
+    frames = layout.png_frames_dir
+    frames.mkdir(parents=True)
+    swept.append(_written(frames / "0000.png", b"png"))
+    marker = _write_marker(project, text)
+    _supervisor(project, monkeypatch)
+    # Complete partials stay, and nothing outside the project is touched, through a link or not (O10).
+    assert all(path.is_file() for path in [*kept, *outside])
+    assert [path for path in swept if path.exists()] == []
+    assert not frames.exists()
     assert not marker.exists()
 
 
-def test_open_project_sweeps_an_interrupted_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    supervisor, events = _supervisor(tmp_path / "first", monkeypatch)
+@pytest.mark.parametrize(
+    "linked",
+    [pytest.param("", id="quality-folder"), pytest.param("partial_movie_files", id="partial-movie-files")],
+)
+def test_the_sweep_never_deletes_through_a_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked: str) -> None:
+    """A link planted in the quality folder the marker names never lets a bind delete outside the project (O10)."""
+    project = _project(tmp_path / "linked")
+    outside = _foreign_quality_folder(tmp_path / "outside")
+    link = ProjectLayout(project).video_dir("1080p30") / linked
+    link.parent.mkdir(parents=True)
+    link_folder(link, tmp_path / "outside" / linked)
+    marker = _write_marker(project, json.dumps({"quality": "1080p30", "format": "mp4", "files": {}}))
+    _supervisor(project, monkeypatch)
+    assert all(path.is_file() for path in outside)
+    assert not marker.exists()
+
+
+def test_a_sweep_that_cannot_remove_a_file_keeps_the_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
+) -> None:
+    project = _project(tmp_path / "held")
+    supervisor, _events = _supervisor(project, monkeypatch)
+    cut_off = supervisor.layout.partial_movie_dir("1080p30") / ("c" * 64 + ".mp4")
+    _crash(supervisor, monkeypatch, fake_manim, {cut_off: _cut_off_clip(".mp4")})
+
+    def in_use(path: Path) -> None:
+        raise PermissionError(13, "The process cannot access the file", str(path))
+
+    with monkeypatch.context() as patch:
+        patch.setattr("mathimator_worker.progress.remove_file", in_use)
+        held, _events = _supervisor(project, monkeypatch)
+    assert cut_off.is_file()
+    assert held.layout.run_marker.is_file()
+    assert f"could not remove unfinished media {cut_off}: " in held.log_path.read_text(encoding="utf-8")
+    # The next bind sweeps again.
+    held.close()
+    _supervisor(project, monkeypatch)
+    assert not cut_off.exists()
+    assert not held.layout.run_marker.exists()
+
+
+def test_open_project_sweeps_an_interrupted_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
+) -> None:
     project = _project(tmp_path / "second")
-    started = time.time() - 120
-    marker = _write_marker(project, json.dumps({"started": started}))
-    kept, left = _interrupted_media(project / ".mathimator" / "cache" / "media", started)
+    crashed, _events = _supervisor(project, monkeypatch)
+    cut_off = crashed.layout.partial_movie_dir("1080p30") / ("c" * 64 + ".mp4")
+    _crash(crashed, monkeypatch, fake_manim, {cut_off: _cut_off_clip(".mp4")})
+    supervisor, events = _supervisor(tmp_path / "first", monkeypatch)
     supervisor.handle_line(json.dumps({"cmd": "open_project", "id": "open", "path": str(project)}))
     assert events[-1]["event"] == "state"
-    assert kept.is_file()
-    assert [path.exists() for path in left] == [False] * len(left)
-    assert not marker.exists()
+    assert not cut_off.exists()
+    assert not supervisor.layout.run_marker.exists()
 
 
 def test_open_project_leaves_a_running_export_alone(
@@ -359,14 +527,26 @@ def test_reopening_a_folder_leaves_a_preview_that_outlived_its_stop_alone(
     assert _terminal(events, "preview-1")["code"] == "cancelled"
 
 
-def test_the_run_marker_exists_only_while_manim_runs(
+def test_the_run_marker_records_the_quality_folder_while_manim_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
 ) -> None:
     supervisor, events = _supervisor(_project(tmp_path / "preview"), monkeypatch)
+    folder = supervisor.layout.partial_movie_dir("480p15")
+    folder.mkdir(parents=True)
+    earlier = write_clip(folder / ("c" * 64 + ".mp4"))
+    other = supervisor.layout.partial_movie_dir("1080p30")
+    other.mkdir(parents=True)
+    write_clip(other / ("d" * 64 + ".mp4"))
     fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
     _run(supervisor, "render_preview", "preview-1")
     assert _terminal(events, "preview-1")["event"] == "done"
-    assert fake_manim.seen()["marker"] is True
+    info = earlier.stat()
+    # Paths relative to the quality folder, so a moved project still reads them.
+    assert fake_manim.seen()["marker"] == {
+        "quality": "480p15",
+        "format": "mp4",
+        "files": {f"partial_movie_files/MainScene/{earlier.name}": [info.st_size, info.st_mtime_ns]},
+    }
     assert not supervisor.layout.run_marker.exists()
     assert supervisor._index is not None
     assert [beat.fresh for beat in supervisor._index.beats] == [True] * 4
@@ -393,7 +573,7 @@ def test_a_failed_run_discards_its_cut_off_partial(
     )
     _run(supervisor, command, "job-1")
     assert _terminal(events, "job-1")["event"] == "error"
-    assert fake_manim.seen()["marker"] is True
+    assert fake_manim.seen()["marker"] is not None
     assert finished.is_file()
     assert not cut_off.exists()
     assert not listing.exists()
@@ -438,6 +618,7 @@ def test_png_export_with_a_frame_count_mismatch_is_not_published(
     assert failed["event"] == "error"
     assert failed["message"] == f"manim reported {_PNG_FRAMES + 1} PNG frames, but {frames} holds {_PNG_FRAMES}"
     assert not (project / ".mathimator" / "exports").exists()
+    assert not frames.exists()
 
 
 def test_png_export_short_of_the_documents_frames_is_not_published(
@@ -453,6 +634,7 @@ def test_png_export_short_of_the_documents_frames_is_not_published(
     assert (failed["event"], failed["code"]) == ("error", "render_failed")
     assert failed["message"] == f"the scene has 240 frames, but manim wrote 211 PNG frames to {frames}"
     assert not (project / ".mathimator" / "exports").exists()
+    assert not frames.exists()
 
 
 def test_png_export_without_a_frame_count_is_not_published(
@@ -466,6 +648,44 @@ def test_png_export_without_a_frame_count_is_not_published(
     failed = _terminal(events, "export-1")
     assert failed["message"] == f"manim did not report how many PNG frames it wrote to {frames}"
     assert not (project / ".mathimator" / "exports").exists()
+    assert not frames.exists()
+
+
+def test_a_failed_png_export_leaves_no_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
+) -> None:
+    project = _project(tmp_path / "failed", export=_PNG_PROFILE)
+    supervisor, events = _supervisor(project, monkeypatch)
+    frames = supervisor.layout.png_frames_dir
+    fake_manim.plan(_png_render(frames, 30), ["RuntimeError: killed"], exit_code=1)
+    _run(supervisor, "export", "export-1")
+    assert _terminal(events, "export-1")["event"] == "error"
+    assert fake_manim.seen()["marker"]["format"] == "png_sequence"
+    assert not frames.exists()
+    assert f"removed unfinished media {frames}\n" in supervisor.log_path.read_text(encoding="utf-8")
+
+
+def test_a_cancelled_png_export_leaves_no_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
+) -> None:
+    project = _project(tmp_path / "cancelled", export=_PNG_PROFILE)
+    supervisor, events = _supervisor(project, monkeypatch)
+    frames = supervisor.layout.png_frames_dir
+    fake_manim.plan(_png_render(frames, 30), hold=True)
+    supervisor.handle_line(json.dumps({"cmd": "export", "id": "export-1"}))
+    job = supervisor._current
+    assert job is not None
+    try:
+        fake_manim.wait_until_held()
+        assert frames.is_dir()
+        supervisor.handle_line(json.dumps({"cmd": "cancel", "id": "cancel-1", "jobId": "export-1"}))
+        job.thread.join(timeout=60)
+    finally:
+        fake_manim.release()
+    assert not job.thread.is_alive()
+    assert _terminal(events, "export-1")["code"] == "cancelled"
+    assert not frames.exists()
+    assert not supervisor.layout.run_marker.exists()
 
 
 def test_png_export_stops_when_the_old_frames_cannot_be_removed(
@@ -589,17 +809,42 @@ def _write_marker(project: Path, text: str) -> Path:
     return marker
 
 
-def _interrupted_media(media: Path, started: float) -> tuple[Path, list[Path]]:
-    """An older finished partial, plus what a run that started at ``started`` left."""
-    folder = media / "videos" / "scene" / "1080p30" / "partial_movie_files" / "MainScene"
-    folder.mkdir(parents=True)
-    kept = _aged(write_clip(folder / ("a" * 64 + ".mp4")), started - 60)
-    cut_off = folder / ("b" * 64 + ".mp4")
-    cut_off.write_bytes(_cut_off_clip(".mp4"))
-    listing = folder / "partial_movie_file_list.txt"
-    listing.write_text(f"file 'file:{cut_off.as_posix()}'\n", encoding="utf-8")
-    movie = write_clip(folder.parent.parent / "MainScene.mp4")
-    return kept, [_aged(path, started + 5) for path in (cut_off, listing, movie)]
+def _crash(
+    supervisor: Supervisor, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim, files: dict[Path, bytes]
+) -> None:
+    """Export with a Manim that writes ``files``, then leave them and the run marker as a worker that died would."""
+    monkeypatch.setattr(supervisor, "_discard", lambda job, progress: None)
+    monkeypatch.setattr(supervisor, "_remove_run_marker", lambda marker: None)
+    fake_manim.plan(files, ["Segmentation fault"], exit_code=1)
+    _run(supervisor, "export", "export-1")
+    assert supervisor.layout.run_marker.is_file()
+    supervisor.close()
+
+
+def _written(path: Path, data: bytes) -> Path:
+    path.write_bytes(data)
+    return path
+
+
+def _read_only(path: Path, *, folder: bool) -> Path:
+    """A read-only empty folder or file at ``path``, as a copied or shared project folder can carry one."""
+    if folder:
+        path.mkdir()
+    else:
+        path.write_bytes(b"old")
+    path.chmod(stat.S_IREAD | stat.S_IEXEC)
+    return path
+
+
+def _foreign_quality_folder(folder: Path) -> list[Path]:
+    """A quality folder outside the project, with the files a sweep takes: a movie, a segment list, a cut-off partial."""
+    partials = folder / "partial_movie_files" / "MainScene"
+    partials.mkdir(parents=True)
+    return [
+        write_clip(folder / "MainScene.mp4"),
+        _written(partials / MANIFEST, b""),
+        _written(partials / ("b" * 64 + ".mp4"), _cut_off_clip(".mp4")),
+    ]
 
 
 def _aged(path: Path, when: float) -> Path:
