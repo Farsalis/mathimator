@@ -537,15 +537,17 @@ A whole second is a whole number of frames at every frame rate. A beat whose sta
 ```python
 def _beat_time(start, end, wait=False):
     # Seconds that make Manim draw the frames from start to end, each rounded
-    # to the nearest frame. A play rounds up and a wait down: hence the half frame.
+    # to the nearest frame, halves up. Times are whole milliseconds, so this is
+    # integer math: in floats, 4.1 * 15 is 61.4999... and would round down.
+    # A play rounds up and a wait down: hence the half frame.
     rate = config.frame_rate
-    frames = int(end * rate + 0.5) - int(start * rate + 0.5)
+    frames = (round(end * 1000) * rate + 500) // 1000 - (round(start * 1000) * rate + 500) // 1000
     if wait:
         return (frames + 0.5) / rate
     return max(frames - 0.5, 1) / rate
 ```
 
-Manim 0.22 draws `ceil(run_time × fps)` frames for a `play` and `floor(seconds × fps)` for a static `wait`, so a `run_time` equal to the duration drifts: a 0.5 s beat is 8 frames of `play` but 7 frames of `wait` at 15 fps. Half a frame of slack keeps either count exact despite floating point. A `play` of one frame takes exactly `1 / fps`, the shortest `run_time` Manim accepts without a warning. With durations of 0.5, 2, 1.25, and 1 seconds, Journey A emits `run_time=_beat_time(0, 0.5)` for the axes, `run_time=_beat_time(0.5, 2.5)` for the plot, `run_time=_beat_time(2.5, 3.75)` for the title, and `self.wait(_beat_time(3.75, 4.75, wait=True))`.
+Manim 0.22 draws `ceil(run_time × fps)` frames for a `play` and `floor(seconds × fps)` for a static `wait`, so a `run_time` equal to the duration drifts: a 0.5 s beat is 8 frames of `play` but 7 frames of `wait` at 15 fps. Half a frame of slack keeps either count exact despite floating point. The frame count itself is integer arithmetic on whole milliseconds, as in the UI's scrub, so a boundary on a half frame rounds up on both sides: 4.1 s at 15 fps is frame 62, though 4.1 × 15 is 61.4999… in binary floating point. `tests/fixtures/timing/frame-boundaries.json` lists such boundaries, and the worker's and the UI's tests both check against it. A `play` of one frame takes exactly `1 / fps`, the shortest `run_time` Manim accepts without a warning. With durations of 0.5, 2, 1.25, and 1 seconds, Journey A emits `run_time=_beat_time(0, 0.5)` for the axes, `run_time=_beat_time(0.5, 2.5)` for the plot, `run_time=_beat_time(2.5, 3.75)` for the title, and `self.wait(_beat_time(3.75, 4.75, wait=True))`.
 
 ### Invalidation
 

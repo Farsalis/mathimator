@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import timing from "../../tests/fixtures/timing/frame-boundaries.json";
 import { derivedStarts } from "./format";
 import {
   patchBeat,
@@ -100,15 +101,32 @@ describe("scrub (D44: the rule that ships)", () => {
     expect(frameOf(movie.time)).toBe(movieFrames(index)[2]?.[0]);
   });
 
-  it("snaps a boundary from its exact time, not its binary approximation (D63)", () => {
-    // 4.1 × 15 is 61.5, so beat index 2 starts on frame 62. In floating point it comes to 61.4999…, frame 61.
-    const index = finished([2, 2.1, 1]);
-    const movie = played(playbackAt(index, 4.1));
-    expect(movie.beatIndex).toBe(2);
-    expect(frameOf(movie.time)).toBe(62);
-    expect(frameOf(playbackAt(index, 4.099).time)).toBe(61);
-    expect(highlighted(index, playheadAt(index, movie, 61.5 / PREVIEW_FPS))).toBe(1);
-    expect(highlighted(index, playheadAt(index, movie, 62.5 / PREVIEW_FPS))).toBe(2);
+  // The worker's tests check every boundary of the fixture; the preview plays only at PREVIEW_FPS.
+  it.each(timing.boundaries.filter(({ fps }) => fps === PREVIEW_FPS))(
+    "snaps a boundary at $seconds s to frame $frame from its exact time, not its binary approximation (D63)",
+    ({ seconds, frame }) => {
+      // Each falls on a half frame, which rounds up: 4.1 × 15 is 61.5, frame 62, but 61.4999… in floating point.
+      const index = finished([seconds, 1]);
+      const movie = played(playbackAt(index, seconds));
+      expect(movie.beatIndex).toBe(1);
+      expect(frameOf(movie.time)).toBe(frame);
+      expect(frameOf(playbackAt(index, seconds - 0.001).time)).toBe(frame - 1);
+      expect(highlighted(index, playheadAt(index, movie, (frame - 0.5) / PREVIEW_FPS))).toBe(0);
+      expect(highlighted(index, playheadAt(index, movie, (frame + 0.5) / PREVIEW_FPS))).toBe(1);
+    },
+  );
+
+  it("shows each beat over the frames the worker's scene draws for it (D63)", () => {
+    const { durations, fps, frames } = timing.beats;
+    expect(fps).toBe(PREVIEW_FPS);
+    const index = finished(durations);
+    let first = 0;
+    for (const beat of index.beats) {
+      const count = frames[beat.index] ?? 0;
+      expect(frameOf(playbackAt(index, beat.derivedStart).time)).toBe(first);
+      expect(frameOf(playbackAt(index, beat.derivedStart + beat.duration - 0.001).time)).toBe(first + count - 1);
+      first += count;
+    }
   });
 
   it("shows a movie frame of the highlighted beat everywhere on beats that are not whole frames (G3.2)", () => {

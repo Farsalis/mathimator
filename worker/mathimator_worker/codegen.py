@@ -6,7 +6,8 @@ the beats after that stay in one block. That is the pattern of the normative
 scenes. Each beat is still exactly one ``play`` or ``wait``.
 
 Every beat covers the frames between its start and its end on the timeline,
-each rounded to the nearest frame (D63). A whole second is a whole number of
+each rounded to the nearest frame from whole milliseconds, halves up, as the
+editor's playback rounds them (D63). A whole second is a whole number of
 frames at every frame rate, so a beat between whole seconds keeps its length
 as a literal. Any other beat calls ``_beat_time``, which the scene defines only
 then. It reads the frame rate when the scene renders, because one ``scene.py``
@@ -51,9 +52,11 @@ _ANCHOR_CALL = {
 _BEAT_TIME = [
     "def _beat_time(start, end, wait=False):",
     "    # Seconds that make Manim draw the frames from start to end, each rounded",
-    "    # to the nearest frame. A play rounds up and a wait down: hence the half frame.",
+    "    # to the nearest frame, halves up. Times are whole milliseconds, so this is",
+    "    # integer math: in floats, 4.1 * 15 is 61.4999... and would round down.",
+    "    # A play rounds up and a wait down: hence the half frame.",
     "    rate = config.frame_rate",
-    "    frames = int(end * rate + 0.5) - int(start * rate + 0.5)",
+    "    frames = (round(end * 1000) * rate + 500) // 1000 - (round(start * 1000) * rate + 500) // 1000",
     "    if wait:",
     "        return (frames + 0.5) / rate",
     "    return max(frames - 0.5, 1) / rate",

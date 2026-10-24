@@ -42,6 +42,8 @@ REFERENCE_SCENE = REPO / "scenes" / "reference_60.py"
 JOURNEY = FIXTURES / "journey-a" / "project.json"
 REFERENCE = FIXTURES / "reference-60" / "project.json"
 LESSON = FIXTURES / "lesson-60" / "project.json"
+# Beat boundaries and the frames they land on, which playback.test.ts checks too (D63).
+TIMING = json.loads((FIXTURES / "timing" / "frame-boundaries.json").read_text(encoding="utf-8"))
 
 FOUR_LINES = (
     '        self.play(plot_1.animate.set_color("#E07A5F"), run_time=8)\n'
@@ -280,10 +282,7 @@ def test_moving_labelled_axes_moves_their_labels() -> None:
 
 
 def test_the_frame_helper_matches_the_spec() -> None:
-    raw = json.loads(JOURNEY.read_text(encoding="utf-8"))
-    for beat, duration in zip(raw["scene"]["beats"], [0.5, 2, 1.25, 1], strict=True):
-        beat["duration"] = duration
-    source = generate(load_text(json.dumps(raw)))
+    source = generate(_journey_a([0.5, 2, 1.25, 1]))
     helper = _fenced(SPEC.read_text(encoding="utf-8"), "### Beat timing and frames", "python")
     assert f"config.seed = 1\n\n\n{helper}\n\nclass MainScene(Scene):\n" in source
     for line in (
@@ -329,15 +328,28 @@ def test_every_beat_boundary_lands_on_the_nearest_frame(fps: int) -> None:
     for index, frames in enumerate(counts):
         assert frames >= 1
         drawn += frames
-        assert drawn == math.floor(boundaries[index + 1] * fps + 0.5), f"beat index {index} at {fps} fps"
+        # The nearest frame from whole milliseconds, halves up, as in playback.ts.
+        assert drawn == (round(boundaries[index + 1] * 1000) * fps + 500) // 1000, f"beat index {index} at {fps} fps"
+
+
+@pytest.mark.parametrize(
+    ("seconds", "fps", "frame"),
+    [(boundary["seconds"], boundary["fps"], boundary["frame"]) for boundary in TIMING["boundaries"]],
+)
+def test_a_boundary_on_a_half_frame_rounds_up_as_in_the_ui(seconds: float, fps: int, frame: int) -> None:
+    """D63: in floats each of these boundaries comes to just under a half frame and would round down."""
+    assert _manim_frame_counts(generate(_journey_a([seconds, 1, 1])), fps)[0] == frame
+
+
+def test_each_beat_draws_the_frames_the_ui_gives_it() -> None:
+    """D63: beat index 2 of [2, 2.1, 1] starts on frame 62 at 15 fps, in the movie and in playback.ts."""
+    beats = TIMING["beats"]
+    assert _manim_frame_counts(generate(_journey_a(beats["durations"])), beats["fps"]) == beats["frames"]
 
 
 def test_the_last_beat_ends_at_the_reported_total() -> None:
     """D63: the bounds are the reported starts and total, where adding in order is 1 ms off a compensated sum."""
-    raw = json.loads(JOURNEY.read_text(encoding="utf-8"))
-    for beat, duration in zip(raw["scene"]["beats"], [3.5823, 2.7902, 2.069, 1], strict=True):
-        beat["duration"] = duration
-    project = load_text(json.dumps(raw))
+    project = _journey_a([3.5823, 2.7902, 2.069, 1])
     assert derived_starts([beat.duration for beat in project.scene.beats])[-1] == 8.442
     assert total_duration(project) == 9.441
     assert "        self.wait(_beat_time(8.442, 9.441, wait=True))\n" in generate(project)
@@ -505,14 +517,27 @@ def _fenced(spec: str, heading: str, language: str) -> str:
     return spec[begin:end]
 
 
+def _journey_a(durations: list[float]) -> Project:
+    """Journey A cut to its first ``len(durations)`` beats, which last ``durations``.
+
+    Each of its three objects enters in one of the first three beats, so it needs at least three.
+    """
+    raw = json.loads(JOURNEY.read_text(encoding="utf-8"))
+    raw["scene"]["beats"] = raw["scene"]["beats"][: len(durations)]
+    for beat, duration in zip(raw["scene"]["beats"], durations, strict=True):
+        beat["duration"] = duration
+    return load_text(json.dumps(raw))
+
+
 def _manim_frame_counts(source: str, fps: int) -> list[int]:
     """The frames each beat of ``source`` draws at ``fps``, by the rules of Manim 0.22.
 
-    A play draws ``len(np.arange(0, run_time, 1 / fps))`` frames (``Scene.get_time_progression``)
+    ``--fps`` reaches the scene as a float ``config.frame_rate``. A play draws
+    ``len(np.arange(0, run_time, 1 / fps))`` frames (``Scene.get_time_progression``)
     and a static wait ``int(seconds / (1 / fps))`` (``CairoRenderer.freeze_current_frame``).
     """
     module = ast.parse(source)
-    namespace: dict[str, object] = {"config": SimpleNamespace(frame_rate=fps)}
+    namespace: dict[str, object] = {"config": SimpleNamespace(frame_rate=float(fps))}
     helpers = [node for node in module.body if isinstance(node, ast.FunctionDef)]
     exec(compile(ast.Module(body=helpers, type_ignores=[]), "scene.py", "exec"), namespace)
     construct = next(
