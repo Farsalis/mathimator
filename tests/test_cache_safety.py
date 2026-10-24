@@ -346,7 +346,8 @@ def test_open_project_leaves_a_running_export_alone(
     try:
         fake_manim.wait_until_held()
         supervisor.handle_line(json.dumps({"cmd": "open_project", "id": "open", "path": str(project)}))
-        assert events[-1]["event"] == "state"
+        # The open is refused before it can sweep the export's media (D22).
+        assert (events[-1]["event"], events[-1]["code"]) == ("rejected", "export_running")
         assert supervisor.run_marker.is_file()
         assert all(path.is_file() for path in files)
     finally:
@@ -355,6 +356,32 @@ def test_open_project_leaves_a_running_export_alone(
     assert not job.thread.is_alive()
     assert _terminal(events, "export-1")["event"] == "done"
     assert not supervisor.run_marker.exists()
+
+
+def test_reopening_a_folder_leaves_a_preview_that_outlived_its_stop_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
+) -> None:
+    project = _project(tmp_path / "busy")
+    supervisor, events = _supervisor(project, monkeypatch)
+    # A Manim that is still alive when the 1 s the switch waits for it is over (C8.3).
+    monkeypatch.setattr(supervisor, "_kill_process", lambda job: None)
+    files = video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)
+    fake_manim.plan(files, hold=True)
+    supervisor.handle_line(json.dumps({"cmd": "render_preview", "id": "preview-1"}))
+    job = supervisor._current
+    assert job is not None
+    try:
+        fake_manim.wait_until_held()
+        supervisor.handle_line(json.dumps({"cmd": "open_project", "id": "open", "path": str(project)}))
+        # The bind does not sweep the media of a run that is still writing it.
+        assert [event["event"] for event in events if event.get("jobId") == "open"] == ["state"]
+        assert supervisor.run_marker.is_file()
+        assert all(path.is_file() for path in files)
+    finally:
+        fake_manim.release()
+        job.thread.join(timeout=60)
+    assert not job.thread.is_alive()
+    assert _terminal(events, "preview-1")["code"] == "cancelled"
 
 
 def test_the_run_marker_exists_only_while_manim_runs(

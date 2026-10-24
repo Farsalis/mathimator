@@ -2,12 +2,21 @@
 
 It speaks protocol 2 (``protocol.py``). The commands are ``status``,
 ``get_state``, ``edit``, ``undo``, ``redo``, ``code``, ``clear_cache``,
-``open_project``, ``render_preview``, ``export`` and ``cancel``. Every request
-gets exactly one reply line, except the jobs and ``cancel``: a job sends
-``started``, ``beat_ready`` (previews only) and one terminal ``done``,
-``error`` or ``rejected``. An unexpected exception is answered with
-``error internal`` and the worker keeps serving; every state change is
-all-or-nothing, so nothing is left half changed (D03).
+``open_project``, ``reload``, ``overwrite``, ``save_as``, ``render_preview``,
+``export`` and ``cancel``. Every request gets exactly one reply line, except
+the jobs and ``cancel``: a job sends ``started``, ``beat_ready`` (previews
+only) and one terminal ``done``, ``error`` or ``rejected``. An unexpected
+exception is answered with ``error internal`` and the worker keeps serving;
+every state change is all-or-nothing, so nothing is left half changed (D03).
+
+The worker is bound to at most one project folder (contract C8). While bound
+it holds the folder's lock (D58), the folder's identity (D57) and the SHA-256
+of project.json as last read or written (D59). A write or a render first
+checks that the folder is still there and that project.json is unchanged on
+disk, and refuses otherwise. Startup never exits on a project problem: the
+worker stays unbound and says why in ``ready.startupError``. The worker never
+creates a project folder and never writes an empty project.json over a missing
+one.
 
 This process does not import Manim or PyAV. A new preview cancels an in-flight
 preview. An export cancels an in-flight preview and then runs. While an export
@@ -56,9 +65,19 @@ from mathimator_worker.document import (
     scene_stamp,
 )
 from mathimator_worker.document_error import DocumentError
-from mathimator_worker.preview_index import IndexBeat, PreviewIndex
+from mathimator_worker.preview_index import IndexBeat, PreviewIndex, load_index
 from mathimator_worker.process_group import terminate_process_group, warm_process_table
 from mathimator_worker.progress import ManimProgress, discard_unfinished_partials
+from mathimator_worker.project_folder import (
+    ProjectLock,
+    ProjectLocked,
+    fingerprint,
+    folder_identity,
+    make_folders,
+    os_reason,
+    remove_quietly,
+    write_atomically,
+)
 from mathimator_worker.protocol import (
     PROTOCOL_VERSION,
     BadRequest,
@@ -74,6 +93,17 @@ from mathimator_worker.tex_failure import format_render_failure
 from mathimator_worker.win32_job import assign_kill_on_close, close_job, jobs_enabled, terminate_job
 
 NOT_A_PROJECT = "That folder is not a Mathimator project."
+PROJECT_UNAVAILABLE = "The project folder was moved or deleted."
+PROJECT_LOCKED = "This project is open in another Mathimator window."
+PROJECT_CHANGED = "project.json was changed outside Mathimator."
+EXPORT_RUNNING = "An export is already running."
+FILES_IN_USE = (
+    "Some cache files are in use and were not removed. Close other programs using this project and try again."
+)
+# worker.log moves to worker.log.1 at this size, replacing the older copy (D55).
+LOG_LIMIT = 5 * 1024 * 1024
+# Events whose payload the log records as a size only (D55).
+_SUMMARIZED_EVENTS = frozenset({"state", "code"})
 
 
 @dataclass
@@ -90,6 +120,8 @@ class _Job:
     run_marker: Path | None = None
     argv: list[str] = field(default_factory=list)
     quality: str = ""
+    # The binding generation the job started under (C7.1).
+    generation: int = 0
     captured: Project | None = None
     capture_stamp: str | None = None
     capture_keys: list[str] | None = None
@@ -103,6 +135,27 @@ class _Job:
         return "mp4"
 
 
+@dataclass
+class _Binding:
+    """What the worker holds for its bound folder (C8.1)."""
+
+    lock: ProjectLock
+    # The folder's (st_dev, st_ino) when it was bound (D57).
+    identity: tuple[int, int]
+    # The SHA-256 of project.json as last read or written (D59).
+    fingerprint: str
+
+
+@dataclass
+class _Claim:
+    """A folder that is locked and read, ready to bind. ``undo`` removes what claiming it created."""
+
+    folder: Path
+    binding: _Binding
+    project: Project
+    undo: Callable[[], None]
+
+
 class Supervisor:
     def __init__(
         self,
@@ -112,7 +165,6 @@ class Supervisor:
         init: bool,
     ) -> None:
         self.python = python
-        self.init = init
         # Resolve like _open_project does. Windows may hand over an 8.3 alias
         # such as C:\Users\JOHNSM~1, and TeX stops reading a path at "~" (G4.1).
         self.project = project.resolve()
@@ -125,6 +177,9 @@ class Supervisor:
         self._pending_preview: str | None = None
         self.session: Session | None = None
         self._index: PreviewIndex | None = None
+        self._binding: _Binding | None = None
+        # Counts the binds. A job records the one it started under (C7.1).
+        self._generation = 0
         # Why there is no session: the refusal of the startup project.json, or not_a_project in hand-written mode.
         self._startup_error: DocumentError | None = None
         self._handwritten = False
@@ -139,16 +194,43 @@ class Supervisor:
             "code": self._code,
             "clear_cache": self._clear_cache,
             "open_project": self._open_project,
+            "reload": self._reload,
+            "overwrite": self._overwrite,
+            "save_as": self._save_as,
             "render_preview": self._render_preview,
             "export": self._export,
             "cancel": self._cancel,
         }
         self._bind_paths()
-        self.media_dir.mkdir(parents=True, exist_ok=True)
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._sweep_interrupted_run()
-        self._load_initial()
-        self._warm_process_control()
+        self._start(init)
+
+    def _start(self, init: bool) -> None:
+        """Bind the startup folder in the order of C8.2. A refusal leaves the worker unbound and serving."""
+        identity = folder_identity(self.project)
+        if identity is None:
+            # Nothing is created, and the log goes to stderr (G1.3).
+            self._startup_error = DocumentError(PROJECT_UNAVAILABLE, code="project_unavailable")
+            return
+        if not init and not self.project_file.exists():
+            self._handwritten = True
+            self._startup_error = DocumentError(NOT_A_PROJECT, code="not_a_project")
+            self._sweep_interrupted_run()
+            return
+        try:
+            claim = self._claim(self.project, identity, init=init)
+        except DocumentError as exc:
+            self._startup_error = exc
+            self.log(f"project refused: {exc}")
+            return
+        with self._doc_lock:
+            self._bind_claim_locked(claim)
+
+    def close(self) -> None:
+        """Stop the running job and release the project lock, as exiting does."""
+        self._cancel_current()
+        with self._doc_lock:
+            if self._binding is not None:
+                self._binding.lock.release()
 
     def _bind_paths(self) -> None:
         root = self.project / ".mathimator"
@@ -181,27 +263,46 @@ class Supervisor:
         self._remove_run_marker(self.run_marker)
 
     def _warm_process_control(self) -> None:
-        if sys.platform != "win32":
-            return
         try:
             warm_process_table()
         except OSError as exc:
             self.log(f"process table warmup failed: {exc}")
 
     def log(self, message: str) -> None:
-        """Append one line to the log. Never raises (D03): a line the log file cannot take goes to stderr."""
+        """Append one line to the log. Never raises (D03) and never creates the project folder (G1.3).
+
+        A line goes to stderr when the log file cannot take it, or when no
+        folder is bound and there is no ``--log`` file.
+        """
         stamp = datetime.now(UTC).isoformat(timespec="milliseconds")
         line = f"{stamp} {message}\n"
         with self._log_lock:
+            if self._append_log_locked(line):
+                return
+            with contextlib.suppress(OSError, ValueError):
+                sys.stderr.write(line)
+                sys.stderr.flush()
+
+    def _append_log_locked(self, line: str) -> bool:
+        """Append ``line`` to the log file. Return False when there is none or it cannot take the line."""
+        # Read once: a bind on another thread changes the project and then its log path.
+        log_path = self.log_path
+        if self._log_override is None:
+            if self._binding is None and not self._handwritten:
+                return False
             try:
-                self.log_path.parent.mkdir(parents=True, exist_ok=True)
-                # A lone surrogate from a refused document must not stop the log.
-                with self.log_path.open("a", encoding="utf-8", errors="backslashreplace") as handle:
-                    handle.write(line)
+                # The log is <project>/.mathimator/logs/worker.log, so this checks the folder it is written to.
+                make_folders(log_path.parents[2], log_path.parent)
             except OSError:
-                with contextlib.suppress(OSError, ValueError):
-                    sys.stderr.write(line)
-                    sys.stderr.flush()
+                return False
+        _rotate_log(log_path)
+        try:
+            # A lone surrogate from a refused document must not stop the log.
+            with log_path.open("a", encoding="utf-8", errors="backslashreplace") as handle:
+                handle.write(line)
+        except OSError:
+            return False
+        return True
 
     def _log_exception(self, context: str) -> None:
         """Log ``context`` with the traceback of the exception being handled."""
@@ -212,17 +313,23 @@ class Supervisor:
 
         A line JSON cannot hold, such as one with a NaN, goes out as ``error internal``
         for the same id instead, so the shell never reads a line it cannot parse (C2).
+        The log records ``state`` and ``code`` lines by size only (D55).
         """
         try:
             payload = json.dumps(event, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError, RecursionError) as exc:
             self._log_exception(f"could not serialize a {event.get('event')} line")
             job_id = event.get("jobId")
-            payload = json.dumps(internal(job_id if isinstance(job_id, str) else None, exc), ensure_ascii=False)
+            event = internal(job_id if isinstance(job_id, str) else None, exc)
+            payload = json.dumps(event, ensure_ascii=False)
         with self._stdout_lock:
             sys.stdout.write(payload + "\n")
             sys.stdout.flush()
-        self.log(f"event {payload}")
+        name = event.get("event")
+        if name in _SUMMARIZED_EVENTS:
+            self.log(f"event {name} jobId={event.get('jobId')} bytes={len(payload.encode('utf-8'))}")
+        else:
+            self.log(f"event {payload}")
 
     def serve(self) -> None:
         self.log(f"supervisor listening project={self.project} python={self.python}")
@@ -230,7 +337,7 @@ class Supervisor:
             for line in sys.stdin:
                 self.handle_line(line)
         finally:
-            self._cancel_current()
+            self.close()
 
     def handle_line(self, line: str) -> None:
         text = line.strip()
@@ -256,32 +363,68 @@ class Supervisor:
     def _emit_error(self, job_id: str | None, code: str, message: str, details: str | None = None) -> None:
         self.emit(error(job_id, code, message, details))
 
-    def _load_initial(self) -> None:
-        if self.project_file.exists():
-            try:
-                project = _read_project(self.project_file)
-            except DocumentError as exc:
-                self._startup_error = exc
-                self.log(f"project refused: {exc}")
-                return
-            self._adopt(project)
-            return
-        if self.init:
-            project = empty_project()
-            with self._doc_lock:
-                self._write_project_locked(project)
-                self._adopt(project)
-            return
-        self._handwritten = True
-        self._startup_error = DocumentError(NOT_A_PROJECT, code="not_a_project")
+    def _claim(self, folder: Path, identity: tuple[int, int], *, init: bool) -> _Claim:
+        """Lock ``folder``, write an empty project.json there when ``init`` asks for one, and read it.
 
-    def _adopt(self, project: Project) -> None:
-        """Caller holds ``_doc_lock``, or startup has not yet started threads."""
-        self.session = Session(project)
-        self._index = self._read_index()
-        self.session.load_rendered(self._read_rendered())
-        self._rebuild_index_locked()
-        self._save_sidecars_locked()
+        These are steps 3 to 5 of C8.2 and 4 to 6 of C8.3. Reopening the bound
+        folder keeps its lock. A refusal raises DocumentError after undoing
+        what the attempt created.
+        """
+        project_file = folder / "project.json"
+        with contextlib.ExitStack() as undo:
+            bound = self._binding
+            if bound is not None and bound.identity == identity:
+                lock = bound.lock
+            else:
+                lock = _lock_folder(folder)
+                undo.callback(lock.discard)
+            if init and not project_file.exists():
+                try:
+                    write_atomically(project_file, dumps_project(empty_project()).encode("utf-8"))
+                except OSError as exc:
+                    raise _save_failed(exc) from exc
+                undo.callback(remove_quietly, project_file)
+            data = _read_project_bytes(project_file)
+            project = load_bytes(data)
+            return _Claim(folder, _Binding(lock, identity, fingerprint(data)), project, undo.pop_all().close)
+
+    def _bind_claim_locked(self, claim: _Claim) -> None:
+        """Bind a claimed folder with a new session, undo history cleared. Caller holds ``_doc_lock``."""
+        try:
+            self._bind_locked(claim.folder, claim.binding, Session(claim.project))
+        except BaseException:
+            claim.undo()
+            raise
+
+    def _bind_locked(self, folder: Path, binding: _Binding, session: Session) -> None:
+        """Bind ``folder`` with ``session`` under the next binding generation. Caller holds ``_doc_lock``.
+
+        A new session takes the folder's render records; the bound session
+        (Save As) keeps its own. The preview index is read from the folder
+        and rebuilt. A bind that fails part way puts the old binding back
+        whole, with its lock still held (D03, F005).
+        """
+        previous, old_session = self._binding, self.session
+        kept = (self.project, previous, old_session, self._index, self._handwritten, self._startup_error)
+        try:
+            self.project, self._binding, self.session = folder, binding, session
+            self._handwritten = False
+            self._startup_error = None
+            self._bind_paths()
+            if not self._render_running_in(self.media_dir):
+                self._sweep_interrupted_run()
+            if session is not old_session:
+                session.load_rendered(self._read_rendered())
+            self._index = self._read_index()
+            self._rebuild_index_locked()
+            self._save_sidecars_locked()
+        except BaseException:
+            self.project, self._binding, self.session, self._index, self._handwritten, self._startup_error = kept
+            self._bind_paths()
+            raise
+        self._generation += 1
+        if previous is not None and previous.lock is not binding.lock:
+            previous.lock.release()
 
     def _status(self, request: Request) -> None:
         startup = self._startup_error
@@ -311,6 +454,7 @@ class Supervisor:
         return rejected(job_id, "no_project", f"No project is open.{reason}")
 
     def _edit(self, request: Request) -> None:
+        """Apply one edit in the order of C8.1. An edit that changes nothing writes nothing (D08)."""
         with self._doc_lock:
             session = self.session
             if session is None:
@@ -318,13 +462,21 @@ class Supervisor:
             else:
                 try:
                     project, result = session.edited(request.mapping("edit"))
+                    payload = dumps_project(project)
+                    changed = payload != dumps_project(session.project)
+                    if changed:
+                        # Saved before it is committed, so a refused or failed save changes nothing (D05).
+                        self._save_locked(payload)
                 except DocumentError as exc:
                     event = _refusal(request.id, exc)
                 else:
-                    # Saved before it is committed, so a failed save changes nothing.
-                    self._write_project_locked(project)
-                    session.commit(project)
-                    event = self._changed_locked(request.id)
+                    if changed:
+                        session.commit(project)
+                        event = self._changed_locked(request.id)
+                    else:
+                        # No undo step, and Redo is kept.
+                        event = self._state_locked(request.id)
+                    event["changed"] = changed
                     self._attach_focus(event, result)
         self.emit(event)
 
@@ -342,10 +494,10 @@ class Supervisor:
             else:
                 try:
                     project = session.undo_target() if undo else session.redo_target()
+                    self._save_locked(dumps_project(project))
                 except DocumentError as exc:
                     event = _refusal(job_id, exc)
                 else:
-                    self._write_project_locked(project)
                     if undo:
                         session.undo()
                     else:
@@ -372,38 +524,151 @@ class Supervisor:
         self.emit(event)
 
     def _open_project(self, request: Request) -> None:
+        """Bind a folder, or the bound one afresh, in the order of C8.3. A refusal changes nothing."""
+        if self._export_running():
+            self._reject(request.id, "export_running", EXPORT_RUNNING)
+            return
         raw_path = request.string("path")
         folder = Path(raw_path)
         if folder.name == "project.json" and folder.is_file():
             folder = folder.parent
-        project_file = folder / "project.json"
+        init = request.flag("init")
         # An empty path names no folder, although Path("") is the working directory.
-        if raw_path == "" or not project_file.exists():
+        identity = folder_identity(folder) if raw_path else None
+        if identity is None or not (init or (folder / "project.json").exists()):
             self._reject(request.id, "not_a_project", NOT_A_PROJECT)
             return
         try:
-            project = _read_project(project_file)
+            claim = self._claim(folder.resolve(), identity, init=init)
         except DocumentError as exc:
-            self._reject(request.id, exc.code, str(exc), exc.field)
+            self.emit(_refusal(request.id, exc))
             return
-        self._stop_preview()
+        self._stop_previews()
         with self._doc_lock:
-            # A switch that fails part way puts the old binding back whole (D03, F005).
-            kept = (self.project, self.session, self._index, self._handwritten, self._startup_error)
+            self._bind_claim_locked(claim)
+            event = self._state_locked(request.id)
+        self.emit(event)
+
+    def _reload(self, request: Request) -> None:
+        """Read project.json again as a new session, undo history cleared (C8.3). Jobs keep running."""
+        with self._doc_lock:
+            session = self.session
+            if session is None:
+                event = self._no_project(request.id)
+            else:
+                try:
+                    binding, data = self._read_disk_locked()
+                    project = load_bytes(data)
+                except DocumentError as exc:
+                    event = _refusal(request.id, exc)
+                else:
+                    replacement = Session(project)
+                    replacement.rendered = session.rendered
+                    self.session = replacement
+                    binding.fingerprint = fingerprint(data)
+                    event = self._changed_locked(request.id)
+        self.emit(event)
+
+    def _overwrite(self, request: Request) -> None:
+        """Write the document in memory over project.json, whatever changed on disk (D59)."""
+        with self._doc_lock:
+            session = self.session
+            if session is None:
+                event = self._no_project(request.id)
+            else:
+                try:
+                    self._save_locked(dumps_project(session.project), overwrite=True)
+                except DocumentError as exc:
+                    event = _refusal(request.id, exc)
+                else:
+                    event = self._state_locked(request.id)
+        self.emit(event)
+
+    def _save_as(self, request: Request) -> None:
+        """Copy the project into an empty folder and bind that, keeping the session and its history (D29, C8.3).
+
+        The old folder is never changed. A refusal removes what was written in the target.
+        """
+        session = self.session
+        if session is None:
+            self.emit(self._no_project(request.id))
+            return
+        if self._export_running():
+            self._reject(request.id, "export_running", EXPORT_RUNNING)
+            return
+        raw_path = request.string("path")
+        target = Path(raw_path)
+        identity = folder_identity(target) if raw_path else None
+        if identity is None:
+            self._reject(request.id, "save_as_failed", _save_as_failed(target, "it is not a folder"))
+            return
+        problem = self._save_as_problem(target, identity)
+        if problem is not None:
+            self._reject(request.id, "save_as_failed", _save_as_failed(target, problem))
+            return
+        target = target.resolve()
+        data = dumps_project(session.project).encode("utf-8")
+        try:
+            with contextlib.ExitStack() as undo:
+                lock = ProjectLock.acquire(target)
+                undo.callback(lock.discard)
+                self._stop_previews()
+                write_atomically(target / "project.json", data)
+                undo.callback(remove_quietly, target / "project.json")
+                self._copy_cache_to(target, session)
+                rollback = undo.pop_all()
+        except OSError as exc:
+            self._reject(request.id, "save_as_failed", _save_as_failed(target, os_reason(exc)))
+            return
+        with self._doc_lock:
             try:
-                self.project = folder.resolve()
-                self._bind_paths()
-                self._handwritten = False
-                self._startup_error = None
-                if not self._render_running_in(self.media_dir):
-                    self._sweep_interrupted_run()
-                self._adopt(project)
+                self._bind_locked(target, _Binding(lock, identity, fingerprint(data)), session)
             except BaseException:
-                self.project, self.session, self._index, self._handwritten, self._startup_error = kept
-                self._bind_paths()
+                rollback.close()
                 raise
             event = self._state_locked(request.id)
         self.emit(event)
+
+    def _save_as_problem(self, target: Path, identity: tuple[int, int]) -> str | None:
+        """Why the folder ``target`` cannot take the project, or None when it can."""
+        if self._binding is not None and identity == self._binding.identity:
+            return "it is the folder of the open project"
+        for name in ("project.json", ".mathimator"):
+            if (target / name).exists():
+                return f"it already holds {name}"
+        return None
+
+    def _copy_cache_to(self, target: Path, session: Session) -> None:
+        """Copy the render cache and the exports into ``target`` (C8.3).
+
+        A folder the old project no longer has is skipped (D57). The cache
+        records are written from memory, with the index paths relative to the
+        project, so they name the copies. Nothing else is copied: not the
+        generated code, the glyph files, the logs, the lock or a temp-project
+        marker.
+        """
+        exports = self.project / ".mathimator" / "exports"
+        for source in (self.media_dir, self.last_good_dir, exports):
+            if not source.is_dir():
+                continue
+            try:
+                shutil.copytree(source, target / source.relative_to(self.project))
+            except shutil.Error as exc:
+                # copytree reports each file it could not copy as text. The first one says why.
+                raise OSError(exc.args[0][0][2]) from exc
+        with self._doc_lock:
+            records: dict[Path, object] = {self.rendered_path: session.rendered_payload()}
+            if self._index is not None:
+                records[self.index_path] = self._index.stored(self.project)
+        for path, value in records.items():
+            copy = target / path.relative_to(self.project)
+            make_folders(target, copy.parent)
+            copy.write_text(_record_text(value), encoding="utf-8", newline="\n")
+
+    def _export_running(self) -> bool:
+        with self._state_lock:
+            current = self._busy_locked()
+        return current is not None and current.profile == "export"
 
     def _attach_focus(self, payload: dict[str, object], result: EditResult) -> None:
         if result.focus_beat_id is None and result.focus_object_id is None:
@@ -432,7 +697,7 @@ class Supervisor:
         with self._state_lock:
             current = self._busy_locked()
         if current is not None and current.profile == "export":
-            self._reject(request.id, "export_running", "An export is already running.")
+            self._reject(request.id, "export_running", EXPORT_RUNNING)
             return
         self._start_after(current, request.id, "export")
 
@@ -443,10 +708,16 @@ class Supervisor:
             return
         self._start_job(job_id, profile)
 
-    def _stop_preview(self) -> None:
-        """Stop a running preview before a switch, which goes ahead even if it is still alive after 1 s."""
+    def _stop_previews(self) -> None:
+        """Before a switch: cancel a held preview and stop a running one (C8.3).
+
+        The switch goes ahead even if the running preview is still alive after 1 s.
+        """
         with self._state_lock:
             current = self._busy_locked()
+            held, self._pending_preview = self._pending_preview, None
+        if held is not None:
+            self.emit(cancelled(held))
         if current is not None and current.profile == "preview":
             self._stop(current)
 
@@ -551,40 +822,67 @@ class Supervisor:
             close_job(handle)
 
     def _clear_cache(self, request: Request) -> None:
-        if self.session is None:
-            self.emit(self._no_project(request.id))
-            return
+        """Delete the derived files (C8.3). Files another program holds stay, and the reply says so (D58)."""
         with self._state_lock:
-            busy = self._busy_locked() is not None
-        if busy:
-            self._reject(request.id, "render_in_progress", "A render is in progress.")
-            return
-        root = self.project / ".mathimator"
+            busy = self._busy_locked() is not None or self._pending_preview is not None
+        with self._doc_lock:
+            session = self.session
+            if session is None:
+                event = self._no_project(request.id)
+            elif busy:
+                event = rejected(request.id, "render_in_progress", "A render is in progress.")
+            else:
+                try:
+                    self._check_root_locked()
+                except DocumentError as exc:
+                    event = _refusal(request.id, exc)
+                else:
+                    left = self._remove_derived()
+                    session.rendered.clear()
+                    self._index = None
+                    self._rebuild_index_locked()
+                    self._save_sidecars_locked()
+                    event = self._state_locked(request.id)
+                    if left:
+                        event["warning"] = {"code": "files_in_use", "message": FILES_IN_USE}
+        self.emit(event)
+
+    def _remove_derived(self) -> list[str]:
+        """Delete the cache, the generated code, the glyph files and every log but the active one (D55).
+
+        The active log is emptied. project.json, exports/, the lock and the
+        temp-project marker stay. Return what could not be removed, each with
+        the OS reason.
+        """
+        left: list[str] = []
+
+        def collect(function: object, path: str, exc: BaseException) -> None:
+            if not isinstance(exc, FileNotFoundError):
+                left.append(f"{path}: {exc}")
+
+        state = self.project / ".mathimator"
         for name in ("cache", "codegen", "equation", "typst"):
-            path = root / name
-            if path.exists():
-                shutil.rmtree(path)
-        logs = root / "logs"
+            shutil.rmtree(state / name, onexc=collect)
+        logs = state / "logs"
         if logs.is_dir():
             for child in list(logs.iterdir()):
-                if child.resolve() == self.log_path.resolve():
+                if child == self.log_path:
                     continue
                 if child.is_dir():
-                    shutil.rmtree(child, ignore_errors=True)
-                else:
-                    try:
-                        child.unlink()
-                    except OSError:
-                        self.log(f"could not remove {child}")
-        with self._doc_lock:
-            self.media_dir.mkdir(parents=True, exist_ok=True)
-            if self.session is not None:
-                self.session.rendered.clear()
-                self._index = None
-                self._rebuild_index_locked()
-                self._save_sidecars_locked()
-            payload = self._state_locked(request.id)
-        self.emit(payload)
+                    shutil.rmtree(child, onexc=collect)
+                    continue
+                try:
+                    child.unlink()
+                except OSError as exc:
+                    collect(child.unlink, str(child), exc)
+        with self._log_lock:
+            try:
+                os.truncate(self.log_path, 0)
+            except OSError as exc:
+                collect(os.truncate, str(self.log_path), exc)
+        for item in left:
+            self.log(f"could not remove {item}")
+        return left
 
     def _run_job(self, job: _Job) -> None:
         try:
@@ -766,6 +1064,10 @@ class Supervisor:
             stopped = job.cancel.is_set() or self._current is not job
         if handle:
             self.log(f"job assigned pid={proc.pid}")
+        elif sys.platform == "win32":
+            # Without a Job Object, a cancel walks the process table. Its helper
+            # starts now, beside Manim, and never at startup (D15).
+            threading.Thread(target=self._warm_process_control, name="process-table", daemon=True).start()
         if stopped:
             self._kill_process(job)
             self._discard_partials(job, started, set())
@@ -868,9 +1170,17 @@ class Supervisor:
         job.scene_path = self.scene_path
         job.media_dir = self.media_dir
         job.run_marker = self.run_marker
+        job.generation = self._generation
         if self.session is None:
             return self._prepare_handwritten_locked(job)
-        self.media_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            # The start never writes project.json: every edit has saved it, and
+            # a file changed outside Mathimator must not be overwritten (D59).
+            self._check_disk_locked()
+        except DocumentError as exc:
+            self._end(job, _refusal(job.job_id, exc))
+            return False
+        make_folders(self.project, self.media_dir)
         project = self.session.project
         export_format = "mp4"
         export_transparent = False
@@ -882,7 +1192,6 @@ class Supervisor:
                 self.log("export cache hit")
                 self._end(job, {"event": "done", "jobId": job.job_id, "path": str(existing), "current": True})
                 return False
-        self._write_project_locked(project)
         try:
             source = generate(project)
         except CodegenError as exc:
@@ -894,7 +1203,7 @@ class Supervisor:
         codegen = self.scene_path.parent
         try:
             _remove_tree(codegen)
-            codegen.mkdir(parents=True)
+            make_folders(self.project, codegen)
             self.scene_path.write_text(source, encoding="utf-8", newline="\n")
         except OSError as exc:
             self._end(job, error(job.job_id, "render_failed", f"could not write {self.scene_path}: {exc}"))
@@ -938,7 +1247,7 @@ class Supervisor:
             message = f"No project is open, and {self.scene_path} does not exist."
             self._end(job, rejected(job.job_id, "no_project", message))
             return False
-        self.media_dir.mkdir(parents=True, exist_ok=True)
+        make_folders(self.project, self.media_dir)
         _width, height, fps = profile_size(job.profile)
         job.quality = f"{height}p{fps}"
         job.argv = build_manim_argv(self.python, self.scene_path, self.media_dir, job.profile)
@@ -995,7 +1304,8 @@ class Supervisor:
     def _matches_locked(self, job: _Job) -> bool:
         if self.session is None or job.capture_stamp is None or job.capture_keys is None:
             return False
-        if job.profile != "preview":
+        # A job of a folder bound before never records into this one's index.
+        if job.profile != "preview" or job.generation != self._generation:
             return False
         return job.capture_stamp == scene_stamp(self.session.project) and job.capture_keys == beat_cache_keys(
             self.session.project, "preview"
@@ -1034,7 +1344,7 @@ class Supervisor:
             if expected != fmt:
                 return None
         folder = project_dir / ".mathimator" / "exports" / export_folder_name(captured)
-        folder.mkdir(parents=True, exist_ok=True)
+        make_folders(project_dir, folder)
         if png_sequence:
             target = folder / file_name
             if target.exists():
@@ -1084,7 +1394,7 @@ class Supervisor:
     def _copy_last_good_locked(self) -> None:
         if self._index is None:
             return
-        self.last_good_dir.mkdir(parents=True, exist_ok=True)
+        make_folders(self.project, self.last_good_dir)
         for beat in self._index.beats:
             if beat.fresh:
                 continue
@@ -1144,23 +1454,50 @@ class Supervisor:
                     fresh=partial is not None,
                 )
             )
-        if any(dirty):
+        if any(dirty) or (output is not None and not self._clips.complete(Path(output))):
             output = None
         self._index = PreviewIndex(output=output, beats=beats)
         self.session.preview_index = self._index.to_dict()
 
-    def _write_project_locked(self, project: Project) -> None:
-        """Replace project.json with ``project``. On failure the file is left as it was, and OSError is raised."""
-        payload = dumps_project(project)
-        self.project_file.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.project_file.with_suffix(".json.tmp")
+    def _check_root_locked(self) -> _Binding:
+        """Check 1 of C8.1: the bound folder is still there, with the identity it was bound with (D57)."""
+        binding = self._binding
+        if binding is None or folder_identity(self.project) != binding.identity:
+            raise DocumentError(PROJECT_UNAVAILABLE, code="project_unavailable")
+        return binding
+
+    def _check_file_locked(self) -> _Binding:
+        """Checks 1 and 2 of C8.1: the folder, and a project.json in it."""
+        binding = self._check_root_locked()
+        if not self.project_file.exists():
+            raise DocumentError(PROJECT_UNAVAILABLE, code="project_unavailable")
+        return binding
+
+    def _read_disk_locked(self) -> tuple[_Binding, bytes]:
+        """Checks 1 to 3 of C8.1: the folder, then the bytes of its project.json (G5.9)."""
+        binding = self._check_file_locked()
+        return binding, _read_project_bytes(self.project_file)
+
+    def _check_disk_locked(self) -> _Binding:
+        """The checks of C8.1 before a write or a render, ending with the fingerprint (D59)."""
+        binding, data = self._read_disk_locked()
+        if fingerprint(data) != binding.fingerprint:
+            raise DocumentError(PROJECT_CHANGED, code="project_changed")
+        return binding
+
+    def _save_locked(self, payload: str, *, overwrite: bool = False) -> None:
+        """Write ``payload`` as project.json after the checks of C8.1, and take its fingerprint.
+
+        ``overwrite`` skips the fingerprint check (D59). Raises DocumentError,
+        leaving the file and the fingerprint as they were (D05).
+        """
+        binding = self._check_file_locked() if overwrite else self._check_disk_locked()
+        data = payload.encode("utf-8")
         try:
-            temporary.write_text(payload, encoding="utf-8", newline="\n")
-            os.replace(temporary, self.project_file)
-        except OSError:
-            with contextlib.suppress(OSError):
-                temporary.unlink(missing_ok=True)
-            raise
+            write_atomically(self.project_file, data)
+        except OSError as exc:
+            raise _save_failed(exc) from exc
+        binding.fingerprint = fingerprint(data)
 
     def _save_sidecars_locked(self) -> None:
         if self.session is None:
@@ -1171,13 +1508,13 @@ class Supervisor:
     def _write_index_locked(self) -> None:
         if self._index is None:
             return
-        self._write_record(self.index_path, self._index.to_dict())
+        self._write_record(self.index_path, self._index.stored(self.project))
 
     def _write_record(self, path: Path, value: object) -> None:
-        """Write one cache record. A record that cannot be written is logged, not fatal."""
+        """Write one cache record. A record that cannot be written is logged, not fatal (C8.1)."""
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8", newline="\n")
+            make_folders(self.project, path.parent)
+            path.write_text(_record_text(value), encoding="utf-8", newline="\n")
         except OSError as exc:
             self.log(f"could not write {path}: {exc}")
 
@@ -1185,30 +1522,8 @@ class Supervisor:
         return _read_record(self.rendered_path)
 
     def _read_index(self) -> PreviewIndex | None:
-        raw = _read_record(self.index_path)
-        if not isinstance(raw, dict) or not isinstance(raw.get("beats"), list):
-            return None
-        beats: list[IndexBeat] = []
-        for item in raw["beats"]:
-            if not isinstance(item, dict):
-                continue
-            beat_id = item.get("id")
-            index = item.get("index")
-            if not isinstance(beat_id, str) or not isinstance(index, int):
-                continue
-            beats.append(
-                IndexBeat(
-                    id=beat_id,
-                    index=index,
-                    derived_start=_as_float(item.get("derivedStart")),
-                    duration=_as_float(item.get("duration")),
-                    partial=item.get("partial") if isinstance(item.get("partial"), str) else None,
-                    last_good=item.get("lastGood") if isinstance(item.get("lastGood"), str) else None,
-                    fresh=item.get("fresh") is True,
-                )
-            )
-        output = raw.get("output")
-        return PreviewIndex(output=output if isinstance(output, str) else None, beats=beats)
+        """The stored index, keeping only paths inside this project's media and last-good folders (D18, F035)."""
+        return load_index(_read_record(self.index_path), self.project, (self.media_dir, self.last_good_dir))
 
     def _find_output(self, job: _Job) -> Path | None:
         if job.scene_path is None or job.media_dir is None or not job.quality:
@@ -1271,13 +1586,44 @@ def _frame_count_problem(frames: Path, reported: int | None) -> str | None:
     return None
 
 
-def _read_project(project_file: Path) -> Project:
-    """Read, decode and validate project.json for startup and ``open_project``."""
+def _read_project_bytes(project_file: Path) -> bytes:
+    """The bytes of project.json, or ``read_failed`` with the OS reason (G5.9)."""
     try:
-        data = project_file.read_bytes()
+        return project_file.read_bytes()
     except OSError as exc:
-        raise DocumentError(f"Could not read project.json: {exc.strerror or exc}.", code="read_failed") from exc
-    return load_bytes(data)
+        raise DocumentError(f"Could not read project.json: {os_reason(exc)}.", code="read_failed") from exc
+
+
+def _lock_folder(folder: Path) -> ProjectLock:
+    """Take ``folder``'s project lock (D58), or refuse with ``project_locked`` or ``lock_failed``."""
+    try:
+        return ProjectLock.acquire(folder)
+    except ProjectLocked as exc:
+        raise DocumentError(PROJECT_LOCKED, code="project_locked") from exc
+    except OSError as exc:
+        raise DocumentError(f"Mathimator cannot write to {folder}: {os_reason(exc)}.", code="lock_failed") from exc
+
+
+def _rotate_log(log_path: Path) -> None:
+    """Move a full log to ``<log>.1``, replacing the older copy (D55).
+
+    A log that another program holds open is rotated by a later line.
+    """
+    with contextlib.suppress(OSError):
+        if log_path.stat().st_size >= LOG_LIMIT:
+            os.replace(log_path, log_path.with_name(f"{log_path.name}.1"))
+
+
+def _save_failed(exc: OSError) -> DocumentError:
+    return DocumentError(f"Could not save project.json: {os_reason(exc)}. The change was undone.", code="save_failed")
+
+
+def _save_as_failed(target: Path, reason: str) -> str:
+    return f"Could not save the project to {target}: {reason}."
+
+
+def _record_text(value: object) -> str:
+    return json.dumps(value, indent=2) + "\n"
 
 
 def _refusal(job_id: str, exc: DocumentError) -> dict[str, object]:
@@ -1333,9 +1679,3 @@ def _artifact_ready(path: Path) -> bool:
     if path.is_dir():
         return any(path.glob("*.png"))
     return False
-
-
-def _as_float(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 0.0
-    return float(value)

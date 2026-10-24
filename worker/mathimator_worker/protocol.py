@@ -29,6 +29,9 @@ REQUEST_FIELDS: dict[str, dict[str, tuple[str, bool]]] = {
     "code": {},
     "clear_cache": {},
     "open_project": {"path": ("a string", True), "init": ("a boolean", False)},
+    "reload": {},
+    "overwrite": {},
+    "save_as": {"path": ("a string", True)},
     "render_preview": {},
     "export": {"force": ("a boolean", False)},
     "cancel": {"jobId": ("a non-empty string", True)},
@@ -63,6 +66,10 @@ class Request:
 
     def mapping(self, name: str) -> dict[str, object]:
         return cast(dict[str, object], self.fields[name])
+
+    def flag(self, name: str) -> bool:
+        """An optional boolean field, False when the request leaves it out."""
+        return self.fields.get(name) is True
 
 
 def parse_request(line: str) -> Request:

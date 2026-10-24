@@ -1,8 +1,9 @@
 """Helpers shared by every test module.
 
-Repo paths, the render interpreter, the supervisor client, fake interpreters,
-the fake ``manim`` package, minimal complete clips, and video probes. ``OUT``
-and the scene paths belong to the phase 1 tests.
+Repo paths, the render interpreter, the supervisor client, the reader of an
+in-process supervisor's stdout, fake interpreters, the fake ``manim`` package,
+minimal complete clips, and video probes. ``OUT`` and the scene paths belong
+to the phase 1 tests.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from mathimator_worker.jsonio import loads
 from mathimator_worker.supervisor import partial_movie_dir
 
 REPO = Path(__file__).resolve().parents[1]
@@ -219,6 +221,36 @@ def probe_video(path: Path) -> tuple[float, int, int]:
         width = int(stream.codec_context.width)
         height = int(stream.codec_context.height)
     return duration, width, height
+
+
+class Stdout:
+    """Every line an in-process supervisor wrote, each parsed as strict JSON, the way the shell parses it."""
+
+    def __init__(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._capsys = capsys
+        self.lines: list[dict[str, Any]] = []
+
+    def read(self) -> list[dict[str, Any]]:
+        for text in self._capsys.readouterr().out.splitlines():
+            line = loads(text)
+            assert isinstance(line, dict), text
+            self.lines.append(line)
+        return self.lines
+
+    def last(self) -> dict[str, Any]:
+        return self.read()[-1]
+
+    def of(self, job_id: str) -> list[dict[str, Any]]:
+        return [line for line in self.read() if line["jobId"] == job_id]
+
+    def wait_for(self, job_id: str, event: str) -> dict[str, Any]:
+        deadline = time.monotonic() + 30
+        while True:
+            found = [line for line in self.of(job_id) if line["event"] == event]
+            if found:
+                return found[0]
+            assert time.monotonic() < deadline, self.lines
+            time.sleep(0.02)
 
 
 class SupervisorClient:

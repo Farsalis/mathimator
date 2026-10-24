@@ -13,59 +13,21 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from mathimator_worker import process_group
 from mathimator_worker import supervisor as supervisor_module
 from mathimator_worker.document import NOT_UTF8
-from mathimator_worker.jsonio import loads
 from mathimator_worker.protocol import PROTOCOL_VERSION, REQUEST_FIELDS
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import NOT_A_PROJECT, Supervisor, _Job
-from tests.support import REFERENCE, REPO, FakeManim, complete_clip, handwritten_project, video_render
+from tests.support import REFERENCE, REPO, FakeManim, Stdout, complete_clip, handwritten_project, video_render
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 SHARED_COMMANDS = REPO / "tests" / "fixtures" / "protocol" / "commands.json"
 NO_PROJECT = f"No project is open. {NOT_A_PROJECT}"
-
-
-class Stdout:
-    """Every line the supervisor wrote, each parsed as strict JSON."""
-
-    def __init__(self, capsys: pytest.CaptureFixture[str]) -> None:
-        self._capsys = capsys
-        self.lines: list[dict[str, Any]] = []
-
-    def read(self) -> list[dict[str, Any]]:
-        for text in self._capsys.readouterr().out.splitlines():
-            line = loads(text)
-            assert isinstance(line, dict), text
-            self.lines.append(line)
-        return self.lines
-
-    def last(self) -> dict[str, Any]:
-        return self.read()[-1]
-
-    def of(self, job_id: str) -> list[dict[str, Any]]:
-        return [line for line in self.read() if line["jobId"] == job_id]
-
-    def wait_for(self, job_id: str, event: str) -> dict[str, Any]:
-        deadline = time.monotonic() + 30
-        while True:
-            found = [line for line in self.of(job_id) if line["event"] == event]
-            if found:
-                return found[0]
-            assert time.monotonic() < deadline, self.lines
-            time.sleep(0.02)
-
-
-@pytest.fixture
-def stdout(capsys: pytest.CaptureFixture[str]) -> Stdout:
-    return Stdout(capsys)
 
 
 @pytest.fixture
@@ -190,7 +152,9 @@ def test_a_change_that_cannot_be_saved_is_not_applied(
         patched.setattr(os, "replace", locked)
         _send(supervisor, cmd="edit", id="edit", edit={"op": "set_project_name", "name": "Unsaved"})
         _send(supervisor, cmd="undo", id="undo")
-    assert [(line["jobId"], line["code"]) for line in stdout.read()[1:]] == [("edit", "internal"), ("undo", "internal")]
+    refusals = stdout.read()[1:]
+    assert [(line["jobId"], line["code"]) for line in refusals] == [("edit", "save_failed"), ("undo", "save_failed")]
+    assert refusals[0]["message"] == "Could not save project.json: The file is in use. The change was undone."
     assert supervisor.session is not None
     assert supervisor.session.project.name == "Renamed"
     assert (_undo_depth(supervisor), supervisor.session.can_redo()) == (1, False)
@@ -235,10 +199,8 @@ def test_the_worker_commands_match_the_shared_list(tmp_path: Path, monkeypatch: 
     shared = json.loads(SHARED_COMMANDS.read_text(encoding="utf-8"))
     commands = set(shared["workerCommands"])
     assert {entry["worker"] for entry in shared["tauriCommands"]} - {None} <= commands
-    # The project lifecycle commands of C8.3 are not served yet, so they are bad requests until they are.
-    assert commands - set(REQUEST_FIELDS) == {"reload", "overwrite", "save_as"}
-    assert set(REQUEST_FIELDS) <= commands
-    assert set(_supervisor(tmp_path / "project", monkeypatch)._commands) == set(REQUEST_FIELDS)
+    assert commands == set(REQUEST_FIELDS)
+    assert set(_supervisor(tmp_path / "project", monkeypatch)._commands) == commands
 
 
 # The handshake and startup errors (C6)
@@ -334,17 +296,20 @@ def test_a_switch_that_fails_part_way_keeps_the_old_binding(
     def broken(self: Supervisor) -> None:
         raise RuntimeError("index bug")
 
+    second = _journey(tmp_path / "second")
     with monkeypatch.context() as patched:
         patched.setattr(Supervisor, "_rebuild_index_locked", broken)
-        _send(supervisor, cmd="open_project", id="open", path=str(_journey(tmp_path / "second")))
+        _send(supervisor, cmd="open_project", id="open", path=str(second))
     _send(supervisor, cmd="get_state", id="state")
     _send(supervisor, cmd="undo", id="undo")
     renamed, failed, state, undone = stdout.read()
     assert (failed["event"], failed["jobId"], failed["code"]) == ("error", "open", "internal")
-    assert {**state, "jobId": "rename"} == renamed
+    assert {**state, "jobId": "rename", "changed": True} == renamed
     assert supervisor.project_file == first.resolve() / "project.json"
     assert (undone["event"], undone["document"]["name"]) == ("state", "Sine introduction")
     assert json.loads(supervisor.project_file.read_text(encoding="utf-8"))["name"] == "Sine introduction"
+    # The failed attempt released the second folder's lock and removed what it created there.
+    assert sorted(path.name for path in second.iterdir()) == ["project.json"]
 
 
 # Cancel (C7.3)
@@ -590,11 +555,15 @@ def test_hand_written_mode_renders_the_scene_in_the_folder(
     supervisor = _supervisor(handwritten_project(tmp_path / "handwritten", REFERENCE), monkeypatch, init=False)
     _send(supervisor, cmd="status", id="status")
     assert stdout.last()["startupError"] == {"code": "not_a_project", "message": NOT_A_PROJECT}
-    for command in ("get_state", "undo", "redo", "code", "clear_cache"):
+    for command in ("get_state", "undo", "redo", "code", "clear_cache", "reload", "overwrite"):
         _send(supervisor, cmd=command, id=command)
         assert stdout.last() == {"event": "rejected", "jobId": command, "code": "no_project", "message": NO_PROJECT}
     _send(supervisor, cmd="edit", id="edit", edit={"op": "set_project_name", "name": "Named"})
     assert stdout.last()["code"] == "no_project"
+    _send(supervisor, cmd="save_as", id="save", path=str(tmp_path))
+    assert stdout.last()["code"] == "no_project"
+    # Hand-written mode takes no lock.
+    assert not (supervisor.project / ".mathimator" / "lock").exists()
 
     media = supervisor.media_dir
     clips = [complete_clip(".mp4")] * 2

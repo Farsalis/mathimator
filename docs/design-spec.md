@@ -188,23 +188,30 @@ Failure: any window other than Mathimator opens; the command line contains `open
 
 ## 4. Scene data model
 
-A project is a folder. `project.json` is the document. Everything under `.mathimator/` is derived.
+A project is a folder. `project.json` is the document. Everything under `.mathimator/` is derived, except the lock.
 
 ```text
 <project>/
   project.json
   .mathimator/
+    lock
     codegen/scene.py
     cache/media/
     cache/last-good/
     exports/<exportKey>/
-    typst/
+    equation/
     logs/worker.log
 ```
 
-Deleting `.mathimator/cache`, `codegen`, `typst`, or `logs` is safe. Clear cache does that and leaves `project.json` and `.mathimator/exports/` in place. v1 does not call `manim cache clear`, and it does not pass `--flush_cache` (removed in 0.22). The cache v1 owns is the project cache directory.
+Deleting `.mathimator/cache`, `codegen`, `equation`, or `logs` is safe. Clear cache deletes them, and the `typst/` folder older builds used for glyph previews, except the active `worker.log`, which it empties. It leaves `project.json`, `.mathimator/exports/`, `lock`, and the shell's temp-project marker `temp-project.json` in place, and it is refused while a render runs or waits. A file another program holds open stays, and the reply says "Some cache files are in use and were not removed. Close other programs using this project and try again." v1 does not call `manim cache clear`, and it does not pass `--flush_cache` (removed in 0.22). The cache v1 owns is the project cache directory.
 
-On save, `project.json` is pretty-printed with two-space indentation, a trailing newline, uppercase `#RRGGBB` colors, and stable key order. The same document saved twice has the same bytes. Hashing uses a separate canonical form: UTF-8, sorted keys, no insignificant whitespace, array order preserved, numbers with three decimal places.
+`worker.log` records the commands, Manim's command line and output, and every error with its traceback. `state` and `code` replies are recorded by size only. At 5 MB the log becomes `worker.log.1`, which replaces the older copy.
+
+One window works on a project at a time. While a project is open, its worker holds an operating-system lock on `.mathimator/lock`, and a second window that opens the folder is told "This project is open in another Mathimator window." The lock ends with the worker, so a crash leaves none behind. On Windows the lock file is open, so Explorer cannot rename, move or delete the folder while the project is open.
+
+The worker remembers the bytes of `project.json` as it last read or wrote them. When an edit, undo, redo or render starts and the file on disk differs, nothing is written and the reply says "project.json was changed outside Mathimator."; Reload reads the file and clears undo history, and Overwrite writes the open document over it. When the project folder is gone, for example on an unplugged drive, the change is refused with "The project folder was moved or deleted." The edits saved before stay in the app, and Save As writes them to another folder. The worker never creates a project folder and never writes an empty `project.json` over a missing one.
+
+On save, `project.json` is pretty-printed with two-space indentation, a trailing newline, uppercase `#RRGGBB` colors, and stable key order. The same document saved twice has the same bytes. Hashing uses a separate canonical form: UTF-8, sorted keys, no insignificant whitespace, array order preserved, numbers with three decimal places. A save writes a new file beside `project.json`, flushes it to disk, and renames it over the old one, retrying for about half a second while Windows reports the file in use. A save that still fails is undone, and the reply says "Could not save project.json: <reason>. The change was undone." An edit whose saved bytes would not change, such as the current color typed in lower case, writes nothing, adds no undo step and keeps Redo.
 
 `project.json` is UTF-8 text. One leading byte order mark is ignored, and saves never write one. A file in any other encoding, such as UTF-16 with or without a byte order mark or an ANSI code page, is refused with "project.json must be saved as UTF-8 text." Every refusal of a document names the JSON path of the failing value, for example `scene.objects[2].params.latex`.
 
@@ -596,7 +603,7 @@ Stdio carries one UTF-8 JSON object per line.
 
 Events are `ready`, `beat_ready` (beat index and partial-movie path), `done` (output path), and `error`. The UI ignores events whose job id is not the current job.
 
-Dirty beats are a suffix of the timeline. Before a job, the supervisor copies those beats' current partials into `cache/last-good/` and snapshots `partial_movie_files/MainScene` for this job's quality folder. Manim finishes one beat before the next. Each new or replaced partial, in completion order, belongs to the next dirty beat. The supervisor writes a preview index: beat id, derived start, duration, partial path, and whether that beat is fresh. `render_frame` reads that index from a short-lived helper process, so the supervisor does not import PyAV. Scrub does not call `render_frame`. Phase 1 checks that a full render yields 8 partials in beat order, and that changing the last beat leaves the first 7 hashes unchanged.
+Dirty beats are a suffix of the timeline. Before a job, the supervisor copies those beats' current partials into `cache/last-good/` and snapshots `partial_movie_files/MainScene` for this job's quality folder. Manim finishes one beat before the next. Each new or replaced partial, in completion order, belongs to the next dirty beat. The supervisor writes a preview index: beat id, derived start, duration, partial path, and whether that beat is fresh. On disk the index names its files relative to the project folder, so a copied or moved project finds its own media, and a stored path outside the project's media and last-good folders is ignored. `render_frame` reads that index from a short-lived helper process, so the supervisor does not import PyAV. Scrub does not call `render_frame`. Phase 1 checks that a full render yields 8 partials in beat order, and that changing the last beat leaves the first 7 hashes unchanged.
 
 Manim reuses any partial movie that exists, so a cut-off partial would break every later render of its beat. The supervisor records a partial in the preview index, or marks its beat fresh, only when its container is complete. An MP4 or MOV is complete when its top-level boxes add up to exactly the file length, none has size 0 (the placeholder FFmpeg fills in when it closes a file), and one of them is `moov`. A WebM is complete when an EBML header is followed by top-level elements of known size that add up to exactly the file length, one of them a Segment. The check uses the standard library only. Before each render the supervisor deletes the incomplete partials in this job's quality folder, so those beats render again. A render that exits 0 after using an incomplete partial is an error: that partial is deleted, in whichever quality folder it lies, nothing is published, and the next render redoes its beat. A PNG-sequence export writes no partials, so it reads no segment list.
 
@@ -730,6 +737,10 @@ Pass when all of these hold:
 
 - A committed edit is flushed to `project.json` before the preview job starts, once the project has a folder. Reopening shows that edit. Undo history is empty after reopen.
 - Undo and redo restore document edits within 50 ms. Dirty flags are recomputed and are absent from the file.
+- An edit that changes nothing writes nothing, adds no undo step and keeps Redo.
+- A save that fails leaves the document and the undo history as they were. A `project.json` changed outside the app is not overwritten until the user chooses Overwrite. A moved or deleted project folder is never recreated.
+- A second window cannot open a project that is already open.
+- Save As copies the document, the render cache and the exports into an empty folder, works on the copy from then on, and keeps undo history. The old folder is not changed.
 - A file with `schemaVersion` other than 1, a `start` field, or an unknown key is refused.
 - On Windows, cancel and quit leave no Manim, `latex`, or `dvisvgm` process within 1 second. Each Manim child sits in a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and the supervisor itself is in a kill-on-close job. The binding is `ctypes`. The worker package contains no `pywin32`, `win32api`, or `taskkill`. Linux and macOS use the process-group path.
 - After the phase 5 installer exists: on a clean Windows 11 account with no Python, FFmpeg, TeX, or Typst installed, and with the network disconnected, the app installs, launches, opens the bundled `reference-60` sample, and exports a 1080p30 MP4.

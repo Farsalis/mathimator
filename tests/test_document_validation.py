@@ -21,7 +21,7 @@ from mathimator_worker.document import NOT_UTF8, dumps_project, empty_project, l
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import UNSUPPORTED, expression_to_python
 from mathimator_worker.session import Session
-from mathimator_worker.supervisor import Supervisor, _read_project
+from mathimator_worker.supervisor import Supervisor, _read_project_bytes
 from tests.support import REPO
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
@@ -72,7 +72,7 @@ def test_an_unreadable_project_json_is_read_failed(tmp_path: Path) -> None:
     folder = tmp_path / "project.json"
     folder.mkdir()
     with pytest.raises(DocumentError) as refused:
-        _read_project(folder)
+        _read_project_bytes(folder)
     assert refused.value.code == "read_failed"
     assert str(refused.value).startswith("Could not read project.json: ")
 
