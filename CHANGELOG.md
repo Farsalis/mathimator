@@ -35,6 +35,11 @@ git-cliff generates from the commits.
 ### Documentation
 
 - The architecture, defect and DevOps audit report and its fix plan.
+- README, CONTRIBUTING and SECURITY: setup, running, test tiers, the
+  installer build, CI, the environment variables, commit and merge rules,
+  releases, and reporting vulnerabilities in confidential issues.
+- GitLab code owners for every area, a merge request checklist, and bug and
+  feature issue templates.
 
 ### Tests
 
