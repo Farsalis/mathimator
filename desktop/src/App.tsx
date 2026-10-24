@@ -50,9 +50,9 @@ export function App() {
     void editor.commit(edit, true);
   }
 
-  function onEdit(edit: Edit): void {
+  function onEdit(edit: Edit): Promise<void> {
     const preview = edit.op !== "set_project_name" && edit.op !== "set_object_name";
-    void editor.commit(edit, preview);
+    return editor.commit(edit, preview);
   }
 
   return (
@@ -65,7 +65,7 @@ export function App() {
           canUndo={editor.state?.derived.canUndo === true}
           canRedo={editor.state?.derived.canRedo === true}
           exporting={editor.exporting}
-          onRename={(name) => void editor.commit({ op: "set_project_name", name }, false)}
+          onRename={(name) => editor.commit({ op: "set_project_name", name }, false)}
           onNew={() => void editor.onNew()}
           onOpen={() => void editor.onOpen()}
           onSaveAs={() => void editor.onSaveAs()}
@@ -146,7 +146,7 @@ export function App() {
             fieldError={editor.fieldError}
             texBlocked={editor.texWarning !== null}
             disabled={!editor.ready}
-            onSelectObject={(objectId) => editor.setSelection({ kind: "object", id: objectId })}
+            onSelectObject={(objectId) => editor.select({ kind: "object", id: objectId })}
             onEdit={onEdit}
           />
         )}
@@ -159,7 +159,7 @@ export function App() {
           playhead={editor.playhead}
           total={editor.total}
           disabled={!editor.ready}
-          onSelect={(beatId) => editor.setSelection({ kind: "beat", id: beatId })}
+          onSelect={(beatId) => editor.select({ kind: "beat", id: beatId })}
           onDraft={editor.onDraftDuration}
           onCommit={editor.onCommitDuration}
         />

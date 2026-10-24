@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCommitDraft } from "../useCommitDraft";
 import { AddMenu, type AddKind } from "./AddMenu";
 
 interface TopBarProps {
@@ -10,7 +10,8 @@ interface TopBarProps {
   canRedo: boolean;
   /** An export runs: the Export button says so, and New, Open, Save As and Sample are disabled (D22, C7.6). */
   exporting: boolean;
-  onRename: (name: string) => void;
+  /** Renames the project. The promise settles once the rename was applied or refused. */
+  onRename: (name: string) => Promise<void>;
   onNew: () => void;
   onOpen: () => void;
   onSaveAs: () => void;
@@ -44,18 +45,14 @@ export function TopBar({
   onOpenSample,
   onClearCache,
 }: TopBarProps) {
-  const [draft, setDraft] = useState(name);
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): resync during render (F119)
-    setDraft(name);
-  }, [name]);
+  const draft = useCommitDraft(name);
 
   function commitName(): void {
-    const next = draft.trim();
+    const next = draft.text.trim();
     if (next !== "" && next !== name) {
-      onRename(next);
+      draft.commit(onRename(next));
     } else {
-      setDraft(name);
+      draft.revert();
     }
   }
 
@@ -65,9 +62,9 @@ export function TopBar({
         className="project-name"
         data-testid="project-name"
         aria-label="Project name"
-        value={draft}
+        value={draft.text}
         disabled={!ready}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => draft.change(event.target.value)}
         onBlur={commitName}
         onKeyDown={(event) => {
           if (event.key === "Enter") {

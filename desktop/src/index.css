@@ -544,6 +544,8 @@ legend {
   border-top: 1px solid #2c2c2c;
   cursor: ew-resize;
   font-variant-numeric: tabular-nums;
+  /* A finger or pen on the handle resizes the beat instead of scrolling the timeline (D48). */
+  touch-action: none;
 }
 
 .duration-handle:disabled {

@@ -17,7 +17,7 @@ function renderTopBar(exporting: boolean, handlers: { onNew?: () => void; onSave
       canUndo
       canRedo={false}
       exporting={exporting}
-      onRename={ignore}
+      onRename={() => Promise.resolve()}
       onNew={handlers.onNew ?? ignore}
       onOpen={ignore}
       onSaveAs={handlers.onSaveAs ?? ignore}

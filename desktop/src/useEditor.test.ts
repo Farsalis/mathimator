@@ -154,7 +154,7 @@ async function editAfterTimeout(first: string, resynced: string): Promise<Return
   await exported(result);
   emit({ event: "done", jobId: "export-1", path: `${first}/scene.mp4`, current: true });
   act(() => {
-    result.current.setSelection({ kind: "object", id: "plot_1" });
+    result.current.select({ kind: "object", id: "plot_1" });
     result.current.setPlayhead(1.5);
     result.current.setPlaying(true);
     result.current.onViewCode();
@@ -463,7 +463,7 @@ describe("useEditor projects", () => {
   ] as const)("changes nothing when %s is cancelled (C14 Q2)", async (action, command) => {
     script({ get_state: [stateReply("C:/first")], [command]: [{ cancelled: true }] });
     const result = await started();
-    act(() => result.current.setSelection({ kind: "object", id: "plot_1" }));
+    act(() => result.current.select({ kind: "object", id: "plot_1" }));
     await act(() => result.current[action]());
     await afterDebounce();
     expect(callsOf(command)).toBe(1);
@@ -477,7 +477,7 @@ describe("useEditor projects", () => {
     script({ get_state: [stateReply("C:/temp")], save_project_as_dialog: [stateReply("C:/kept")] });
     const result = await started();
     act(() => {
-      result.current.setSelection({ kind: "object", id: "plot_1" });
+      result.current.select({ kind: "object", id: "plot_1" });
       result.current.setPlayhead(1);
       result.current.onViewCode();
     });
@@ -749,7 +749,7 @@ describe("useEditor project_changed prompt", () => {
     });
     const result = await started();
     act(() => {
-      result.current.setSelection({ kind: "object", id: "formula_9" });
+      result.current.select({ kind: "object", id: "formula_9" });
       result.current.onDraftDuration("beat_1", 3);
     });
     await act(() => result.current.commit(RENAME, false));
@@ -786,7 +786,7 @@ describe("useEditor worker exit", () => {
     });
     const result = await started();
     act(() => {
-      result.current.setSelection({ kind: "beat", id: "beat_9" });
+      result.current.select({ kind: "beat", id: "beat_9" });
       result.current.onDraftDuration("beat_1", 3);
     });
     await exported(result);
@@ -814,7 +814,7 @@ describe("useEditor worker exit", () => {
     await exported(result);
     emit({ event: "done", jobId: "export-1", path: "C:/first/.mathimator/exports/a/scene.mp4", current: false });
     act(() => {
-      result.current.setSelection({ kind: "object", id: "plot_1" });
+      result.current.select({ kind: "object", id: "plot_1" });
       result.current.setPlayhead(1);
       result.current.onDraftDuration("beat_1", 3);
     });
@@ -902,5 +902,97 @@ describe("useEditor field errors", () => {
     await act(() => result.current.undo());
     expect(result.current.fieldError).toBeNull();
     expect(result.current.error).toBeNull();
+  });
+});
+
+/** A state reply whose scene has no objects or beats, as after deleting or undoing the only one. */
+function emptyReply(projectPath: string) {
+  const reply = stateReply(projectPath);
+  return {
+    ...reply,
+    document: { ...reply.document, scene: { ...reply.document.scene, objects: [], beats: [] } },
+    derived: { starts: [], total: 0, dirty: [], canUndo: true, canRedo: false },
+  };
+}
+
+/** A state reply whose one beat lasts `duration`. */
+function durationReply(duration: number) {
+  const reply = stateReply("C:/first");
+  const [beat] = reply.document.scene.beats;
+  return {
+    ...reply,
+    document: { ...reply.document, scene: { ...reply.document.scene, beats: [{ ...beat, duration }] } },
+    derived: { ...reply.derived, total: duration },
+  };
+}
+
+describe("useEditor selection", () => {
+  const added = { ...stateReply("C:/first"), focus: { beatId: "beat_1", objectId: "plot_1" } };
+
+  it.each([
+    ["deleted", () => ({ edit_document: [added, emptyReply("C:/first")] })],
+    ["undone", () => ({ edit_document: [added], undo_document: [emptyReply("C:/first")] })],
+  ])("selects nothing once the selected beat is %s, so Add does not name it (F117)", async (how, replies) => {
+    script({ get_state: [emptyReply("C:/first")], ...replies() });
+    const result = await started();
+    await act(() => result.current.commit({ op: "add_formula", afterBeatId: null }, false));
+    expect(result.current.selection).toEqual({ kind: "beat", id: "beat_1" });
+    await act(() =>
+      how === "deleted"
+        ? result.current.commit({ op: "delete_object", objectId: "plot_1" }, false)
+        : result.current.undo(),
+    );
+    expect(result.current.selection).toEqual({ kind: "none" });
+  });
+
+  it("clears the field error when the selection changes (F112)", async () => {
+    script({
+      get_state: [stateReply("C:/first")],
+      edit_document: [refusal("unsupported_expression", "This expression is not supported.", "expression")],
+    });
+    const result = await started();
+    await act(() => result.current.commit(EXPRESSION, true));
+    expect(result.current.fieldError).not.toBeNull();
+    act(() => result.current.select({ kind: "beat", id: "beat_1" }));
+    expect(result.current.fieldError).toBeNull();
+    expect(result.current.selection).toEqual({ kind: "beat", id: "beat_1" });
+  });
+});
+
+describe("useEditor timeline", () => {
+  it("keeps the playhead inside a timeline that got shorter (F123)", async () => {
+    script({ get_state: [stateReply("C:/first")], edit_document: [durationReply(1)] });
+    const result = await started();
+    act(() => result.current.setPlayhead(1.5));
+    await act(() => result.current.commit({ op: "set_beat_duration", beatId: "beat_1", duration: 1 }, false));
+    expect(result.current.total).toBe(1);
+    expect(result.current.playhead).toBe(1);
+  });
+
+  it("keeps a dragged duration until its edit settles (F114)", async () => {
+    const reply = deferred();
+    script({ get_state: [stateReply("C:/first")], edit_document: [reply.promise] });
+    const result = await started();
+    act(() => {
+      result.current.onDraftDuration("beat_1", 2.9);
+      result.current.onCommitDuration("beat_1", 3);
+    });
+    await waitFor(() => expect(callsOf("edit_document")).toBe(1));
+    expect(result.current.drafts).toEqual({ beat_1: 3 });
+    expect(result.current.total).toBe(3);
+    reply.resolve(durationReply(3));
+    await waitFor(() => expect(result.current.drafts).toEqual({}));
+    expect(result.current.total).toBe(3);
+  });
+
+  it("drops the draft of an interrupted drag without an edit (D48)", async () => {
+    script({ get_state: [stateReply("C:/first")] });
+    const result = await started();
+    act(() => {
+      result.current.onDraftDuration("beat_1", 4);
+      result.current.onCommitDuration("beat_1", 2);
+    });
+    expect(result.current.drafts).toEqual({});
+    expect(callsOf("edit_document")).toBe(0);
   });
 });

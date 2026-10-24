@@ -45,6 +45,28 @@ function stateReply(name = "Sine", source = "class MainScene(Scene):\n    pass\n
   };
 }
 
+/** A state reply whose scene shows one text object in one beat, with a finished preview of it. */
+function textReply() {
+  const reply = stateReply();
+  const movie = "C:/Users/Ana/Sine/.mathimator/cache/MainScene.mp4";
+  return {
+    ...reply,
+    document: {
+      ...reply.document,
+      scene: {
+        ...reply.document.scene,
+        objects: [{ id: "text_1", name: "Label", type: "text", params: { text: "Hi", color: "#FFFFFF" } }],
+        beats: [{ id: "beat_1", duration: 2, action: "write", targets: ["text_1"] }],
+      },
+    },
+    derived: { starts: [0], total: 2, dirty: [false], canUndo: false, canRedo: false },
+    index: {
+      output: movie,
+      beats: [{ id: "beat_1", index: 0, derivedStart: 0, duration: 2, partial: movie, lastGood: null, fresh: true }],
+    },
+  };
+}
+
 /** Scripts the shell: each invoke takes the next reply listed for its command. */
 function script(replies: Record<string, unknown[]>): void {
   invokeMock.mockImplementation((command) => Promise.resolve(replies[command]?.shift()));
@@ -83,6 +105,7 @@ afterEach(() => {
   cleanup();
   invokeMock.mockReset();
   vi.mocked(listen).mockClear();
+  vi.unstubAllGlobals();
 });
 
 describe("App", () => {
@@ -184,5 +207,46 @@ describe("App", () => {
     script({ app_status: [{ ...READY, tex: { state: "failed", message } }], get_state: [stateReply()] });
     await renderReady();
     expect(screen.getByTestId("tex-warning").textContent).toBe(message);
+  });
+
+  it("sends one edit_document for one use of the colour picker (D08, C10)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => undefined)),
+    );
+    const recoloured = textReply();
+    script({ app_status: [READY], get_state: [textReply()], edit_document: [recoloured] });
+    await renderReady();
+    fireEvent.click(screen.getByRole("button", { name: /Label/ }));
+    const picker = document.querySelector<HTMLInputElement>('input[type="color"]');
+    if (!picker) {
+      throw new Error("No colour picker is shown.");
+    }
+    for (let shade = 0; shade < 10; shade += 1) {
+      fireEvent.input(picker, { target: { value: `#00${shade}0ff` } });
+    }
+    fireEvent.change(picker);
+    await waitFor(() => expect(commands()).toContain("edit_document"));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(invokeMock.mock.calls.filter(([command]) => command === "edit_document")).toEqual([
+      ["edit_document", { edit: { op: "set_object_color", objectId: "text_1", color: "#0090FF" } }],
+    ]);
+  });
+
+  it("scrubs the preview without a worker command (D44)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => undefined)),
+    );
+    script({ app_status: [READY], get_state: [textReply()] });
+    await renderReady();
+    const sent = commands();
+    const playhead = control("playhead");
+    for (const time of ["0.5", "1.25", "2"]) {
+      fireEvent.input(playhead, { target: { value: time } });
+    }
+    fireEvent.pointerUp(playhead);
+    expect(screen.getByTestId("playhead-time").textContent).toBe("2.0s / 2.0s");
+    expect(commands()).toEqual(sent);
   });
 });

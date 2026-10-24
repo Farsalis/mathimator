@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { formatSeconds } from "../format";
-import { playbackAt, shouldSeek } from "../playback";
+import { playbackAt, playheadAt, shouldSeek } from "../playback";
 import type { PreviewIndex } from "../types";
 
 const NONE: ReadonlySet<string> = new Set();
@@ -18,33 +18,51 @@ interface PreviewStageProps {
 export function PreviewStage({ index, time, total, playing, onTime, onPlaying }: PreviewStageProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const scrubbing = useRef(false);
+  /** The playhead the playing video last reported. The video is already there, so it is not seeked there (F043). */
+  const reported = useRef<number | null>(null);
   const [mediaNote, setMediaNote] = useState<string | null>(null);
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
   /** The files that could not be read for `index`. Any new index tries them again (F115). */
   const [missing, setMissing] = useState<{ index: PreviewIndex | null; paths: ReadonlySet<string> }>({
     index: null,
     paths: NONE,
   });
+  /** The last file read for the canvas. It stays on screen while the next file loads (F123). */
+  const [loaded, setLoaded] = useState<{ path: string; url: string } | null>(null);
   const absent = missing.index === index ? missing.paths : NONE;
   const choice = playbackAt(index, time, (path) => !absent.has(path));
-  const src = choice.path ? convertFileSrc(choice.path) : null;
+  const path = choice.path;
+  if (path === null && loaded !== null) {
+    // A beat with no file shows a blank canvas, not the last file.
+    setLoaded(null);
+  }
+  const blobUrl = path === null ? null : (loaded?.url ?? null);
+  /** Whether the video holds the file under the playhead, so it may be seeked and played. */
+  const current = loaded !== null && loaded.path === path;
 
   /** An unreadable file is logged, and the canvas falls back to last-good or blank with the badge (D23). */
-  const onUnreadable = useEffectEvent((path: string, reason: unknown) => {
-    console.warn(`Could not read the preview file ${path}:`, reason);
-    setMissing({ index, paths: new Set([...absent, path]) });
+  const onUnreadable = useEffectEvent((unreadable: string, reason: unknown) => {
+    console.warn(`Could not read the preview file ${unreadable}:`, reason);
+    setMissing({ index, paths: new Set([...absent, unreadable]) });
     setMediaNote(null);
   });
 
+  /** Moves the playhead on by `seconds` while no file plays, and stops at the end (D49). */
+  const advance = useEffectEvent((seconds: number) => {
+    const next = time + seconds;
+    if (next < total) {
+      onTime(next);
+      return;
+    }
+    onTime(total);
+    onPlaying(false);
+  });
+
   useEffect(() => {
-    if (!src) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): derive the reset from src (F123)
-      setBlobUrl(null);
+    if (path === null) {
       return;
     }
     let cancelled = false;
-    let objectUrl: string | null = null;
-    void fetch(src)
+    void fetch(convertFileSrc(path))
       .then((response) => {
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
@@ -55,26 +73,29 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
         if (cancelled) {
           return;
         }
-        objectUrl = URL.createObjectURL(new Blob([buffer], { type: "video/mp4" }));
-        setBlobUrl(objectUrl);
+        setLoaded({ path, url: URL.createObjectURL(new Blob([buffer], { type: "video/mp4" })) });
         setMediaNote(null);
       })
       .catch((reason: unknown) => {
-        if (!cancelled && choice.path) {
-          onUnreadable(choice.path, reason);
+        if (!cancelled) {
+          onUnreadable(path, reason);
         }
       });
     return () => {
       cancelled = true;
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
     };
-  }, [src, choice.path]);
+  }, [path]);
+
+  useEffect(() => {
+    if (!loaded) {
+      return;
+    }
+    return () => URL.revokeObjectURL(loaded.url);
+  }, [loaded]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !blobUrl) {
+    if (!video || !current || (!video.paused && time === reported.current)) {
       return;
     }
     const seek = (): void => {
@@ -84,14 +105,16 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
     };
     if (video.readyState >= 1) {
       seek();
-    } else {
-      video.addEventListener("loadeddata", seek, { once: true });
+      return;
     }
-  }, [blobUrl, choice.time]);
+    video.addEventListener("loadeddata", seek, { once: true });
+    return () => video.removeEventListener("loadeddata", seek);
+  }, [current, blobUrl, time, choice.time]);
 
+  // A beat change plays again: two beats can share one file, and the video that ended waits paused at its end (F111).
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !blobUrl) {
+    if (!video || !current) {
       return;
     }
     if (playing) {
@@ -99,36 +122,52 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
     } else {
       video.pause();
     }
-  }, [playing, blobUrl, onPlaying]);
+  }, [playing, current, blobUrl, choice.beatIndex, onPlaying]);
 
-  function onTimeUpdate(): void {
-    const video = videoRef.current;
-    if (!video || scrubbing.current) {
+  // Over a beat with no file, a clock moves the playhead until the next file plays (D49).
+  const playsFile = path !== null;
+  useEffect(() => {
+    if (!playing || playsFile) {
       return;
     }
-    switch (choice.mode) {
-      case "movie":
-        onTime(video.currentTime);
-        return;
-      case "partial":
-        onTime(beatStart(index, choice.beatIndex) + video.currentTime);
-        return;
-      case "blank":
-      case "empty":
-        return;
-      default: {
-        const unexpected: never = choice;
-        throw new Error(`Unhandled playback ${JSON.stringify(unexpected)}`);
+    let last: number | null = null;
+    let frame = 0;
+    const tick = (now: number): void => {
+      if (last !== null) {
+        advance((now - last) / 1000);
       }
+      last = now;
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [playing, playsFile]);
+
+  /**
+   * Moves the playhead to the frame the video shows. A paused video stops after its last report, and the report that
+   * pausing sends arrives when Play already shows, so the pause event moves the playhead as well.
+   */
+  function follow(): void {
+    const video = videoRef.current;
+    if (!video || !index || choice.path === null || !current || scrubbing.current) {
+      return;
+    }
+    const next = playheadAt(index, choice, video.currentTime);
+    reported.current = next;
+    onTime(next);
+  }
+
+  /** While it plays, the playhead follows the video. The seeks of a paused video come from the playhead. */
+  function onTimeUpdate(): void {
+    if (playing) {
+      follow();
     }
   }
 
   function onEnded(): void {
-    if (choice.mode !== "partial" || !index) {
-      onPlaying(false);
-      return;
-    }
-    const next = index.beats.find((beat) => beat.index === choice.beatIndex + 1);
+    reported.current = null;
+    const next =
+      choice.mode === "partial" ? index?.beats.find((beat) => beat.index === choice.beatIndex + 1) : undefined;
     if (next && playing) {
       onTime(next.derivedStart);
       return;
@@ -138,10 +177,9 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
 
   function onScrub(value: number): void {
     scrubbing.current = true;
+    reported.current = null;
     onTime(value);
   }
-
-  const canPlay = choice.mode === "movie" || choice.mode === "partial";
 
   return (
     <section className="stage" aria-label="Preview">
@@ -154,11 +192,12 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
             preload="auto"
             playsInline
             onTimeUpdate={onTimeUpdate}
+            onPause={follow}
             onEnded={onEnded}
             onLoadedData={() => setMediaNote(null)}
             onError={() => setMediaNote("Could not load the preview file.")}
           />
-        ) : src ? null : (
+        ) : path !== null ? null : (
           <p className="empty">{choice.mode === "empty" ? "Add a beat to preview it here." : "No frame yet."}</p>
         )}
         {mediaNote ? <p className="media-note">{mediaNote}</p> : null}
@@ -173,7 +212,7 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
           type="button"
           data-testid="play-button"
           onClick={() => onPlaying(!playing)}
-          disabled={!canPlay || total <= 0}
+          disabled={!playing && total <= 0}
         >
           {playing ? "Pause" : "Play"}
         </button>
@@ -200,9 +239,4 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
       </div>
     </section>
   );
-}
-
-function beatStart(index: PreviewIndex | null, beatIndex: number): number {
-  const beat = index?.beats.find((item) => item.index === beatIndex);
-  return beat ? beat.derivedStart : 0;
 }

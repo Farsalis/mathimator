@@ -63,6 +63,8 @@ const FIELD_CODES: ReadonlySet<string> = new Set([
 
 export type Selection = { kind: "none" } | { kind: "beat"; id: string } | { kind: "object"; id: string };
 
+const NO_SELECTION: Selection = { kind: "none" };
+
 /** A refused edit's message, shown under the field it names on the object it edited (C9.3, S59). */
 export interface FieldError {
   objectId: string;
@@ -87,7 +89,7 @@ export function useEditor() {
   /** The message of the open project_changed prompt (C9.3), or null. */
   const [changedPrompt, setChangedPrompt] = useState<string | null>(null);
   const [handshake, setHandshake] = useState(createHandshake);
-  const [selection, setSelection] = useState<Selection>({ kind: "none" });
+  const [selection, setSelection] = useState<Selection>(NO_SELECTION);
   const [drafts, setDrafts] = useState<Record<string, number>>({});
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -228,8 +230,8 @@ export function useEditor() {
 
   /**
    * Loads the worker's state: at startup, after a preview, and as the queue's single-flight resync. The first load
-   * after the worker exited also clears the drafts, drops a selection that is gone and shows the restart note. On
-   * another folder the Open reset does that instead, and no note is shown (C8.6). No preview follows (Q5).
+   * after the worker exited also clears the drafts and field errors and shows the restart note. On another folder the
+   * Open reset does that instead, and no note is shown (C8.6). No preview follows (Q5).
    */
   async function refreshState(): Promise<void> {
     const restart = restarted.current;
@@ -239,7 +241,7 @@ export function useEditor() {
     applyState(next);
     publish(loaded(jobs.current));
     if (restart && sameProject) {
-      reconcile(next.document);
+      reconcile();
       publish(withNote(jobs.current, RESTART_NOTE));
     }
   }
@@ -272,7 +274,7 @@ export function useEditor() {
 
   /** The Open reset (C9.2). */
   function resetView(): void {
-    setSelection({ kind: "none" });
+    setSelection(NO_SELECTION);
     setDrafts({});
     setPlayhead(0);
     setPlaying(false);
@@ -281,11 +283,10 @@ export function useEditor() {
     publish(openReset(jobs.current));
   }
 
-  /** After the document was replaced from disk: clear the drafts and field errors, and drop a selection that is gone. */
-  function reconcile(document: ProjectDocument): void {
+  /** After the document was replaced from disk: clear the drafts and field errors. */
+  function reconcile(): void {
     setDrafts({});
     setFieldError(null);
-    setSelection((current) => (selectionIn(current, document) ? current : { kind: "none" }));
   }
 
   function publish(next: Handshake): void {
@@ -356,7 +357,7 @@ export function useEditor() {
         const next = parseEditorState(await invokeWorker("reload_project"));
         applyState(next);
         publish(markStale(jobs.current));
-        reconcile(next.document);
+        reconcile();
         setError(null);
         schedulePreview();
       },
@@ -631,21 +632,32 @@ export function useEditor() {
     });
   }
 
+  /** Selects a beat or an object. A field error belongs to what was selected, so it goes (F112). */
+  function select(next: Selection): void {
+    setSelection(next);
+    setFieldError(null);
+  }
+
   function onDraftDuration(beatId: string, duration: number): void {
     setDrafts((current) => ({ ...current, [beatId]: duration }));
   }
 
+  /**
+   * Ends a duration drag. The beat keeps its dragged duration until the edit settles, so it does not snap back for
+   * the round trip (F114). A duration equal to the stored one, such as an interrupted drag's (D48), only drops the
+   * draft.
+   */
   function onCommitDuration(beatId: string, duration: number): void {
     const beat = applied.current?.document.scene.beats.find((item) => item.id === beatId);
-    setDrafts((current) => {
-      const next = { ...current };
-      delete next[beatId];
-      return next;
-    });
     if (!beat || Math.abs(beat.duration - duration) < 0.0005) {
+      setDrafts((current) => withoutDraft(current, beatId));
       return;
     }
-    void commit({ op: "set_beat_duration", beatId, duration }, true);
+    setDrafts((current) => ({ ...current, [beatId]: duration }));
+    void commit({ op: "set_beat_duration", beatId, duration }, true).finally(() =>
+      // A newer drag of the same beat keeps its own draft.
+      setDrafts((current) => (current[beatId] === duration ? withoutDraft(current, beatId) : current)),
+    );
   }
 
   const beats = state?.document.scene.beats ?? [];
@@ -655,6 +667,10 @@ export function useEditor() {
   const total = dragging
     ? Math.round(durations.reduce((sum, value) => sum + value, 0) * 1000) / 1000
     : (state?.derived.total ?? 0);
+  if (playhead > total) {
+    // A delete, an undo or a shorter beat moved the end before the playhead (F123).
+    setPlayhead(total);
+  }
 
   return {
     ready,
@@ -666,8 +682,9 @@ export function useEditor() {
     fieldError,
     changedPrompt,
     status: unavailable === null ? handshake.status : WORKER_UNAVAILABLE,
-    selection,
-    setSelection,
+    /** The selection, while the document still holds it: a deleted or undone beat or object is not selected (F117). */
+    selection: state !== null && selectionIn(selection, state.document) ? selection : NO_SELECTION,
+    select,
     drafts,
     playhead,
     setPlayhead,
@@ -707,6 +724,12 @@ export function useEditor() {
     onDraftDuration,
     onCommitDuration,
   };
+}
+
+function withoutDraft(drafts: Record<string, number>, beatId: string): Record<string, number> {
+  const next = { ...drafts };
+  delete next[beatId];
+  return next;
 }
 
 /** Whether `document` still holds the selected beat or object. */

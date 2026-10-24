@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
+import { parseDecimal } from "../format";
 import type { Anchor, Beat, BeatAction, Camera, Edit, ProjectDocument, SceneObject, ThreeDMode } from "../types";
+import { useCommitDraft, type CommitDraft } from "../useCommitDraft";
 import type { FieldError } from "../useEditor";
 import { FormulaPreview } from "./FormulaPreview";
 
@@ -15,14 +17,15 @@ interface InspectorProps {
   /** The worker is not ready, so nothing can be edited (C9.5). */
   disabled: boolean;
   onSelectObject: (objectId: string) => void;
-  onEdit: (edit: Edit) => void;
+  /** Sends an edit. The promise settles once the edit was applied or refused. */
+  onEdit: (edit: Edit) => Promise<void>;
 }
 
 /** What the object fields need besides their object. */
 interface FieldContext {
   fieldError: FieldError | null;
   texBlocked: boolean;
-  onEdit: (edit: Edit) => void;
+  onEdit: (edit: Edit) => Promise<void>;
 }
 
 export function Inspector({
@@ -53,7 +56,7 @@ export function Inspector({
           <button
             type="button"
             data-testid="delete-object"
-            onClick={() => onEdit({ op: "delete_object", objectId: selectedObject.id })}
+            onClick={() => void onEdit({ op: "delete_object", objectId: selectedObject.id })}
           >
             Delete object
           </button>
@@ -87,7 +90,7 @@ export function Inspector({
   );
 }
 
-function BeatFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => void }) {
+function BeatFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => Promise<void> }) {
   return (
     <section className="fields">
       <h2>Beat</h2>
@@ -105,7 +108,7 @@ function BeatFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => void
   );
 }
 
-function ActionFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => void }) {
+function ActionFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => Promise<void> }) {
   const action: BeatAction = beat.action;
   switch (action) {
     case "set_color":
@@ -184,7 +187,7 @@ function ThreeDPanel({
   camera: Camera;
   objects: SceneObject[];
   fieldError: FieldError | null;
-  onEdit: (edit: Edit) => void;
+  onEdit: (edit: Edit) => Promise<void>;
 }) {
   const template = scene.templateInstances.find((item) => item.templateId === "three_d_axes");
   const mode: ThreeDMode = template?.params.mode === "curve" ? "curve" : "surface";
@@ -203,7 +206,7 @@ function ThreeDPanel({
         <select
           data-testid="three-d-mode"
           value={mode}
-          onChange={(event) => onEdit({ op: "set_three_d_mode", mode: modeFromSelect(event.target.value) })}
+          onChange={(event) => void onEdit({ op: "set_three_d_mode", mode: modeFromSelect(event.target.value) })}
         >
           <option value="surface">Surface</option>
           <option value="curve">Curve</option>
@@ -330,7 +333,7 @@ function AxesFields({ object, context }: { object: SceneObject; context: FieldCo
         <input
           type="checkbox"
           checked={object.params.showLabels === true}
-          onChange={(event) => onEdit({ op: "set_show_labels", objectId: object.id, value: event.target.checked })}
+          onChange={(event) => void onEdit({ op: "set_show_labels", objectId: object.id, value: event.target.checked })}
         />
         Show labels
       </label>
@@ -393,18 +396,14 @@ function PlotFields({ object, context }: { object: SceneObject; context: FieldCo
 function FormulaFields({ object, context }: { object: SceneObject; context: FieldContext }) {
   const { onEdit } = context;
   const latex = stringParam(object.params.latex, "y = \\sin(x)");
-  const [previewLatex, setPreviewLatex] = useState(latex);
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): resync during render (F119)
-    setPreviewLatex(latex);
-  }, [object.id, latex]);
+  const draft = useCommitDraft(latex);
   return (
     <>
-      <CommitText
+      <DraftText
         label="Formula"
         value={latex}
         testId="formula-latex"
-        onDraft={setPreviewLatex}
+        draft={draft}
         onCommit={(next) => onEdit({ op: "set_latex", objectId: object.id, latex: next })}
       />
       <FieldMessage error={context.fieldError} objectId={object.id} field="latex" />
@@ -413,7 +412,7 @@ function FormulaFields({ object, context }: { object: SceneObject; context: Fiel
           LaTeX is not working on this PC, so this formula cannot render. Reinstall Mathimator.
         </p>
       ) : null}
-      <FormulaPreview latex={previewLatex} />
+      <FormulaPreview slot={object.id} latex={draft.text} />
       <AnchorField
         value={anchorParam(object.params.anchor)}
         onCommit={(anchor) => onEdit({ op: "set_anchor", objectId: object.id, anchor })}
@@ -491,17 +490,11 @@ function FieldMessage({
   );
 }
 
-function AnchorField({ value, onCommit }: { value: Anchor; onCommit: (anchor: Anchor) => void }) {
+function AnchorField({ value, onCommit }: { value: Anchor; onCommit: (anchor: Anchor) => Promise<void> }) {
   return (
     <label>
       Anchor
-      <select
-        value={value}
-        onChange={(event) => {
-          const next = anchorParam(event.target.value);
-          onCommit(next);
-        }}
-      >
+      <select value={value} onChange={(event) => void onCommit(anchorParam(event.target.value))}>
         <option value="edge_up">Top edge</option>
         <option value="edge_down">Bottom edge</option>
         <option value="edge_left">Left edge</option>
@@ -512,33 +505,58 @@ function AnchorField({ value, onCommit }: { value: Anchor; onCommit: (anchor: An
   );
 }
 
-function ColorField({ label, value, onCommit }: { label: string; value: string; onCommit: (color: string) => void }) {
-  const [draft, setDraft] = useState(value);
+/**
+ * A colour picker beside a hex field. While the picker is open it moves only the draft; it commits once, on the
+ * native `change` event when it closes, so one use of it is one edit and one undo step (D08, F009). React's onChange
+ * on a colour input follows every `input` event, hence the listener. The hex field commits on blur. Both compare
+ * case-insensitively.
+ */
+function ColorField({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  onCommit: (color: string) => Promise<void>;
+}) {
+  const draft = useCommitDraft(value);
+  const picker = useRef<HTMLInputElement>(null);
+
+  function commitColor(color: string): void {
+    if (color.toUpperCase() === value.toUpperCase()) {
+      draft.revert();
+    } else {
+      draft.commit(onCommit(color));
+    }
+  }
+
+  const onPickerClosed = useEffectEvent((color: string) => commitColor(color.toUpperCase()));
+
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): resync during render (F119)
-    setDraft(value);
-  }, [value]);
+    const element = picker.current;
+    if (!element) {
+      return;
+    }
+    const listener = (): void => onPickerClosed(element.value);
+    element.addEventListener("change", listener);
+    return () => element.removeEventListener("change", listener);
+  }, []);
+
   return (
     <label>
       {label}
       <span className="color-row">
         <input
+          ref={picker}
           type="color"
-          value={toColorInput(draft)}
-          onChange={(event) => {
-            const next = event.target.value.toUpperCase();
-            setDraft(next);
-            onCommit(next);
-          }}
+          value={toColorInput(draft.text)}
+          onChange={(event) => draft.change(event.target.value.toUpperCase())}
         />
         <input
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onBlur={() => {
-            if (draft !== value) {
-              onCommit(draft);
-            }
-          }}
+          value={draft.text}
+          onChange={(event) => draft.change(event.target.value)}
+          onBlur={() => commitColor(draft.text)}
         />
       </span>
     </label>
@@ -552,7 +570,7 @@ function RangeFields({
 }: {
   label: string;
   value: [number, number, number];
-  onCommit: (value: [number, number, number]) => void;
+  onCommit: (value: [number, number, number]) => Promise<void>;
 }) {
   return (
     <fieldset>
@@ -564,7 +582,13 @@ function RangeFields({
   );
 }
 
-function ShiftFields({ value, onCommit }: { value: [number, number]; onCommit: (shift: [number, number]) => void }) {
+function ShiftFields({
+  value,
+  onCommit,
+}: {
+  value: [number, number];
+  onCommit: (shift: [number, number]) => Promise<void>;
+}) {
   return (
     <fieldset>
       <legend>Shift</legend>
@@ -574,38 +598,31 @@ function ShiftFields({ value, onCommit }: { value: [number, number]; onCommit: (
   );
 }
 
-function CommitText({
-  label,
-  value,
-  testId,
-  onCommit,
-  onDraft,
-}: {
+interface TextFieldProps {
   label: string;
   value: string;
   testId?: string;
-  onCommit: (value: string) => void;
-  onDraft?: (value: string) => void;
-}) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): resync during render (F119)
-    setDraft(value);
-  }, [value]);
+  onCommit: (value: string) => Promise<void>;
+}
+
+/** A text field that commits on blur or Enter. */
+function CommitText(props: TextFieldProps) {
+  const draft = useCommitDraft(props.value);
+  return <DraftText {...props} draft={draft} />;
+}
+
+/** CommitText over a draft its parent holds, for a parent that shows the draft too, as the formula preview does. */
+function DraftText({ label, value, testId, draft, onCommit }: TextFieldProps & { draft: CommitDraft }) {
   return (
     <label>
       {label}
       <input
         data-testid={testId}
-        value={draft}
-        onChange={(event) => {
-          const next = event.target.value;
-          setDraft(next);
-          onDraft?.(next);
-        }}
+        value={draft.text}
+        onChange={(event) => draft.change(event.target.value)}
         onBlur={() => {
-          if (draft !== value) {
-            onCommit(draft);
+          if (draft.text !== value) {
+            draft.commit(onCommit(draft.text));
           }
         }}
         onKeyDown={(event) => {
@@ -618,6 +635,7 @@ function CommitText({
   );
 }
 
+/** A number field that commits on blur or Enter. A cleared field, or text that is not a decimal, shows the value again. */
 function CommitNumber({
   label,
   value,
@@ -627,27 +645,23 @@ function CommitNumber({
   label: string;
   value: number;
   testId?: string;
-  onCommit: (value: number) => void;
+  onCommit: (value: number) => Promise<void>;
 }) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- TODO(audit-ui): resync during render (F119)
-    setDraft(String(value));
-  }, [value]);
+  const draft = useCommitDraft(String(value));
   return (
     <label>
       {label}
       <input
         data-testid={testId}
         inputMode="decimal"
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
+        value={draft.text}
+        onChange={(event) => draft.change(event.target.value)}
         onBlur={() => {
-          const next = Number(draft);
-          if (Number.isFinite(next) && next !== value) {
-            onCommit(next);
+          const next = parseDecimal(draft.text);
+          if (next === null || next === value) {
+            draft.revert();
           } else {
-            setDraft(String(value));
+            draft.commit(onCommit(next));
           }
         }}
         onKeyDown={(event) => {
