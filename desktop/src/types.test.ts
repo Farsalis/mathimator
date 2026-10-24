@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ParseError } from "./parse";
-import { parseEditorState, parseWorkerEvent } from "./types";
+import { parseAppStatus, parseEditorState, parseWorkerEvent } from "./types";
 
 function stateReply() {
   return {
@@ -166,8 +166,21 @@ describe("parseWorkerEvent", () => {
     expect(parseWorkerEvent({ ...exited, exitCode: null })).toMatchObject({ exitCode: null });
   });
 
+  it("reads the shell's notice and tex_status lines", () => {
+    const notice = {
+      event: "notice",
+      jobId: null,
+      id: 3,
+      message: "Could not reopen C:/old. A new project was started.",
+    };
+    expect(parseWorkerEvent(notice)).toEqual({ event: "notice", id: 3, message: notice.message });
+    const tex = { event: "tex_status", jobId: null, state: "failed", message: "Reinstall Mathimator for all users." };
+    expect(parseWorkerEvent(tex)).toEqual({ event: "tex_status", state: "failed", message: tex.message });
+  });
+
   it("ignores events the UI does not read", () => {
     expect(parseWorkerEvent(stateReply())).toBeNull();
+    expect(parseWorkerEvent({ event: "ready", jobId: "status-1", protocol: 2, startupError: null })).toBeNull();
     expect(parseWorkerEvent({ event: "code", jobId: "rpc-1", source: "" })).toBeNull();
     expect(parseWorkerEvent({ jobId: "rpc-1" })).toBeNull();
     expect(parseWorkerEvent("ready")).toBeNull();
@@ -180,7 +193,30 @@ describe("parseWorkerEvent", () => {
     ["rejected.jobId", { event: "rejected", jobId: null, code: "no_such_job", message: "No render with that id." }],
     ["started.jobId", { event: "started" }],
     ["worker_exited.exitCode", { event: "worker_exited", jobId: null, message: "The worker stopped." }],
+    ["notice.id", { event: "notice", jobId: null, id: "1", message: "Hello." }],
+    ["tex_status.state", { event: "tex_status", jobId: null, state: "checking", message: null }],
   ])("names %s in a malformed event", (field, event) => {
     expect(failingField(() => parseWorkerEvent(event))).toBe(field);
+  });
+});
+
+describe("parseAppStatus", () => {
+  const status = {
+    worker: "unavailable",
+    reason: "The installed runtime is incomplete (python). Reinstall Mathimator.",
+    tex: { state: "checking", message: null },
+    notices: [{ id: 1, message: "Could not reopen C:/old. A new project was started." }],
+  };
+
+  it("reads the worker, the reason, the TeX state and the notices (C9.5)", () => {
+    expect(parseAppStatus(status)).toEqual(status);
+  });
+
+  it.each([
+    ["app_status.worker", { ...status, worker: "starting" }],
+    ["app_status.tex.state", { ...status, tex: { state: "maybe", message: null } }],
+    ["app_status.notices[0].message", { ...status, notices: [{ id: 1 }] }],
+  ])("names %s when it is malformed", (field, value) => {
+    expect(failingField(() => parseAppStatus(value))).toBe(field);
   });
 });

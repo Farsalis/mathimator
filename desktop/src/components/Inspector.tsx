@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Anchor, Beat, BeatAction, Camera, Edit, ProjectDocument, SceneObject, ThreeDMode } from "../types";
+import type { FieldError } from "../useEditor";
 import { FormulaPreview } from "./FormulaPreview";
 
 interface InspectorProps {
@@ -8,8 +9,19 @@ interface InspectorProps {
   beats: Beat[];
   selectedBeatId: string | null;
   selectedObjectId: string | null;
-  fieldError: string | null;
+  fieldError: FieldError | null;
+  /** The TeX check failed, so formulas and axis labels cannot render (C9.7, C14 Q4). */
+  texBlocked: boolean;
+  /** The worker is not ready, so nothing can be edited (C9.5). */
+  disabled: boolean;
   onSelectObject: (objectId: string) => void;
+  onEdit: (edit: Edit) => void;
+}
+
+/** What the object fields need besides their object. */
+interface FieldContext {
+  fieldError: FieldError | null;
+  texBlocked: boolean;
   onEdit: (edit: Edit) => void;
 }
 
@@ -20,6 +32,8 @@ export function Inspector({
   selectedBeatId,
   selectedObjectId,
   fieldError,
+  texBlocked,
+  disabled,
   onSelectObject,
   onEdit,
 }: InspectorProps) {
@@ -28,44 +42,47 @@ export function Inspector({
     beat && beat.targets.length === 1 ? objects.find((item) => item.id === beat.targets[0]) : null;
   const selectedObject = objects.find((item) => item.id === selectedObjectId) ?? selectedFromBeat ?? null;
   const targets = beat ? objects.filter((item) => beat.targets.includes(item.id)) : [];
+  const context: FieldContext = { fieldError, texBlocked, onEdit };
 
   return (
     <aside className="inspector" aria-label="Inspector" data-testid="inspector">
-      <h2>Objects</h2>
-      {objects.length === 0 ? <p className="hint">Nothing in the scene yet.</p> : null}
-      {selectedObject ? (
-        <button
-          type="button"
-          data-testid="delete-object"
-          onClick={() => onEdit({ op: "delete_object", objectId: selectedObject.id })}
-        >
-          Delete object
-        </button>
-      ) : null}
-      <ul className="object-list">
-        {objects.map((item) => (
-          <li key={item.id}>
-            <button
-              type="button"
-              className={item.id === selectedObject?.id ? "object selected" : "object"}
-              onClick={() => onSelectObject(item.id)}
-            >
-              {item.name}
-              <span>{item.type}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
-      {scene?.kind === "three_d_scene" && scene.camera ? (
-        <ThreeDPanel scene={scene} camera={scene.camera} objects={objects} fieldError={fieldError} onEdit={onEdit} />
-      ) : null}
-      {beat ? <BeatFields beat={beat} onEdit={onEdit} /> : null}
-      {beat && beat.action === "transform_formula"
-        ? targets.map((item) => <ObjectFields key={item.id} object={item} fieldError={fieldError} onEdit={onEdit} />)
-        : null}
-      {selectedObject && beat?.action !== "transform_formula" ? (
-        <ObjectFields key={selectedObject.id} object={selectedObject} fieldError={fieldError} onEdit={onEdit} />
-      ) : null}
+      <fieldset className="inspector-body" disabled={disabled}>
+        <h2>Objects</h2>
+        {objects.length === 0 ? <p className="hint">Nothing in the scene yet.</p> : null}
+        {selectedObject ? (
+          <button
+            type="button"
+            data-testid="delete-object"
+            onClick={() => onEdit({ op: "delete_object", objectId: selectedObject.id })}
+          >
+            Delete object
+          </button>
+        ) : null}
+        <ul className="object-list">
+          {objects.map((item) => (
+            <li key={item.id}>
+              <button
+                type="button"
+                className={item.id === selectedObject?.id ? "object selected" : "object"}
+                onClick={() => onSelectObject(item.id)}
+              >
+                {item.name}
+                <span>{item.type}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        {scene?.kind === "three_d_scene" && scene.camera ? (
+          <ThreeDPanel scene={scene} camera={scene.camera} objects={objects} fieldError={fieldError} onEdit={onEdit} />
+        ) : null}
+        {beat ? <BeatFields beat={beat} onEdit={onEdit} /> : null}
+        {beat && beat.action === "transform_formula"
+          ? targets.map((item) => <ObjectFields key={item.id} object={item} context={context} />)
+          : null}
+        {selectedObject && beat?.action !== "transform_formula" ? (
+          <ObjectFields key={selectedObject.id} object={selectedObject} context={context} />
+        ) : null}
+      </fieldset>
     </aside>
   );
 }
@@ -119,15 +136,7 @@ function ActionFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => vo
   }
 }
 
-function ObjectFields({
-  object,
-  fieldError,
-  onEdit,
-}: {
-  object: SceneObject;
-  fieldError: string | null;
-  onEdit: (edit: Edit) => void;
-}) {
+function ObjectFields({ object, context }: { object: SceneObject; context: FieldContext }) {
   return (
     <section className="fields">
       <h2>{object.name}</h2>
@@ -135,31 +144,24 @@ function ObjectFields({
         label="Name"
         value={object.name}
         testId={`object-name-${object.id}`}
-        onCommit={(name) => onEdit({ op: "set_object_name", objectId: object.id, name })}
+        onCommit={(name) => context.onEdit({ op: "set_object_name", objectId: object.id, name })}
       />
-      <TypedFields object={object} fieldError={fieldError} onEdit={onEdit} />
+      <FieldMessage error={context.fieldError} objectId={object.id} field="name" />
+      <TypedFields object={object} context={context} />
     </section>
   );
 }
 
-function TypedFields({
-  object,
-  fieldError,
-  onEdit,
-}: {
-  object: SceneObject;
-  fieldError: string | null;
-  onEdit: (edit: Edit) => void;
-}) {
+function TypedFields({ object, context }: { object: SceneObject; context: FieldContext }) {
   switch (object.type) {
     case "axes":
-      return <AxesFields object={object} onEdit={onEdit} />;
+      return <AxesFields object={object} context={context} />;
     case "function_plot":
-      return <PlotFields object={object} fieldError={fieldError} onEdit={onEdit} />;
+      return <PlotFields object={object} context={context} />;
     case "math_formula":
-      return <FormulaFields object={object} onEdit={onEdit} />;
+      return <FormulaFields object={object} context={context} />;
     case "text":
-      return <TextFields object={object} onEdit={onEdit} />;
+      return <TextFields object={object} context={context} />;
     case "three_d_axes":
     case "surface":
     case "parametric_curve":
@@ -181,7 +183,7 @@ function ThreeDPanel({
   scene: ProjectDocument["scene"];
   camera: Camera;
   objects: SceneObject[];
-  fieldError: string | null;
+  fieldError: FieldError | null;
   onEdit: (edit: Edit) => void;
 }) {
   const template = scene.templateInstances.find((item) => item.templateId === "three_d_axes");
@@ -215,7 +217,7 @@ function ThreeDPanel({
             testId="surface-expression"
             onCommit={(expression) => onEdit({ op: "set_expression", objectId: surface.id, expression })}
           />
-          {fieldError ? <p className="field-error">{fieldError}</p> : null}
+          <FieldMessage error={fieldError} objectId={surface.id} field="expression" />
           <p className="hint">Natural log is log. Variables: x and y.</p>
           <CommitNumber
             label="Resolution u"
@@ -229,6 +231,7 @@ function ThreeDPanel({
             testId="resolution-v"
             onCommit={(v) => onEdit({ op: "set_resolution", objectId: surface.id, value: [resolution[0], v] })}
           />
+          <FieldMessage error={fieldError} objectId={surface.id} field="value" />
         </>
       ) : null}
       {mode === "curve" && curve ? (
@@ -251,7 +254,7 @@ function ThreeDPanel({
             testId="curve-z"
             onCommit={(expression) => onEdit({ op: "set_curve_component", objectId: curve.id, index: 2, expression })}
           />
-          {fieldError ? <p className="field-error">{fieldError}</p> : null}
+          <FieldMessage error={fieldError} objectId={curve.id} field="expression" />
           <p className="hint">Natural log is log. Variable: t.</p>
         </>
       ) : null}
@@ -288,7 +291,8 @@ function modeFromSelect(value: string): ThreeDMode {
   }
 }
 
-function AxesFields({ object, onEdit }: { object: SceneObject; onEdit: (edit: Edit) => void }) {
+function AxesFields({ object, context }: { object: SceneObject; context: FieldContext }) {
+  const { fieldError, onEdit } = context;
   const xRange = tripleParam(object.params.xRange);
   const yRange = tripleParam(object.params.yRange);
   return (
@@ -303,21 +307,25 @@ function AxesFields({ object, onEdit }: { object: SceneObject; onEdit: (edit: Ed
         value={xRange}
         onCommit={(value) => onEdit({ op: "set_axes_range", objectId: object.id, axis: "x", value })}
       />
+      <FieldMessage error={fieldError} objectId={object.id} field="value" op="set_axes_range" axis="x" />
       <RangeFields
         label="Y range"
         value={yRange}
         onCommit={(value) => onEdit({ op: "set_axes_range", objectId: object.id, axis: "y", value })}
       />
+      <FieldMessage error={fieldError} objectId={object.id} field="value" op="set_axes_range" axis="y" />
       <CommitNumber
         label="X length"
         value={numberParam(object.params.xLength, 10)}
         onCommit={(value) => onEdit({ op: "set_length", objectId: object.id, axis: "x", value })}
       />
+      <FieldMessage error={fieldError} objectId={object.id} field="value" op="set_length" axis="x" />
       <CommitNumber
         label="Y length"
         value={numberParam(object.params.yLength, 4)}
         onCommit={(value) => onEdit({ op: "set_length", objectId: object.id, axis: "y", value })}
       />
+      <FieldMessage error={fieldError} objectId={object.id} field="value" op="set_length" axis="y" />
       <label className="check">
         <input
           type="checkbox"
@@ -326,19 +334,17 @@ function AxesFields({ object, onEdit }: { object: SceneObject; onEdit: (edit: Ed
         />
         Show labels
       </label>
+      {context.texBlocked && object.params.showLabels === true ? (
+        <p className="field-error" data-testid="tex-blocked">
+          LaTeX is not working on this PC, so the axis labels cannot render. Reinstall Mathimator.
+        </p>
+      ) : null}
     </>
   );
 }
 
-function PlotFields({
-  object,
-  fieldError,
-  onEdit,
-}: {
-  object: SceneObject;
-  fieldError: string | null;
-  onEdit: (edit: Edit) => void;
-}) {
+function PlotFields({ object, context }: { object: SceneObject; context: FieldContext }) {
+  const { onEdit } = context;
   return (
     <>
       <CommitText
@@ -347,7 +353,7 @@ function PlotFields({
         testId="plot-expression"
         onCommit={(expression) => onEdit({ op: "set_expression", objectId: object.id, expression })}
       />
-      {fieldError ? <p className="field-error">{fieldError}</p> : null}
+      <FieldMessage error={context.fieldError} objectId={object.id} field="expression" />
       <p className="hint">Natural log is log. Variables: x.</p>
       <ColorField
         label="Color"
@@ -366,6 +372,7 @@ function PlotFields({
           })
         }
       />
+      <FieldMessage error={context.fieldError} objectId={object.id} field="xMin" />
       <CommitNumber
         label="x max"
         value={numberParam(object.params.xMax, 6.28)}
@@ -378,11 +385,13 @@ function PlotFields({
           })
         }
       />
+      <FieldMessage error={context.fieldError} objectId={object.id} field="xMax" />
     </>
   );
 }
 
-function FormulaFields({ object, onEdit }: { object: SceneObject; onEdit: (edit: Edit) => void }) {
+function FormulaFields({ object, context }: { object: SceneObject; context: FieldContext }) {
+  const { onEdit } = context;
   const latex = stringParam(object.params.latex, "y = \\sin(x)");
   const [previewLatex, setPreviewLatex] = useState(latex);
   useEffect(() => {
@@ -398,6 +407,12 @@ function FormulaFields({ object, onEdit }: { object: SceneObject; onEdit: (edit:
         onDraft={setPreviewLatex}
         onCommit={(next) => onEdit({ op: "set_latex", objectId: object.id, latex: next })}
       />
+      <FieldMessage error={context.fieldError} objectId={object.id} field="latex" />
+      {context.texBlocked ? (
+        <p className="field-error" data-testid="tex-blocked">
+          LaTeX is not working on this PC, so this formula cannot render. Reinstall Mathimator.
+        </p>
+      ) : null}
       <FormulaPreview latex={previewLatex} />
       <AnchorField
         value={anchorParam(object.params.anchor)}
@@ -416,7 +431,8 @@ function FormulaFields({ object, onEdit }: { object: SceneObject; onEdit: (edit:
   );
 }
 
-function TextFields({ object, onEdit }: { object: SceneObject; onEdit: (edit: Edit) => void }) {
+function TextFields({ object, context }: { object: SceneObject; context: FieldContext }) {
+  const { onEdit } = context;
   return (
     <>
       <CommitText
@@ -425,6 +441,7 @@ function TextFields({ object, onEdit }: { object: SceneObject; onEdit: (edit: Ed
         testId="text-value"
         onCommit={(text) => onEdit({ op: "set_text", objectId: object.id, text })}
       />
+      <FieldMessage error={context.fieldError} objectId={object.id} field="text" />
       <AnchorField
         value={anchorParam(object.params.anchor)}
         onCommit={(anchor) => onEdit({ op: "set_anchor", objectId: object.id, anchor })}
@@ -439,6 +456,38 @@ function TextFields({ object, onEdit }: { object: SceneObject; onEdit: (edit: Ed
         onCommit={(shift) => onEdit({ op: "set_object_shift", objectId: object.id, shift })}
       />
     </>
+  );
+}
+
+/**
+ * The refusal of an edit to `field` on `objectId`, shown under that field only (C9.3, F112). `op` and `axis` pick one
+ * input out of those whose edits name the same field, such as the axes ranges and lengths.
+ */
+function FieldMessage({
+  error,
+  objectId,
+  field,
+  op,
+  axis,
+}: {
+  error: FieldError | null;
+  objectId: string;
+  field: string;
+  op?: Edit["op"];
+  axis?: string;
+}) {
+  if (
+    error?.objectId !== objectId ||
+    error.field !== field ||
+    (op !== undefined && error.op !== op) ||
+    (axis !== undefined && error.axis !== axis)
+  ) {
+    return null;
+  }
+  return (
+    <p className="field-error" data-testid={`field-error-${objectId}-${field}`}>
+      {error.message}
+    </p>
   );
 }
 

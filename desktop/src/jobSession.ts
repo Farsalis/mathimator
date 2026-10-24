@@ -26,6 +26,8 @@ export interface Handshake {
 
 /** The terminal `error` or `rejected` line of a job, shown as a banner or the project_changed prompt (C9.3). */
 export interface JobFailure {
+  /** The job that ended, so a `project_changed` refusal can be retried as the same kind of job. */
+  job: "preview" | "export";
   code: string;
   message: string;
   details?: string;
@@ -75,10 +77,6 @@ export function createHandshake(): Handshake {
 /** The first state was applied. */
 export function loaded(session: Handshake): Handshake {
   return session.status === "Starting" ? { ...session, status: READY } : session;
-}
-
-export function workerUnavailable(session: Handshake): Handshake {
-  return { ...session, status: "Worker unavailable" };
 }
 
 export function withNote(session: Handshake, note: string | null): Handshake {
@@ -154,7 +152,8 @@ export function receive(session: Handshake, message: WorkerEvent): HandshakeStep
     case "worker_exited":
       // Every job ends and nothing reads "Cancelled" (C8.6, D21).
       return step({ ...exportEnded(session, READY), previewJobId: null }, { next: "resync" });
-    case "ready":
+    case "notice":
+    case "tex_status":
       return step(session);
     default:
       if (message.jobId === null) {
@@ -170,7 +169,7 @@ export function receive(session: Handshake, message: WorkerEvent): HandshakeStep
   }
 }
 
-type JobEvent = Exclude<WorkerEvent, { event: "worker_exited" | "ready" }>;
+type JobEvent = Exclude<WorkerEvent, { event: "worker_exited" | "notice" | "tex_status" }>;
 
 function previewEvent(session: Handshake, message: JobEvent): HandshakeStep {
   switch (message.event) {
@@ -195,7 +194,7 @@ function previewEvent(session: Handshake, message: JobEvent): HandshakeStep {
         // Previews have no Cancel control, so a preview's cancel never reads "Cancelled" (C7.3, F041).
         return step({ ...previewEnded(session), preempted: session.preempted || session.exporting });
       }
-      return step(previewEnded(session), { failure: failureOf(message) });
+      return step(previewEnded(session), { failure: failureOf("preview", message) });
   }
 }
 
@@ -218,7 +217,7 @@ function exportEvent(session: Handshake, message: JobEvent): HandshakeStep {
       if (isCancel(message)) {
         return step(exportEnded(session, session.cancelRequested ? CANCELLED : READY), { next });
       }
-      return step(exportEnded(session, READY), { failure: failureOf(message), next });
+      return step(exportEnded(session, READY), { failure: failureOf("export", message), next });
   }
 }
 
@@ -234,8 +233,9 @@ function isCancel(message: { event: "error" | "rejected"; code: string }): boole
   return message.event === "error" && message.code === "cancelled";
 }
 
-function failureOf(message: Extract<JobEvent, { event: "error" | "rejected" }>): JobFailure {
+function failureOf(job: JobFailure["job"], message: Extract<JobEvent, { event: "error" | "rejected" }>): JobFailure {
   return {
+    job,
     code: message.code,
     message: message.message,
     details: message.event === "error" ? message.details : undefined,

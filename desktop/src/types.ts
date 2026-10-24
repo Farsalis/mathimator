@@ -108,8 +108,29 @@ export interface EditorState {
   warning?: { code: string; message: string };
 }
 
+/** The TeX check (C9.7). A failed check blocks formulas and axis labels (C14 Q4). */
+export interface TexStatus {
+  state: "checking" | "ok" | "failed";
+  message: string | null;
+}
+
+/** A shell notice, shown once and kept by the shell until `dismiss_notice` (C9.5). */
+export interface Notice {
+  id: number;
+  message: string;
+}
+
+/** The reply of `app_status` and `restart_worker` (C9.5). */
+export interface AppStatus {
+  worker: "ready" | "unavailable";
+  /** Why the worker is unavailable. */
+  reason: string | null;
+  tex: TexStatus;
+  /** Every notice not yet dismissed. */
+  notices: Notice[];
+}
+
 export type WorkerEvent =
-  | { event: "ready"; jobId: string }
   | { event: "queued"; jobId: string; code: string; message: string }
   | { event: "started"; jobId: string }
   | { event: "beat_ready"; jobId: string; beatIndex: number; path: string }
@@ -117,7 +138,11 @@ export type WorkerEvent =
   | { event: "error"; jobId: string | null; code: string; message: string; details?: string }
   | { event: "rejected"; jobId: string; code: string; message: string; field?: string }
   /** The shell's line when the worker process ended without being asked to (C8.6). */
-  | { event: "worker_exited"; message: string; exitCode: number | null };
+  | { event: "worker_exited"; message: string; exitCode: number | null }
+  /** A notice the shell added after startup, for example after a respawn fell back to a new project (C9.5). */
+  | ({ event: "notice" } & Notice)
+  /** The TeX self-test finished (C9.7). */
+  | { event: "tex_status"; state: "ok" | "failed"; message: string | null };
 
 export type Edit =
   | { op: "set_project_name"; name: string }
@@ -183,6 +208,16 @@ export function parseEditorState(value: unknown): EditorState {
   };
 }
 
+export function parseAppStatus(value: unknown): AppStatus {
+  const read = fieldsOf(value, "app_status");
+  return {
+    worker: read("worker", oneOf(["ready", "unavailable"] as const)),
+    reason: read("reason", nullable(asString)),
+    tex: read("tex", asTexStatus),
+    notices: read("notices", listOf(asNotice)),
+  };
+}
+
 /**
  * Parses a line from the `worker-event` channel. Returns null for an event the UI does not read (C2: unknown
  * events are ignored) and throws ParseError naming the field when a known event is malformed.
@@ -193,8 +228,6 @@ export function parseWorkerEvent(value: unknown): WorkerEvent | null {
   }
   const read = fieldsOf(value, value.event);
   switch (value.event) {
-    case "ready":
-      return { event: "ready", jobId: read("jobId", asString) };
     case "queued":
       return {
         event: "queued",
@@ -239,6 +272,14 @@ export function parseWorkerEvent(value: unknown): WorkerEvent | null {
         event: "worker_exited",
         message: read("message", asString),
         exitCode: read("exitCode", nullable(asInteger)),
+      };
+    case "notice":
+      return { event: "notice", ...asNotice(value, "notice") };
+    case "tex_status":
+      return {
+        event: "tex_status",
+        state: read("state", oneOf(["ok", "failed"] as const)),
+        message: read("message", nullable(asString)),
       };
     default:
       return null;
@@ -339,6 +380,19 @@ function asIndexBeat(value: unknown, path: string): IndexBeat {
 function asFocus(value: unknown, path: string): NonNullable<EditorState["focus"]> {
   const read = fieldsOf(value, path);
   return { beatId: read("beatId", nullable(asString)), objectId: read("objectId", nullable(asString)) };
+}
+
+function asTexStatus(value: unknown, path: string): TexStatus {
+  const read = fieldsOf(value, path);
+  return {
+    state: read("state", oneOf(["checking", "ok", "failed"] as const)),
+    message: read("message", nullable(asString)),
+  };
+}
+
+function asNotice(value: unknown, path: string): Notice {
+  const read = fieldsOf(value, path);
+  return { id: read("id", asInteger), message: read("message", asString) };
 }
 
 function asWarning(value: unknown, path: string): NonNullable<EditorState["warning"]> {

@@ -17,28 +17,40 @@ import {
   requestCancel,
   requestExport,
   withNote,
-  workerUnavailable,
   type Handshake,
+  type JobFailure,
 } from "./jobSession";
 import { asString, fieldsOf } from "./parse";
 import { patchBeat } from "./playback";
 import {
+  parseAppStatus,
   parseEditorState,
   parseWorkerEvent,
+  type AppStatus,
   type Edit,
   type EditorState,
+  type Notice,
   type ProjectDocument,
+  type TexStatus,
   type WorkerEvent,
 } from "./types";
-import { errorMessage, invokeWorker, WorkerQueue, WorkerRefusal } from "./workerQueue";
+import {
+  errorMessage,
+  failureOf,
+  invokeWorker,
+  WorkerFailure,
+  WorkerQueue,
+  WorkerRefusal,
+  type Failure,
+  type Task,
+} from "./workerQueue";
 
 export const PREVIEW_DEBOUNCE_MS = 300;
 
 const EXPORT_RUNNING = "An export is already running.";
 const RESTART_NOTE = "The worker restarted. The document was reloaded from disk and undo history was cleared.";
-
-/** Edits whose refusal is shown under the expression field. */
-const FIELD_EDITS: ReadonlySet<Edit["op"]> = new Set(["set_expression", "set_curve_component", "set_resolution"]);
+const WORKER_UNAVAILABLE = "Worker unavailable";
+const TEX_FAILED = "Formulas and axis labels cannot render on this PC. Reinstall Mathimator.";
 
 /** Refusal codes that point at the edited field (C9.3). */
 const FIELD_CODES: ReadonlySet<string> = new Set([
@@ -51,32 +63,62 @@ const FIELD_CODES: ReadonlySet<string> = new Set([
 
 export type Selection = { kind: "none" } | { kind: "beat"; id: string } | { kind: "object"; id: string };
 
+/** A refused edit's message, shown under the field it names on the object it edited (C9.3, S59). */
+export interface FieldError {
+  objectId: string;
+  /** The edit field the refusal names, for example `expression`. */
+  field: string;
+  /** The refused edit's op and axis, which tell apart the axes inputs whose edits all name `value`. */
+  op: Edit["op"];
+  axis: string | null;
+  message: string;
+}
+
+type OpenCommand = "open_project_dialog" | "open_sample" | "new_project";
+
 export function useEditor() {
-  const [ready, setReady] = useState(false);
   const [state, setState] = useState<EditorState | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [fieldError, setFieldError] = useState<string | null>(null);
+  /** Why the worker is unavailable (C9.5), or null. */
+  const [unavailable, setUnavailable] = useState<string | null>(null);
+  const [tex, setTex] = useState<TexStatus>({ state: "checking", message: null });
+  const [notices, setNotices] = useState<Notice[]>([]);
+  const [error, setError] = useState<Failure | null>(null);
+  const [fieldError, setFieldError] = useState<FieldError | null>(null);
+  /** The message of the open project_changed prompt (C9.3), or null. */
+  const [changedPrompt, setChangedPrompt] = useState<string | null>(null);
   const [handshake, setHandshake] = useState(createHandshake);
   const [selection, setSelection] = useState<Selection>({ kind: "none" });
   const [drafts, setDrafts] = useState<Record<string, number>>({});
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [codeOpen, setCodeOpen] = useState(false);
-  const [codeText, setCodeText] = useState("");
   const [noticesOpen, setNoticesOpen] = useState(false);
   const [presetOpen, setPresetOpen] = useState(false);
   const [queue] = useState(
-    () => new WorkerQueue({ report: (reason) => setError(errorMessage(reason)), resync: refreshState }),
+    () =>
+      new WorkerQueue({
+        report: showFailure,
+        resync: refreshState,
+        changed: (refusal, retry) => joinPrompt(refusal.message, retry),
+      }),
   );
   const jobs = useRef(handshake);
   /** The last applied state reply. Queued tasks read it before React has rendered it. */
   const applied = useRef<EditorState | null>(null);
-  /** The worker exited, so the next get_state is the C8.6 resync. */
+  /** The worker exited or was restarted, so the next get_state is the C8.6 resync. */
   const restarted = useRef(false);
   const notedReady = useRef(false);
   /** Bumped by every schedulePreview, so a later one supersedes a preview task that has not recorded its id. */
   const epoch = useRef(0);
   const debounce = useRef<number | null>(null);
+  /** The id of every notice shown so far: each id is shown once (C9.5). */
+  const shownNotices = useRef(new Set<number>());
+  /** What Overwrite runs again for the refusals joined to the open prompt, or null while none is open (C9.3). */
+  const joined = useRef<Task[] | null>(null);
+  /** The profile and `force` of the current export, so a refused export is retried the same way (C9.3). */
+  const exportOrder = useRef<{ profile: ExportProfile; force: boolean } | null>(null);
+
+  const ready = state !== null && unavailable === null;
 
   const onWorkerLine = useEffectEvent((payload: unknown) => {
     try {
@@ -85,13 +127,12 @@ export function useEditor() {
         onWorkerEvent(parsed);
       }
     } catch (reason: unknown) {
-      setError(errorMessage(reason));
+      setError(failureOf(reason));
     }
   });
 
   const onListening = useEffectEvent(() => {
-    void queue.enqueue(refreshState);
-    void queue.enqueue(requestReady);
+    void loadStatus();
   });
 
   useEffect(() => {
@@ -119,22 +160,69 @@ export function useEditor() {
   }, []);
 
   useEffect(() => {
-    if (ready && state && !notedReady.current) {
+    if (ready && !notedReady.current) {
       notedReady.current = true;
       void invoke("note_shell_ready");
     }
-  }, [ready, state]);
+  }, [ready]);
+
+  /** Startup (C9.5): `app_status` answers once the shell's handshake is done. */
+  async function loadStatus(): Promise<void> {
+    try {
+      applyStatus(parseAppStatus(await invoke("app_status")));
+    } catch (reason: unknown) {
+      setUnavailable(errorMessage(reason));
+    }
+  }
+
+  /** Retry in the "Worker unavailable" view. A worker that starts is loaded as after a restart (C8.6). */
+  async function onRetry(): Promise<void> {
+    try {
+      const status = parseAppStatus(await invoke("restart_worker"));
+      restarted.current = true;
+      applyStatus(status);
+    } catch (reason: unknown) {
+      setUnavailable(errorMessage(reason));
+    }
+  }
 
   /**
-   * Asks the worker for `ready`. It is queued after the startup `get_state` and runs even when that load failed, so a
-   * startup timeout recovers through the resync.
+   * Shows the notices and TeX state of an AppStatus, then loads the state of a ready worker. A `tex_status` event can
+   * overtake the reply (C9.2), and the check never goes back to `checking`, so a reply still checking keeps the result.
    */
-  async function requestReady(): Promise<void> {
-    try {
-      await invokeWorker("worker_status");
-    } catch (reason: unknown) {
-      publish(workerUnavailable(jobs.current));
-      throw reason;
+  function applyStatus(status: AppStatus): void {
+    addNotices(status.notices);
+    setTex((current) => (status.tex.state === "checking" ? current : status.tex));
+    if (status.worker === "unavailable") {
+      setUnavailable(status.reason ?? "");
+      return;
+    }
+    setUnavailable(null);
+    void queue.enqueue(refreshState);
+  }
+
+  /** Shows the notices whose ids were never shown, so a StrictMode double mount shows each once (C9.5). */
+  function addNotices(added: readonly Notice[]): void {
+    const fresh = added.filter((notice) => !shownNotices.current.has(notice.id));
+    for (const notice of fresh) {
+      shownNotices.current.add(notice.id);
+    }
+    if (fresh.length > 0) {
+      setNotices((current) => [...current, ...fresh]);
+    }
+  }
+
+  function onDismissNotice(id: number): void {
+    setNotices((current) => current.filter((notice) => notice.id !== id));
+    void invoke("dismiss_notice", { id });
+  }
+
+  /** Shows why a task failed: `worker_unavailable` opens the unavailable view (C9.5), anything else the banner. */
+  function showFailure(reason: unknown): void {
+    if (reason instanceof WorkerFailure && reason.code === "worker_unavailable") {
+      setUnavailable(reason.message);
+    } else {
+      setError(failureOf(reason));
     }
   }
 
@@ -151,8 +239,7 @@ export function useEditor() {
     applyState(next);
     publish(loaded(jobs.current));
     if (restart && sameProject) {
-      setDrafts({});
-      setSelection((current) => (selectionIn(current, next.document) ? current : { kind: "none" }));
+      reconcile(next.document);
       publish(withNote(jobs.current, RESTART_NOTE));
     }
   }
@@ -174,11 +261,12 @@ export function useEditor() {
     }
   }
 
-  /** Applies the reply of Open or Sample: the Open reset, then a preview (C7.5). */
+  /** Applies the reply of Open, Sample or New: the Open reset, then a preview (C7.5). */
   function applyOpened(next: EditorState): void {
     resetView();
     applyState(next);
     setError(null);
+    setNoticesOpen(false);
     schedulePreview();
   }
 
@@ -193,19 +281,31 @@ export function useEditor() {
     publish(openReset(jobs.current));
   }
 
+  /** After the document was replaced from disk: clear the drafts and field errors, and drop a selection that is gone. */
+  function reconcile(document: ProjectDocument): void {
+    setDrafts({});
+    setFieldError(null);
+    setSelection((current) => (selectionIn(current, document) ? current : { kind: "none" }));
+  }
+
   function publish(next: Handshake): void {
     jobs.current = next;
     setHandshake(next);
   }
 
   function onWorkerEvent(message: WorkerEvent): void {
-    if (message.event === "ready") {
-      setReady(true);
+    if (message.event === "notice") {
+      addNotices([{ id: message.id, message: message.message }]);
+    } else if (message.event === "tex_status") {
+      setTex({ state: message.state, message: message.message });
     }
     const step = receive(jobs.current, message);
     publish(step.session);
-    if (step.failure) {
-      setError(step.failure.message);
+    if (step.failure?.code === "project_changed") {
+      queue.pause();
+      joinPrompt(step.failure.message, jobRetry(step.failure.job));
+    } else if (step.failure) {
+      setError(step.failure);
     }
     const beat = step.beat;
     if (beat) {
@@ -227,6 +327,72 @@ export function useEditor() {
     }
   }
 
+  /**
+   * A `project_changed` refusal, with the queue paused. It joins the open prompt or opens one, and Overwrite runs
+   * `retry` (C9.3).
+   */
+  function joinPrompt(message: string, retry: Task): void {
+    if (joined.current) {
+      joined.current.push(retry);
+      return;
+    }
+    joined.current = [retry];
+    setChangedPrompt(message);
+  }
+
+  /** Closes the prompt and returns what Overwrite would run again. */
+  function closePrompt(): Task[] {
+    const retries = joined.current ?? [];
+    joined.current = null;
+    setChangedPrompt(null);
+    return retries;
+  }
+
+  /** Reload: read project.json again, which discards undo history and the joined refusals, then preview (C9.3, Q7). */
+  function onReload(): void {
+    closePrompt();
+    queue.resume([
+      async () => {
+        const next = parseEditorState(await invokeWorker("reload_project"));
+        applyState(next);
+        publish(markStale(jobs.current));
+        reconcile(next.document);
+        setError(null);
+        schedulePreview();
+      },
+    ]);
+  }
+
+  /** Overwrite: save this document over project.json, then retry each joined refusal once, in order (C9.3). */
+  function onOverwrite(): void {
+    const retries = closePrompt();
+    let saved = false;
+    queue.resume([
+      async () => {
+        applyState(parseEditorState(await invokeWorker("overwrite_project")));
+        setError(null);
+        saved = true;
+      },
+      ...retries.map((retry) => async () => {
+        if (saved) {
+          await retry();
+        }
+      }),
+    ]);
+  }
+
+  /** Cancel: write nothing, drop the joined refusals and go on with the queue (C13.2 E2). */
+  function onCancelPrompt(): void {
+    closePrompt();
+    queue.resume();
+  }
+
+  /** What Overwrite runs again for a job refused with `project_changed`: a new job of the same kind (C9.3). */
+  function jobRetry(job: JobFailure["job"]): Task {
+    const order = exportOrder.current;
+    return job === "export" && order !== null ? exportRetry(order.profile, order.force) : previewNow;
+  }
+
   /** Schedules a preview of the applied state after the debounce. A scene with no beats gets none (C7.5). */
   function schedulePreview(): void {
     epoch.current += 1;
@@ -242,6 +408,12 @@ export function useEditor() {
       debounce.current = null;
       void queue.enqueue(() => runPreview(token));
     }, PREVIEW_DEBOUNCE_MS);
+  }
+
+  /** A preview task that supersedes every scheduled one: the retry of a refused preview replaces it (C7.5). */
+  function previewNow(): Promise<void> {
+    epoch.current += 1;
+    return runPreview(epoch.current);
   }
 
   /** The preview task (C9.2). A later schedulePreview supersedes it until its id is recorded. */
@@ -278,8 +450,19 @@ export function useEditor() {
           schedulePreview();
         }
       } catch (reason: unknown) {
-        if (reason instanceof WorkerRefusal && FIELD_CODES.has(reason.code) && FIELD_EDITS.has(edit.op)) {
-          setFieldError(reason.message);
+        if (
+          reason instanceof WorkerRefusal &&
+          FIELD_CODES.has(reason.code) &&
+          reason.field !== undefined &&
+          "objectId" in edit
+        ) {
+          setFieldError({
+            objectId: edit.objectId,
+            field: reason.field,
+            op: edit.op,
+            axis: "axis" in edit ? edit.axis : null,
+            message: reason.message,
+          });
         }
         throw reason;
       }
@@ -300,13 +483,21 @@ export function useEditor() {
       applyState(parseEditorState(await invokeWorker(command)));
       publish(markStale(jobs.current));
       setError(null);
+      setFieldError(null);
       setDrafts({});
     });
   }
 
-  function onExport(): void {
+  /** Whether an export runs. If one does, the note says so. */
+  function exportRunning(): boolean {
     if (jobs.current.exporting) {
       publish(withNote(jobs.current, EXPORT_RUNNING));
+    }
+    return jobs.current.exporting;
+  }
+
+  function onExport(): void {
+    if (exportRunning()) {
       return;
     }
     publish(withNote(jobs.current, null));
@@ -315,14 +506,24 @@ export function useEditor() {
 
   /** The Export click: "Rendering export" at once, then the Export task. Re-export passes `force` (D56). */
   function onStartExport(profile: ExportProfile, force: boolean): void {
-    if (jobs.current.exporting) {
-      publish(withNote(jobs.current, EXPORT_RUNNING));
+    if (exportRunning()) {
       return;
     }
     publish(requestExport(jobs.current));
     setError(null);
     setPresetOpen(false);
-    void queue.enqueue(() => runExport(profile, force));
+    void queue.enqueue(() => runExport(profile, force), exportRetry(profile, force));
+  }
+
+  /** The retry of a refused export: a new Export task with a new id, the same profile and the same `force` (C9.3). */
+  function exportRetry(profile: ExportProfile, force: boolean): Task {
+    return async () => {
+      if (exportRunning()) {
+        return;
+      }
+      publish(requestExport(jobs.current));
+      await runExport(profile, force);
+    };
   }
 
   /**
@@ -337,6 +538,7 @@ export function useEditor() {
         return;
       }
       publish(beginExport(jobs.current, jobId));
+      exportOrder.current = { profile, force };
       if (!jobs.current.cancelRequested) {
         const edit: Edit = { op: "set_export_profile", ...profile };
         applyEdit(parseEditorState(await invokeWorker("edit_document", { edit })));
@@ -377,7 +579,7 @@ export function useEditor() {
       const next = parseEditorState(await invokeWorker("clear_cache"));
       applyState(next);
       publish(clearExportResult(jobs.current));
-      setError(next.warning?.message ?? null);
+      setError(next.warning ?? null);
       schedulePreview();
     });
   }
@@ -387,19 +589,33 @@ export function useEditor() {
     setNoticesOpen(true);
   }
 
-  function onOpenSample(): Promise<void> {
+  /** View code shows the applied state's source, so it follows every change (D25). */
+  function onViewCode(): void {
+    setNoticesOpen(false);
+    setCodeOpen(true);
+  }
+
+  /**
+   * Open, Sample and New. The shell first offers to save a touched temp project (C14 Q2); a cancel there, or in the
+   * folder picker, returns null and changes nothing.
+   */
+  function openProject(command: OpenCommand): Promise<void> {
     return queue.enqueue(async () => {
-      applyOpened(parseEditorState(await invokeWorker("open_sample")));
-      setNoticesOpen(false);
+      const reply = await invokeWorker(command);
+      if (reply !== null) {
+        applyOpened(parseEditorState(reply));
+      }
     });
   }
 
-  function onViewCode(): Promise<void> {
-    setNoticesOpen(false);
-    setCodeOpen(true);
+  /** Save As (D29). The reply carries the new folder, so applying it runs the Open reset (C9.2). */
+  function onSaveAs(): Promise<void> {
     return queue.enqueue(async () => {
-      const read = fieldsOf(await invokeWorker("view_code"), "code");
-      setCodeText(read("source", asString));
+      const reply = await invokeWorker("save_project_as_dialog");
+      if (reply !== null) {
+        applyState(parseEditorState(reply));
+        setError(null);
+      }
     });
   }
 
@@ -412,15 +628,6 @@ export function useEditor() {
       const read = fieldsOf(reply, "export_code_dialog");
       publish(withNote(jobs.current, `Code exported to ${read("path", asString)}`));
       setError(null);
-    });
-  }
-
-  function onOpen(): Promise<void> {
-    return queue.enqueue(async () => {
-      const reply = await invokeWorker("open_project_dialog");
-      if (reply !== null) {
-        applyOpened(parseEditorState(reply));
-      }
     });
   }
 
@@ -452,9 +659,13 @@ export function useEditor() {
   return {
     ready,
     state,
+    unavailable,
+    texWarning: tex.state === "failed" ? (tex.message ?? TEX_FAILED) : null,
+    notices,
     error,
     fieldError,
-    status: handshake.status,
+    changedPrompt,
+    status: unavailable === null ? handshake.status : WORKER_UNAVAILABLE,
     selection,
     setSelection,
     drafts,
@@ -464,7 +675,6 @@ export function useEditor() {
     setPlaying,
     codeOpen,
     setCodeOpen,
-    codeText,
     noticesOpen,
     setNoticesOpen,
     presetOpen,
@@ -477,15 +687,23 @@ export function useEditor() {
     commit,
     undo,
     redo,
+    onRetry,
+    onDismissNotice,
+    onDismissError: () => setError(null),
+    onReload,
+    onOverwrite,
+    onCancelPrompt,
     onExport,
     onStartExport,
     onCancelExport,
     onClearCache,
     onNotices,
-    onOpenSample,
     onViewCode,
     onExportCode,
-    onOpen,
+    onOpen: () => openProject("open_project_dialog"),
+    onOpenSample: () => openProject("open_sample"),
+    onNew: () => openProject("new_project"),
+    onSaveAs,
     onDraftDuration,
     onCommitDuration,
   };

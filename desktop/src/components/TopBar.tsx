@@ -3,13 +3,17 @@ import { AddMenu, type AddKind } from "./AddMenu";
 
 interface TopBarProps {
   name: string;
+  /** The bound project folder (D29). */
+  projectPath: string | null;
   ready: boolean;
   canUndo: boolean;
   canRedo: boolean;
-  /** An export runs: the Export button says so, and Open and Sample are disabled (D22). */
+  /** An export runs: the Export button says so, and New, Open, Save As and Sample are disabled (D22, C7.6). */
   exporting: boolean;
   onRename: (name: string) => void;
+  onNew: () => void;
   onOpen: () => void;
+  onSaveAs: () => void;
   onAdd: (kind: AddKind) => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -22,12 +26,15 @@ interface TopBarProps {
 
 export function TopBar({
   name,
+  projectPath,
   ready,
   canUndo,
   canRedo,
   exporting,
   onRename,
+  onNew,
   onOpen,
+  onSaveAs,
   onAdd,
   onUndo,
   onRedo,
@@ -68,9 +75,20 @@ export function TopBar({
           }
         }}
       />
+      {projectPath ? (
+        <span className="project-path" data-testid="project-path" title={projectPath}>
+          {projectPath}
+        </span>
+      ) : null}
       <div className="top-actions">
+        <button type="button" data-testid="new-button" onClick={onNew} disabled={!ready || exporting}>
+          New
+        </button>
         <button type="button" data-testid="open-button" onClick={onOpen} disabled={!ready || exporting}>
           Open
+        </button>
+        <button type="button" data-testid="save-as-button" onClick={onSaveAs} disabled={!ready || exporting}>
+          Save As…
         </button>
         <AddMenu disabled={!ready} onAdd={onAdd} />
         <button type="button" data-testid="undo-button" onClick={onUndo} disabled={!ready || !canUndo}>

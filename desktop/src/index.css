@@ -47,10 +47,11 @@ select:focus-visible {
   height: 100vh;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
-  grid-template-rows: auto auto auto minmax(0, 1fr) 168px auto;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) 168px auto;
   grid-template-areas:
     "top top"
     "status status"
+    "tex tex"
     "note note"
     "stage inspector"
     "timeline timeline"
@@ -74,6 +75,16 @@ select:focus-visible {
   border: 1px solid #3a3a3a;
   border-radius: 4px;
   padding: 6px 8px;
+}
+
+.project-path {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  color: #9c978f;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .top-actions {
@@ -121,8 +132,7 @@ select:focus-visible {
 }
 
 .status,
-.error,
-.export-note,
+.tex-warning,
 .export-path {
   margin: 0;
 }
@@ -131,27 +141,97 @@ select:focus-visible {
   padding: 0;
 }
 
-.error,
-.export-note,
-.export-path {
-  grid-area: note;
-  padding: 4px 12px 0;
-}
-
-.error {
-  color: #e07a5f;
-  white-space: pre-wrap;
-}
-
-.export-note,
+.note,
 .export-path,
 .status {
   color: #9c978f;
 }
 
+.tex-warning {
+  grid-area: tex;
+  padding: 4px 12px 0;
+  color: #e7c27a;
+}
+
+/* Banner, worker status, notices and the note stack here, capped so the stage keeps its room (F044). */
+.messages {
+  grid-area: note;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 14em;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px 12px 0;
+}
+
+.messages:empty {
+  display: none;
+}
+
+.messages p,
+.messages pre {
+  margin: 0;
+}
+
+.banner,
+.unavailable,
+.notice {
+  display: grid;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  background: #1b1b1b;
+}
+
+.banner,
+.unavailable {
+  border-color: #5c3127;
+}
+
+.banner-message,
+.unavailable-reason {
+  color: #e07a5f;
+}
+
+.banner-row,
+.unavailable,
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.banner-message,
+.unavailable-reason,
+.notice p {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+}
+
+.banner-message {
+  max-height: 4.2em;
+  overflow: auto;
+}
+
+.banner-details {
+  max-height: 10em;
+  overflow: auto;
+  padding: 6px 8px;
+  background: #101010;
+  border: 1px solid #2c2c2c;
+  border-radius: 4px;
+  color: #d8d2c8;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
 .export-path {
   grid-area: export;
-  padding-bottom: 8px;
+  padding: 4px 12px 8px;
   word-break: break-all;
 }
 
@@ -237,6 +317,13 @@ select:focus-visible {
   padding: 12px;
   border-left: 1px solid #2c2c2c;
   background: #181818;
+}
+
+.inspector-body {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .inspector h2,
@@ -459,11 +546,17 @@ legend {
   font-variant-numeric: tabular-nums;
 }
 
+.duration-handle:disabled {
+  cursor: default;
+  pointer-events: none;
+}
+
 .beat[data-dirty="true"] .dirty-mark {
   color: #d7a15f;
 }
 
-.export-panel {
+.export-panel,
+.prompt {
   position: fixed;
   inset: 0;
   z-index: 5;
@@ -472,7 +565,8 @@ legend {
   background: rgba(0, 0, 0, 0.45);
 }
 
-.export-card {
+.export-card,
+.prompt-card {
   width: min(420px, calc(100% - 32px));
   display: grid;
   gap: 10px;
@@ -482,9 +576,14 @@ legend {
   border-radius: 6px;
 }
 
-.export-card h2 {
+.export-card h2,
+.prompt-card h2 {
   margin: 0;
   font-size: 16px;
+}
+
+.prompt-card p {
+  margin: 0;
 }
 
 .export-card label {
@@ -501,7 +600,8 @@ legend {
   padding: 5px 6px;
 }
 
-.export-actions {
+.export-actions,
+.prompt-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;

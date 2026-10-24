@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { formatSeconds } from "../format";
 import { playbackAt, shouldSeek } from "../playback";
 import type { PreviewIndex } from "../types";
+
+const NONE: ReadonlySet<string> = new Set();
 
 interface PreviewStageProps {
   index: PreviewIndex | null;
@@ -18,9 +20,21 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
   const scrubbing = useRef(false);
   const [mediaNote, setMediaNote] = useState<string | null>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [missing, setMissing] = useState<ReadonlySet<string>>(new Set());
-  const choice = playbackAt(index, time, (path) => !missing.has(path));
+  /** The files that could not be read for `index`. Any new index tries them again (F115). */
+  const [missing, setMissing] = useState<{ index: PreviewIndex | null; paths: ReadonlySet<string> }>({
+    index: null,
+    paths: NONE,
+  });
+  const absent = missing.index === index ? missing.paths : NONE;
+  const choice = playbackAt(index, time, (path) => !absent.has(path));
   const src = choice.path ? convertFileSrc(choice.path) : null;
+
+  /** An unreadable file is logged, and the canvas falls back to last-good or blank with the badge (D23). */
+  const onUnreadable = useEffectEvent((path: string, reason: unknown) => {
+    console.warn(`Could not read the preview file ${path}:`, reason);
+    setMissing({ index, paths: new Set([...absent, path]) });
+    setMediaNote(null);
+  });
 
   useEffect(() => {
     if (!src) {
@@ -33,7 +47,7 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
     void fetch(src)
       .then((response) => {
         if (!response.ok) {
-          throw new Error(String(response.status));
+          throw new Error(`HTTP ${response.status}`);
         }
         return response.arrayBuffer();
       })
@@ -45,15 +59,9 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
         setBlobUrl(objectUrl);
         setMediaNote(null);
       })
-      .catch(() => {
+      .catch((reason: unknown) => {
         if (!cancelled && choice.path) {
-          const missingPath = choice.path;
-          setMissing((current) => {
-            const next = new Set(current);
-            next.add(missingPath);
-            return next;
-          });
-          setMediaNote(null);
+          onUnreadable(choice.path, reason);
         }
       });
     return () => {

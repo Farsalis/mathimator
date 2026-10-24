@@ -10,6 +10,8 @@ interface TimelineProps {
   selectedBeatId: string | null;
   playhead: number;
   total: number;
+  /** The worker is not ready, so durations cannot be changed (C9.5). */
+  disabled: boolean;
   onSelect: (beatId: string) => void;
   onDraft: (beatId: string, duration: number) => void;
   onCommit: (beatId: string, duration: number) => void;
@@ -23,6 +25,7 @@ export function Timeline({
   selectedBeatId,
   playhead,
   total,
+  disabled,
   onSelect,
   onDraft,
   onCommit,
@@ -46,6 +49,7 @@ export function Timeline({
                 playhead >= (starts[index] ?? 0) &&
                 (index === beats.length - 1 || playhead < (starts[index + 1] ?? total))
               }
+              disabled={disabled}
               onSelect={onSelect}
               onDraft={onDraft}
               onCommit={onCommit}
@@ -65,6 +69,7 @@ function BeatCell({
   dirty,
   selected,
   active,
+  disabled,
   onSelect,
   onDraft,
   onCommit,
@@ -76,6 +81,7 @@ function BeatCell({
   dirty: boolean;
   selected: boolean;
   active: boolean;
+  disabled: boolean;
   onSelect: (beatId: string) => void;
   onDraft: (beatId: string, duration: number) => void;
   onCommit: (beatId: string, duration: number) => void;
@@ -97,6 +103,7 @@ function BeatCell({
         type="button"
         className="duration-handle"
         aria-label={`Duration of ${beat.id}`}
+        disabled={disabled}
         onPointerDown={(event) => {
           event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);

@@ -110,13 +110,15 @@ describe("preview handshake", () => {
     expect(beat.beat).toEqual({ beatIndex: 0, path: "C:/p/0.mp4" });
   });
 
-  it("drops events for an id it does not wait for, and errors without an id (F048)", () => {
+  it("drops events for an id it does not wait for, errors without an id and the shell's own lines (F048)", () => {
     const begun = beginPreview(idle, "preview-6");
     for (const event of [
       cancelled("preview-5"),
       { event: "done", jobId: "export-9", path: "C:/p/old.mp4", current: true },
       { event: "beat_ready", jobId: "preview-5", beatIndex: 0, path: "C:/p/0.mp4" },
       { event: "error", jobId: null, code: "bad_request", message: "missing id" },
+      { event: "notice", id: 1, message: "Could not reopen C:/old: gone. A new project was started." },
+      { event: "tex_status", state: "failed", message: "Formulas and axis labels cannot render on this PC." },
     ] satisfies WorkerEvent[]) {
       expect(receive(begun, event)).toEqual({ session: begun, failure: null, beat: null, next: null });
     }
@@ -138,7 +140,7 @@ describe("preview handshake", () => {
       details: "tail",
     });
     expect(step.session.status).toBe("Ready");
-    expect(step.failure).toEqual({ code: "render_failed", message: "cancelled", details: "tail" });
+    expect(step.failure).toEqual({ job: "preview", code: "render_failed", message: "cancelled", details: "tail" });
   });
 
   it("ends a preview on a terminal refusal", () => {
@@ -150,7 +152,7 @@ describe("preview handshake", () => {
     });
     expect(step.session.previewJobId).toBeNull();
     expect(step.session.status).toBe("Ready");
-    expect(step.failure).toEqual({ code: "tex_unavailable", message: "The bundled TeX is missing." });
+    expect(step.failure).toEqual({ job: "preview", code: "tex_unavailable", message: "The bundled TeX is missing." });
   });
 
   it("carries an error in its own step only (F109)", () => {
@@ -225,7 +227,7 @@ describe("export handshake", () => {
     expect(step.session.exporting).toBe(false);
     expect(step.session.exportJobId).toBeNull();
     expect(step.session.status).toBe("Ready");
-    expect(step.failure?.code).toBe("project_changed");
+    expect(step.failure).toMatchObject({ job: "export", code: "project_changed" });
   });
 
   it("waits for the previous render, then renders the export", () => {
