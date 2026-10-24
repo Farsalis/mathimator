@@ -213,7 +213,7 @@ On save, `project.json` is pretty-printed with two-space indentation, a trailing
 | Field | Rule |
 | --- | --- |
 | `schemaVersion` | Integer. v1 reads and writes `1` only. Any other value, or a missing value, is refused; `true` and `1.0` are not integers. The message names the file's version. |
-| `generatorVersion` | Integer `1` for code that matches section 5. Bump it when generated Python changes. It is part of the cache key. |
+| `generatorVersion` | Integer `2` for code that matches section 5. Bump it when generated Python changes. It is part of the cache key. An older version opens as the current one: its beats are dirty, its exports are out of date, and the next save writes the current number. A newer version, `0`, or a value that is not an integer is refused. |
 | `id` | Stable id matching `[a-z][a-z0-9_]{0,31}`. |
 | `name` | Display name. Not used in codegen. Renaming it does not dirty a preview. |
 | `seed` | Integer from 0 to 4294967295, the range numpy accepts. v1 always writes `1` and shows no seed control. |
@@ -223,7 +223,7 @@ On save, `project.json` is pretty-printed with two-space indentation, a trailing
 
 There is no scene list. There is no `start` field anywhere. A file that contains `start`, an unknown key, or an unknown object type is refused.
 
-Strings may hold tab, line feed and carriage return, so CRLF text from Windows tools opens. A string with NUL, another C0 control character or a lone UTF-16 surrogate is refused on open and in an edit, naming the field. A number too large for a float, `NaN` and `Infinity` make the file invalid JSON. Codegen writes numbers with three decimal places, so a document number is checked at that precision: a step, length or zoom that rounds to 0, or a range or domain whose maximum rounds to its minimum, is refused. The file keeps the number as written.
+Strings may hold tab, line feed and carriage return, so CRLF text from Windows tools opens. A string with NUL, another C0 control character or a lone UTF-16 surrogate is refused on open and in an edit, naming the field. A number too large for a float, `NaN` and `Infinity` make the file invalid JSON. Codegen writes numbers with three decimal places, so a document number is checked at that precision: a step, length or zoom that rounds to 0, or a range or domain whose maximum rounds to its minimum, is refused. The file keeps the number as written. A number inside an expression is not a document number: codegen uses it exactly as typed (section 5).
 
 ### Scene, objects, beats
 
@@ -237,7 +237,7 @@ Strings may hold tab, line feed and carriage return, so CRLF text from Windows t
 | `scene.beats` | Timeline order. Position in this array is the beat index and the Manim animation index. |
 | `scene.templateInstances` | Array of `{id, templateId, params, objectIds, beatIds}`. |
 
-Object fields: `id`, `name`, `type`, `params`. Beat fields: `id`, `duration`, `action`, `targets`, and `params` when the action needs them. Ids are unique across the scene, objects, beats, and template instances. The playhead, selection, dirty flags, and undo stack are not stored. Undo history holds at least 50 document edits per session and is discarded on exit.
+Object fields: `id`, `name`, `type`, `params`. Beat fields: `id`, `duration`, `action`, `targets`, and `params` when the action needs them. Ids are unique across the scene, objects, beats, and template instances. An object id is a variable in the generated code, so it is not a Python keyword, `np`, `self`, or `config`, and it does not collide with a name codegen makes: `<axes>_labels` and `<axes>_group` for any 2D axes, whatever `showLabels` says, `u` and `v` for the axes of a surface, and `t` for the axes of a curve. A file with such an id is refused, naming the id. The playhead, selection, dirty flags, and undo stack are not stored. Undo history holds at least 50 document edits per session and is discarded on exit.
 
 Derived start of beat `i` is the sum of durations of beats `0 .. i-1`. The timeline displays it and does not accept an edit to it. Total duration is the sum of beat durations. Minimum beat duration is 0.1 seconds. Maximum total is 120 seconds. A committing edit that breaks either limit is refused, and the document is unchanged.
 
@@ -247,7 +247,7 @@ Derived start of beat `i` is the sum of durations of beats `0 .. i-1`. The timel
 | --- | --- | --- |
 | `axes` | 2D | `xRange`, `yRange` as `[min, max, step]`, `xLength`, `yLength`, `color`, `showLabels` |
 | `function_plot` | 2D | `axesId`, `expression`, `xMin`, `xMax`, `color` |
-| `math_formula` | 2D | `latex` (no delimiters, at most 500 characters), `color`, `anchor`, `shift` |
+| `math_formula` | 2D | `latex` (no delimiters, at most 500 characters, allowlisted commands only), `color`, `anchor`, `shift` |
 | `text` | 2D | `text` (at most 200 characters), `color`, `anchor`, `shift` |
 | `three_d_axes` | 3D | `xRange`, `yRange`, `zRange` as `[min, max, step]`, lengths optional and defaulted by the template |
 | `surface` | 3D | `axesId`, `expression` in `x` and `y`, `uRange`, `vRange`, `resolution` as `[u, v]`, `color` |
@@ -255,13 +255,15 @@ Derived start of beat `i` is the sum of durations of beats `0 .. i-1`. The timel
 
 `anchor` is `origin`, `edge_up`, `edge_down`, `edge_left`, or `edge_right`. `shift` is `[dx, dy]` in Manim units, y up. Omitted `shift` means `[0, 0]`.
 
+A project may come from someone else, and TeX reads files when a formula asks it to. Formula LaTeX is therefore limited to an allowlist of math commands from LaTeX, `amsmath` and `amssymb`, the packages of Manim's default template: Greek and Hebrew letters, math symbols, operators, relations, arrows, big operators, function names such as `\sin` and `\lim`, delimiters with `\left`, `\right` and the `\big` family, dots, fractions, roots, binomials, accents, braces over and under, math fonts such as `\mathbb`, `\text` and `\operatorname`, styles, and spacing. Control symbols are limited to spacing (`\,` `\:` `\;` `\!`), `\\`, the escaped specials `\{` `\}` `\|` `\%` `\&` `\#` `\$` `\_`, and a backslash before whitespace or at the end, which TeX reads as a space. `\begin` and `\end` take only `matrix`, `pmatrix`, `bmatrix`, `Bmatrix`, `vmatrix`, `Vmatrix`, `smallmatrix`, `cases`, `aligned`, `gathered`, and `array`, because `\begin{name}` runs `\name`, and `\hline` draws the rules of an `array`. `^^` is refused anywhere, because it spells a character by its code. Anything else, including `\input`, `\csname`, `\catcode`, `\def`, `\write`, and `\immediate`, is refused on open and in an edit with `untrusted_latex` and "<field> uses \<command>, which formulas cannot use." The same check applies to the LaTeX in `formula_transform` template params.
+
 An axis draws at most 500 ticks: `(max - min) / step` must be below 500, for 2D and 3D axes and for the ranges in template params. Manim samples a function plot ten times per x step of its axes, so `xMax - xMin` must also be below 500 x steps. Manim samples a parametric curve every 0.01 of t, so its `tRange` must span less than 50, which is 5000 samples like a plot's. These refusals name the limit, as the 24×24 resolution cap does.
 
 v1 has no arrow and no dot. The journeys do not need them, and there is no general mobject factory.
 
-Expressions use a fixed grammar. `expr` is terms joined by `+` or `-`. A term is factors joined by `*` or `/`. A factor is a primary, optionally followed by `^` and one primary. A primary is a number, the variable, `pi`, a call of `sin`, `cos`, `tan`, `exp`, `log`, or `sqrt` with one argument, parentheses, or a unary minus. The 2D variable is `x`. A surface uses `x` and `y`. A curve uses `t`. `log` is the natural log, and the inspector says so. `^` binds tighter than `*` and `/`, which bind tighter than `+` and `-`.
+Expressions use a fixed grammar. `expr` is terms joined by `+` or `-`. A term is factors joined by `*` or `/`. A factor is a unary minus followed by a factor, or a power. A power is a primary, optionally followed by `^` and an exponent, which is one primary after any number of unary minuses. A primary is a number, the variable, `pi`, a call of `sin`, `cos`, `tan`, `exp`, `log`, or `sqrt` with one argument, or parentheses. A number is digits with at most one decimal point, such as `2`, `0.5`, `.5`, or `1.`, and has no exponent part. The 2D variable is `x`. A surface uses `x` and `y`. A curve uses `t`. `log` is the natural log, and the inspector says so. As in usual math and in Python, `^` binds tighter than a unary minus, which binds tighter than `*` and `/`, which bind tighter than `+` and `-`. So `-x^2` means `-(x^2)`, `exp(-x^2)` is a bell curve, and `2^-x` means `2^(-x)`. `x^2^2` is refused; write `(x^2)^2` or `x^(2^2)`.
 
-Rejected examples, with no render started: `np.sin(x)`, `sin(x, 1)`, `y` in a 2D plot, `__import__("os")`. The field shows "This expression is not supported." The same text refuses an expression longer than 1000 characters, one nested deeper than 64 levels (each parenthesis, call and unary minus is a level), and a number literal too large for a float.
+Rejected examples, with no render started: `np.sin(x)`, `sin(x, 1)`, `y` in a 2D plot, `__import__("os")`, `x^2^2`, `1e3`. The field shows "This expression is not supported." The same text refuses an expression longer than 1000 characters, one nested deeper than 64 levels (each parenthesis, call and unary minus is a level), and a number literal too large for a float.
 
 ### Actions
 
@@ -271,11 +273,11 @@ Rejected examples, with no render started: `np.sin(x)`, `sin(x, 1)`, `y` in a 2D
 | `fade_in` | one | Entrance allowed for every object type. |
 | `write` | one | Entrance for `math_formula` and `text` only. |
 | `wait` | none | Hold. |
-| `transform_formula` | source, destination | One `play`. Destination must be a `math_formula` whose entrance is this beat. Source is a `math_formula` that has already entered. |
-| `set_color` | one already on screen | `params.color`. |
-| `move` | one already on screen | `params.shift` as `[dx, dy]`. |
+| `transform_formula` | source, destination | One `play`. Destination must be a `math_formula` whose entrance is this beat. Source is a `math_formula` on screen; the transform takes it off screen. |
+| `set_color` | one on screen | `params.color`. Axes with labels change colour; their labels keep theirs. |
+| `move` | one on screen | `params.shift` as `[dx, dy]`. Axes with labels move with their labels. Plots and other objects drawn on the axes stay where they are; their own beats move them. |
 
-Every object has exactly one entrance beat. A beat may mention an object only at its entrance or after it. A function plot, surface or curve mentions its axes, so it enters after them. `transform_formula` is the destination's entrance, so a transformed formula has no separate `create`.
+Every object has exactly one entrance beat. A beat may mention an object only at its entrance or after it. A function plot, surface or curve mentions its axes, so it enters after them. `transform_formula` is the destination's entrance, so a transformed formula has no separate `create`. A transform source is off screen from then on: a later `set_color`, `move`, or second `transform_formula` on it would bring the old formula back in the video, so the file is refused, naming the beat, for example "scene.beats[5] changes eq_1, but eq_1 left the screen when it was transformed into eq_2". Deleting the destination also deletes the transform beat, which puts the source back on screen for the beats after it.
 
 ### Templates
 
@@ -304,7 +306,7 @@ This is the normative `project.json` for Journey A.
 ```json
 {
   "schemaVersion": 1,
-  "generatorVersion": 1,
+  "generatorVersion": 2,
   "id": "sine_intro",
   "name": "Sine introduction",
   "seed": 1,
@@ -425,7 +427,7 @@ Preview and export use that same `--media_dir`. The export command changes `-r`,
 ### Journey A, normative output
 
 ```python
-# Generated by Mathimator. generatorVersion 1. manim==0.22.0
+# Generated by Mathimator. generatorVersion 2. manim==0.22.0
 from manim import *
 import numpy as np
 
@@ -463,7 +465,7 @@ class MainScene(Scene):
 
 `config.seed` is set at import. The worker also passes `--seed 1`. Those two values are the project's seed. Codegen emits no `random` calls and no updaters, because an unseeded random value or an updater busts Manim's hashes.
 
-Each object is constructed immediately before its entrance `play`. Labels belong to the axes entrance, so they are inside that one `play`, not a second beat. `run_time` is the beat duration. Whole numbers are emitted as integers; other numbers use up to three decimal places with trailing zeros removed.
+Each object is constructed immediately before its entrance `play`. Labels belong to the axes entrance, so they are inside that one `play`, not a second beat. `duration` in the table is the beat's length under the frame rule below: the duration itself for a beat between whole seconds. Document numbers that are whole are emitted as integers; other document numbers use up to three decimal places with trailing zeros removed. Numbers in an expression are used exactly as typed: whole numbers print as integers and others as Python's shortest exact form, so `0.0004*x^3` keeps its `0.0004`.
 
 | Action | Emitted call |
 | --- | --- |
@@ -472,8 +474,8 @@ Each object is constructed immediately before its entrance `play`. Labels belong
 | `write` | `self.play(Write(target), run_time=duration)` |
 | `wait` | `self.wait(duration)` |
 | `transform_formula` | `self.play(TransformMatchingTex(source, dest), run_time=duration)` |
-| `set_color` | `self.play(target.animate.set_color("#RRGGBB"), run_time=duration)` |
-| `move` | `self.play(target.animate.shift(np.array([dx, dy, 0.0])), run_time=duration)` |
+| `set_color` | `self.play(target.animate.set_color("#RRGGBB"), run_time=duration)`. For axes with labels, `target` is still the axes alone, so the labels keep their colour. |
+| `move` | `self.play(target.animate.shift(np.array([dx, dy, 0.0])), run_time=duration)`. For axes with labels, `target` is `<id>_group`, the `VGroup` of the axes and their labels, so the labels move with them. |
 
 Anchors: `origin` is `move_to(ORIGIN)`; `edge_up`, `edge_down`, `edge_left`, and `edge_right` are `to_edge` of `UP`, `DOWN`, `LEFT`, and `RIGHT`. A non-zero shift is a `shift(np.array([dx, dy, 0.0]))` after the anchor.
 
@@ -484,6 +486,10 @@ Expression examples the generator must emit:
 | `sin(x)` | `np.sin(x)` |
 | `sin(x)^2` | `np.sin(x) ** 2` |
 | `2*x + 1` | `2 * x + 1` |
+| `-x^2` | `-(x ** 2)` |
+| `exp(-x^2)` | `np.exp(-(x ** 2))` |
+| `2^-x` | `2 ** (-x)` |
+| `0.0004*x^3` | `0.0004 * x ** 3` |
 
 `MathTex` receives the stored LaTeX as a raw string. The translator in section 6 is not used here. Generated scene source contains `MathTex` for every formula and does not contain `TypstMath`, `MathTypst`, or `manim.typst`.
 
@@ -496,9 +502,28 @@ self.wait(8)
 self.play(title_1.animate.set_color("#F2CC8F"), run_time=8)
 ```
 
+### Beat timing and frames
+
+A beat runs from its derived start to its end, which is the next beat's derived start or the total. At the frame rate of the render, beat `i` covers the frames from `round(start × fps)` up to `round(end × fps)`, with halves rounded up. Every beat boundary in the preview and in every export is therefore within half a frame of the timeline at 15, 30, and 60 fps, so a time in the movie is the same time on the timeline to within half a frame, and a scene of `T` seconds has `round(T × fps)` frames.
+
+A whole second is a whole number of frames at every frame rate. A beat whose start and end are both whole seconds is emitted with its duration as a literal, as in Journey A and `reference-60`. Any other beat calls `_beat_time(start, end)` for `run_time`, or `self.wait(_beat_time(start, end, wait=True))` for a wait, with start and end at three decimals. The generated file then defines the helper between `config.seed` and `MainScene`. It reads `config.frame_rate` when the scene renders, so one `scene.py` still serves the preview and every export:
+
+```python
+def _beat_time(start, end, wait=False):
+    # Seconds that make Manim draw the frames from start to end, each rounded
+    # to the nearest frame. A play rounds up and a wait down: hence the half frame.
+    rate = config.frame_rate
+    frames = int(end * rate + 0.5) - int(start * rate + 0.5)
+    if wait:
+        return (frames + 0.5) / rate
+    return max(frames - 0.5, 1) / rate
+```
+
+Manim 0.22 draws `ceil(run_time × fps)` frames for a `play` and `floor(seconds × fps)` for a static `wait`, so a `run_time` equal to the duration drifts: a 0.5 s beat is 8 frames of `play` but 7 frames of `wait` at 15 fps. Half a frame of slack keeps either count exact despite floating point. A `play` of one frame takes exactly `1 / fps`, the shortest `run_time` Manim accepts without a warning. With durations of 0.5, 2, 1.25, and 1 seconds, Journey A emits `run_time=_beat_time(0, 0.5)` for the axes, `run_time=_beat_time(0.5, 2.5)` for the plot, `run_time=_beat_time(2.5, 3.75)` for the title, and `self.wait(_beat_time(3.75, 4.75, wait=True))`.
+
 ### Invalidation
 
-Editing beat `i` marks beats `i..n` dirty and leaves `0..i-1` cached. The generated source for the unaffected prefix stays byte-identical, so Manim's per-`play` hashes still match.
+Editing beat `i` marks beats `i..n` dirty and leaves `0..i-1` cached. The code of each beat before `i` stays byte-identical, so Manim's per-`play` hashes still match. The module header may gain or lose the `_beat_time` helper when a duration edit makes a boundary fractional or whole again, and Manim does not hash it. A duration edit also moves every later beat boundary, which can change a later `_beat_time` call; those beats are in the dirty suffix already.
 
 On `lesson-60`, changing the LaTeX of `eq_2` changes the `MathTex` line for `eq_2` and the `TransformMatchingTex` line. The `Write(eq_1)` line and everything before it stay byte-identical. Dirty beats are index 6 and 7. Changing `eq_1` dirties index 2 through 7, including the transform, because the transform mentions `eq_1`. Changing the axes range changes the `Axes(...)` call, which the first beat already captured, so every beat is dirty.
 

@@ -13,7 +13,6 @@ from mathimator_worker.codegen import CodegenError, generate
 from mathimator_worker.document import (
     CURVE_VARIABLES,
     ENTRANCES,
-    MAX_LATEX_LENGTH,
     MAX_TEXT_LENGTH,
     MAX_TOTAL_SECONDS,
     MIN_BEAT_SECONDS,
@@ -34,6 +33,7 @@ from mathimator_worker.document import (
     parse_anchor,
     parse_axis_range,
     parse_color,
+    parse_latex,
     parse_number,
     parse_resolution,
     parse_text,
@@ -240,7 +240,7 @@ def apply_edit(project: Project, raw: dict[str, object]) -> EditResult:
     if op == "set_export_profile":
         return _set_export_profile(project, raw)
     if op == "add_formula":
-        latex = parse_text(raw.get("latex", "y = \\sin(x)"), "latex", MAX_LATEX_LENGTH)
+        latex = parse_latex(raw.get("latex", "y = \\sin(x)"), "latex")
         beat_id, object_id = add_formula(project, _after(raw), latex)
         return EditResult(focus_beat_id=beat_id, focus_object_id=object_id)
     if op == "add_text":
@@ -292,7 +292,7 @@ def _set_expression(project: Project, raw: dict[str, object]) -> EditResult:
 
 def _set_latex(project: Project, raw: dict[str, object]) -> EditResult:
     item = _formula(project, raw)
-    item.params["latex"] = parse_text(raw.get("latex"), "latex", MAX_LATEX_LENGTH)
+    item.params["latex"] = parse_latex(raw.get("latex"), "latex")
     _sync_formula_fields(project, item)
     return EditResult(focus_object_id=item.id)
 

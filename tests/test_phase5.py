@@ -188,7 +188,7 @@ def test_unchanged_gif_export_key_does_not_start_manim(tmp_path: Path) -> None:
     manifest = {
         "exportKey": export_key(loaded),
         "manimVersion": "0.22.0",
-        "generatorVersion": 1,
+        "generatorVersion": 2,
         "file": "scene.gif",
         "profile": {
             "format": "gif",

@@ -132,30 +132,40 @@ class _Parser:
         return left
 
     def _parse_term(self) -> Expression:
-        left = self._parse_factor()
+        left = self._parse_unary()
         while self._peek() in {"*", "/"}:
             operator = self.source[self.index]
             self.index += 1
-            right = self._parse_factor()
+            right = self._parse_unary()
             left = Binary(operator, left, right)
         return left
 
-    def _parse_factor(self) -> Expression:
-        left = self._parse_primary()
+    def _parse_unary(self) -> Expression:
+        """A unary minus applies to the power after it, so ``-x^2`` is ``-(x^2)`` (D01)."""
+        if self._peek() == "-":
+            self.index += 1
+            return UnaryMinus(self._nested(self._parse_unary))
+        return self._parse_power()
+
+    def _parse_power(self) -> Expression:
+        base = self._parse_primary()
         if self._peek() == "^":
             self.index += 1
-            right = self._parse_primary()
-            return Binary("**", left, right)
-        return left
+            return Binary("**", base, self._parse_exponent())
+        return base
+
+    def _parse_exponent(self) -> Expression:
+        """One primary after ``^``, which may carry minus signs: ``2^-x`` parses and ``x^2^2`` does not."""
+        if self._peek() == "-":
+            self.index += 1
+            return UnaryMinus(self._nested(self._parse_exponent))
+        return self._parse_primary()
 
     def _parse_primary(self) -> Expression:
         self._skip()
         if self.index >= self.length:
             raise _ParseError
         character = self.source[self.index]
-        if character == "-":
-            self.index += 1
-            return UnaryMinus(self._nested(self._parse_primary))
         if character == "(":
             self.index += 1
             inner = self._nested(self._parse_expr)
@@ -223,14 +233,16 @@ class _Parser:
         raise _ParseError
 
 
-_PRECEDENCE = {"+": 1, "-": 1, "*": 2, "/": 2, "**": 3}
+# As in Python, a unary minus binds tighter than * and / and looser than **.
+_PRECEDENCE = {"+": 1, "-": 1, "*": 2, "/": 2, "**": 4}
+_UNARY_PRECEDENCE = 3
 
 
 def _precedence(expression: Expression) -> int:
     if isinstance(expression, Binary):
         return _PRECEDENCE[expression.operator]
     if isinstance(expression, UnaryMinus):
-        return 4
+        return _UNARY_PRECEDENCE
     return 5
 
 
@@ -295,13 +307,11 @@ def _needs_parentheses(expression: Expression, operator: str, *, on_right: bool)
     child = _precedence(expression)
     if child < parent:
         return True
-    if child == parent and on_right and operator in {"-", "/", "**"}:
-        return True
-    return operator == "**" and isinstance(expression, UnaryMinus)
+    return child == parent and on_right and operator in {"-", "/", "**"}
 
 
 def _format_number(value: float) -> str:
-    rounded = round(value, 3)
-    if abs(rounded - round(rounded)) < 1e-9:
-        return str(int(round(rounded)))
-    return f"{rounded:.3f}".rstrip("0").rstrip(".")
+    """A literal exactly as typed (D02). A whole number prints as an integer, so ``2*x`` stays ``2 * x``."""
+    if value.is_integer() and abs(value) < 2**53:
+        return str(int(value))
+    return repr(value)

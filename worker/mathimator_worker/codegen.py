@@ -1,15 +1,23 @@
-"""Deterministic Manim scene source for generatorVersion 1.
+"""Deterministic Manim scene source for generatorVersion 2.
 
 The Journey A block and ``reference-60`` are whitespace-exact. A blank line
 separates beat blocks until the first non-wait beat that follows a wait;
 the beats after that stay in one block. That is the pattern of the normative
 scenes. Each beat is still exactly one ``play`` or ``wait``.
+
+Every beat covers the frames between its start and its end on the timeline,
+each rounded to the nearest frame (D63). A whole second is a whole number of
+frames at every frame rate, so a beat between whole seconds keeps its length
+as a literal. Any other beat calls ``_beat_time``, which the scene defines only
+then. It reads the frame rate when the scene renders, because one ``scene.py``
+renders the preview and every export.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from itertools import pairwise
 
 from mathimator_worker.document import (
     CURVE_VARIABLES,
@@ -18,6 +26,8 @@ from mathimator_worker.document import (
     Beat,
     Project,
     SceneObject,
+    derived_starts,
+    total_duration,
 )
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import expression_to_python
@@ -31,6 +41,23 @@ _ANCHOR_CALL = {
 }
 
 
+# Manim draws ceil(run_time * rate) frames for a play and floor(seconds * rate)
+# for a static wait, so half a frame of slack keeps either count exact. A play of
+# one frame takes 1 / rate, the shortest run_time Manim accepts without a warning.
+_BEAT_TIME = [
+    "def _beat_time(start, end, wait=False):",
+    "    # Seconds that make Manim draw the frames from start to end, each rounded",
+    "    # to the nearest frame. A play rounds up and a wait down: hence the half frame.",
+    "    rate = config.frame_rate",
+    "    frames = int(end * rate + 0.5) - int(start * rate + 0.5)",
+    "    if wait:",
+    "        return (frames + 0.5) / rate",
+    "    return max(frames - 0.5, 1) / rate",
+    "",
+    "",
+]
+
+
 class CodegenError(Exception):
     """The document cannot be compiled in this phase."""
 
@@ -39,14 +66,17 @@ def generate(project: Project) -> str:
     """Return ``scene.py`` bytes without writing them."""
     if project.scene.kind not in {"scene", "three_d_scene"}:
         raise CodegenError(f"unknown scene kind {project.scene.kind!r}")
-    blocks = [_emit_beat(project, beat) for beat in project.scene.beats]
-    header = _header(project)
+    beats = project.scene.beats
+    bounds = [*derived_starts([beat.duration for beat in beats]), total_duration(project)]
+    blocks = [_emit_beat(project, beat, start, end) for beat, (start, end) in zip(beats, pairwise(bounds), strict=True)]
+    header = _header(project, beat_time=not all(bound.is_integer() for bound in bounds))
     if not blocks:
         return header + "\n"
     return header + "\n\n" + _join_blocks(blocks) + "\n"
 
 
-def _header(project: Project) -> str:
+def _header(project: Project, *, beat_time: bool) -> str:
+    """The module top. ``beat_time`` adds the frame helper, which only a beat off whole seconds calls."""
     if project.scene.kind == "three_d_scene":
         scene_class = "ThreeDScene"
     elif project.scene.kind == "scene":
@@ -61,6 +91,7 @@ def _header(project: Project) -> str:
         f"config.seed = {project.seed}",
         "",
         "",
+        *(_BEAT_TIME if beat_time else []),
         f"class MainScene({scene_class}):",
         "    def construct(self):",
         f'        self.camera.background_color = "{project.scene.background}"',
@@ -93,56 +124,70 @@ def _join_blocks(blocks: list[tuple[str, str]]) -> str:
     return "".join(parts)
 
 
-def _emit_beat(project: Project, beat: Beat) -> tuple[str, str]:
+def _emit_beat(project: Project, beat: Beat, start: float, end: float) -> tuple[str, str]:
     objects = {item.id: item for item in project.scene.objects}
     action = beat.action
     if action == "wait":
-        return action, f"        self.wait({_number(beat.duration)})"
+        return action, f"        self.wait({_length(start, end, wait=True)})"
+    run_time = _length(start, end)
     if action == "set_color":
         params = beat.params or {}
         color = params["color"]
         target = beat.targets[0]
-        return action, (f'        self.play({target}.animate.set_color("{color}"), run_time={_number(beat.duration)})')
+        return action, f'        self.play({target}.animate.set_color("{color}"), run_time={run_time})'
     if action == "move":
         params = beat.params or {}
         shift = params["shift"]
         if not isinstance(shift, list) or len(shift) != 2:
             raise CodegenError("move shift must be two numbers")
-        target = beat.targets[0]
+        moved = _moved(objects[beat.targets[0]])
         dx = _shift_component(shift[0])
         dy = _shift_component(shift[1])
-        return action, (
-            f"        self.play({target}.animate.shift(np.array([{dx}, {dy}, 0.0])), run_time={_number(beat.duration)})"
-        )
+        return action, f"        self.play({moved}.animate.shift(np.array([{dx}, {dy}, 0.0])), run_time={run_time})"
     if action == "transform_formula":
         source_id, dest_id = beat.targets
-        return action, _emit_transform(objects[dest_id], source_id, beat.duration)
+        return action, _emit_transform(objects[dest_id], source_id, run_time)
     if action in {"create", "fade_in", "write"}:
         entrance_target = objects[beat.targets[0]]
         animation = {"create": "Create", "fade_in": "FadeIn", "write": "Write"}[action]
-        return action, _emit_entrance(entrance_target, beat.duration, animation)
+        return action, _emit_entrance(entrance_target, run_time, animation)
     raise CodegenError(f"unknown action {action}")
 
 
-def _emit_entrance(target: SceneObject, duration: object, animation: str) -> str:
+def _length(start: float, end: float, *, wait: bool = False) -> str:
+    """The emitted length of a beat from ``start`` to ``end`` on the timeline (D63)."""
+    if start.is_integer() and end.is_integer():
+        return _number(end - start)
+    arguments = f"{_number(start)}, {_number(end)}"
+    return f"_beat_time({arguments}, wait=True)" if wait else f"_beat_time({arguments})"
+
+
+def _moved(target: SceneObject) -> str:
+    """The variable a move animates. Labels belong to their axes and move with them (D12)."""
+    if target.type == "axes" and target.params.get("showLabels") is True:
+        return f"{target.id}_group"
+    return target.id
+
+
+def _emit_entrance(target: SceneObject, run_time: str, animation: str) -> str:
     if target.type == "axes":
-        return _emit_axes(target, duration, animation)
+        return _emit_axes(target, run_time, animation)
     if target.type == "function_plot":
-        return _emit_plot(target, duration, animation)
+        return _emit_plot(target, run_time, animation)
     if target.type == "math_formula":
-        return _emit_mobject(target, duration, animation, mobject="MathTex")
+        return _emit_mobject(target, run_time, animation, mobject="MathTex")
     if target.type == "text":
-        return _emit_mobject(target, duration, animation, mobject="Text")
+        return _emit_mobject(target, run_time, animation, mobject="Text")
     if target.type == "three_d_axes":
-        return _emit_three_d_axes(target, duration, animation)
+        return _emit_three_d_axes(target, run_time, animation)
     if target.type == "surface":
-        return _emit_surface(target, duration, animation)
+        return _emit_surface(target, run_time, animation)
     if target.type == "parametric_curve":
-        return _emit_curve(target, duration, animation)
+        return _emit_curve(target, run_time, animation)
     raise CodegenError(f'unknown object type "{target.type}"')
 
 
-def _emit_axes(target: SceneObject, duration: object, animation: str) -> str:
+def _emit_axes(target: SceneObject, run_time: str, animation: str) -> str:
     params = target.params
     lines = [
         f"        {target.id} = Axes(",
@@ -159,11 +204,11 @@ def _emit_axes(target: SceneObject, duration: object, animation: str) -> str:
         played = f"{target.id}_group"
     else:
         played = target.id
-    lines.append(f"        self.play({animation}({played}), run_time={_number(duration)})")
+    lines.append(f"        self.play({animation}({played}), run_time={run_time})")
     return "\n".join(lines)
 
 
-def _emit_three_d_axes(target: SceneObject, duration: object, animation: str) -> str:
+def _emit_three_d_axes(target: SceneObject, run_time: str, animation: str) -> str:
     params = target.params
     lines = [
         f"        {target.id} = ThreeDAxes(",
@@ -175,11 +220,11 @@ def _emit_three_d_axes(target: SceneObject, duration: object, animation: str) ->
         if key in params:
             lines.append(f"            {argument}={_number(params[key])},")
     lines.append("        )")
-    lines.append(f"        self.play({animation}({target.id}), run_time={_number(duration)})")
+    lines.append(f"        self.play({animation}({target.id}), run_time={run_time})")
     return "\n".join(lines)
 
 
-def _emit_surface(target: SceneObject, duration: object, animation: str) -> str:
+def _emit_surface(target: SceneObject, run_time: str, animation: str) -> str:
     params = target.params
     expression = params["expression"]
     if not isinstance(expression, str):
@@ -201,12 +246,12 @@ def _emit_surface(target: SceneObject, duration: object, animation: str) -> str:
         f'            fill_color="{params["color"]}",',
         "            checkerboard_colors=False,",
         "        )",
-        f"        self.play({animation}({target.id}), run_time={_number(duration)})",
+        f"        self.play({animation}({target.id}), run_time={run_time})",
     ]
     return "\n".join(lines)
 
 
-def _emit_curve(target: SceneObject, duration: object, animation: str) -> str:
+def _emit_curve(target: SceneObject, run_time: str, animation: str) -> str:
     params = target.params
     components = params["components"]
     if not isinstance(components, list) or len(components) != 3:
@@ -225,12 +270,12 @@ def _emit_curve(target: SceneObject, duration: object, animation: str) -> str:
         f"            t_range={_list(params['tRange'])},",
         f'            color="{params["color"]}",',
         "        )",
-        f"        self.play({animation}({target.id}), run_time={_number(duration)})",
+        f"        self.play({animation}({target.id}), run_time={run_time})",
     ]
     return "\n".join(lines)
 
 
-def _emit_plot(target: SceneObject, duration: object, animation: str) -> str:
+def _emit_plot(target: SceneObject, run_time: str, animation: str) -> str:
     params = target.params
     expression = params["expression"]
     if not isinstance(expression, str):
@@ -246,12 +291,12 @@ def _emit_plot(target: SceneObject, duration: object, animation: str) -> str:
         f"            x_range={_list([params['xMin'], params['xMax']])},",
         f'            color="{params["color"]}",',
         "        )",
-        f"        self.play({animation}({target.id}), run_time={_number(duration)})",
+        f"        self.play({animation}({target.id}), run_time={run_time})",
     ]
     return "\n".join(lines)
 
 
-def _emit_mobject(target: SceneObject, duration: object, animation: str, mobject: str) -> str:
+def _emit_mobject(target: SceneObject, run_time: str, animation: str, mobject: str) -> str:
     params = target.params
     if mobject == "MathTex":
         latex = params["latex"]
@@ -265,18 +310,18 @@ def _emit_mobject(target: SceneObject, duration: object, animation: str, mobject
         literal = _text_literal(text)
     lines = [f'        {target.id} = {mobject}({literal}, color="{params["color"]}")']
     lines.extend(_position_lines(target.id, params))
-    lines.append(f"        self.play({animation}({target.id}), run_time={_number(duration)})")
+    lines.append(f"        self.play({animation}({target.id}), run_time={run_time})")
     return "\n".join(lines)
 
 
-def _emit_transform(dest: SceneObject, source_id: str, duration: object) -> str:
+def _emit_transform(dest: SceneObject, source_id: str, run_time: str) -> str:
     params = dest.params
     latex = params["latex"]
     if not isinstance(latex, str):
         raise CodegenError("formula latex must be a string")
     lines = [f'        {dest.id} = MathTex({_raw_string(latex)}, color="{params["color"]}")']
     lines.extend(_position_lines(dest.id, params))
-    lines.append(f"        self.play(TransformMatchingTex({source_id}, {dest.id}), run_time={_number(duration)})")
+    lines.append(f"        self.play(TransformMatchingTex({source_id}, {dest.id}), run_time={run_time})")
     return "\n".join(lines)
 
 

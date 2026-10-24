@@ -2,7 +2,9 @@
 
 ``schemaVersion`` 1 is the only version this phase reads. A ``start`` field,
 an unknown key, or any other schema version is refused. Beat start times are
-derived and are not stored.
+derived and are not stored. An older ``generatorVersion`` is read as the
+current one, so the next save writes the current number; a newer one is
+refused (C13.3).
 
 Every refusal is a DocumentError with a protocol code, and its message and
 ``field`` name the JSON path of the failing value. Numbers are judged at the
@@ -25,10 +27,11 @@ from typing import NoReturn, TypeIs
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import assert_supported
 from mathimator_worker.jsonio import JsonValue, canonical_dumps, dumps_document
+from mathimator_worker.latex import check_latex
 
 MANIM_VERSION = "0.22.0"
 SCHEMA_VERSION = 1
-GENERATOR_VERSION = 1
+GENERATOR_VERSION = 2
 MIN_BEAT_SECONDS = 0.1
 MAX_TOTAL_SECONDS = 120.0
 MAX_TICKS_PER_AXIS = 500
@@ -112,33 +115,11 @@ _FORMULA_TEMPLATE_REQUIRED = {
     "anchor",
     "shift",
 }
-_GENERATED_NAMES = frozenset(
-    {
-        "np",
-        "self",
-        "config",
-        "MainScene",
-        "Scene",
-        "ThreeDScene",
-        "Axes",
-        "ThreeDAxes",
-        "Surface",
-        "ParametricFunction",
-        "MathTex",
-        "Text",
-        "VGroup",
-        "Create",
-        "FadeIn",
-        "Write",
-        "TransformMatchingTex",
-        "ORIGIN",
-        "UP",
-        "DOWN",
-        "LEFT",
-        "RIGHT",
-        "DEGREES",
-    }
-)
+# Lower-case names the generated module uses. An id starts with a lower-case
+# letter, so neither Manim's capitalised names nor ``_beat_time`` can be one.
+_GENERATED_NAMES = frozenset({"np", "self", "config"})
+# The parameters of the lambda that refers to the axes of a surface or a curve.
+_LAMBDA_PARAMETERS = {"surface": ("u", "v"), "parametric_curve": ("t",)}
 _THREE_D_TEMPLATE_KEYS = {
     "mode",
     "xRange",
@@ -398,6 +379,7 @@ def project_dict(project: Project) -> dict[str, JsonValue]:
 def validate_project(project: Project) -> None:
     """Raise DocumentError when ``project`` breaks the section 4 rules."""
     _check_identity(project)
+    _check_generated_names(project)
     _check_limits(project)
     _check_scene_kind(project)
     _check_timeline(project)
@@ -552,6 +534,13 @@ def parse_text(value: object, path: str, limit: int | None = None) -> str:
     return value
 
 
+def parse_latex(value: object, path: str) -> str:
+    """Formula LaTeX: storable text of at most 500 characters, with allowlisted commands only (D04, D18)."""
+    latex = parse_text(value, path, MAX_LATEX_LENGTH)
+    check_latex(latex, path)
+    return latex
+
+
 def parse_number(value: object, path: str) -> Number:
     """A JSON number that converts to a finite float."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -597,7 +586,7 @@ def _parse_project(raw: dict[str, object]) -> Project:
     _check_keys(raw, _PROJECT_KEYS, "")
     _require(raw, _PROJECT_KEYS, "")
     generator = raw["generatorVersion"]
-    if not _is_int(generator) or generator != GENERATOR_VERSION:
+    if not _is_int(generator) or not 1 <= generator <= GENERATOR_VERSION:
         raise DocumentError(f"generatorVersion {_shown(generator)} is not supported", field="generatorVersion")
     scene_raw = raw["scene"]
     if not isinstance(scene_raw, dict):
@@ -704,7 +693,7 @@ def _parse_params(object_type: str, raw: dict[str, object], path: str) -> dict[s
         _check_keys(raw, _FORMULA_KEYS, path)
         _require(raw, {"latex", "color", "anchor"}, path)
         formula_params: dict[str, JsonValue] = {
-            "latex": parse_text(raw["latex"], f"{path}.latex", MAX_LATEX_LENGTH),
+            "latex": parse_latex(raw["latex"], f"{path}.latex"),
             "color": parse_color(raw["color"], f"{path}.color"),
             "anchor": parse_anchor(raw["anchor"], f"{path}.anchor"),
         }
@@ -840,8 +829,8 @@ def _parse_template_params(
         _check_keys(raw, _FORMULA_TEMPLATE_KEYS, path)
         _require(raw, _FORMULA_TEMPLATE_REQUIRED, path)
         parsed: dict[str, JsonValue] = {
-            "sourceLatex": parse_text(raw["sourceLatex"], f"{path}.sourceLatex", MAX_LATEX_LENGTH),
-            "destinationLatex": parse_text(raw["destinationLatex"], f"{path}.destinationLatex", MAX_LATEX_LENGTH),
+            "sourceLatex": parse_latex(raw["sourceLatex"], f"{path}.sourceLatex"),
+            "destinationLatex": parse_latex(raw["destinationLatex"], f"{path}.destinationLatex"),
             "sourceColor": parse_color(raw["sourceColor"], f"{path}.sourceColor"),
             "destinationColor": parse_color(raw["destinationColor"], f"{path}.destinationColor"),
             "anchor": parse_anchor(raw["anchor"], f"{path}.anchor"),
@@ -957,6 +946,30 @@ def _check_identity(project: Project) -> None:
         seen.add(value)
 
 
+def _check_generated_names(project: Project) -> None:
+    """Refuse an object id that clashes with a name the generated code makes (D09, F013).
+
+    Labelled axes add ``<id>_labels`` and ``<id>_group``, whatever ``showLabels``
+    says now, since it can be switched on later. The lambda of a surface or a
+    curve refers to its axes by id next to its own parameters.
+    """
+    paths = {item.id: f"scene.objects[{index}].id" for index, item in enumerate(project.scene.objects)}
+    for item in project.scene.objects:
+        if item.type == "axes":
+            for helper in (f"{item.id}_labels", f"{item.id}_group"):
+                if helper in paths:
+                    path = paths[helper]
+                    raise DocumentError(
+                        f'{path} "{helper}" collides with a name Mathimator generates for {item.id}', field=path
+                    )
+        axes_id = item.params.get("axesId")
+        if isinstance(axes_id, str) and axes_id in paths and axes_id in _LAMBDA_PARAMETERS.get(item.type, ()):
+            path = paths[axes_id]
+            raise DocumentError(
+                f'{path} "{axes_id}" collides with a lambda parameter in the code generated for {item.id}', field=path
+            )
+
+
 def _check_limits(project: Project) -> None:
     if total_duration(project) > MAX_TOTAL_SECONDS + 1e-9:
         raise DocumentError(
@@ -975,6 +988,8 @@ def _check_timeline(project: Project) -> None:
         elif item.type in {"surface", "parametric_curve"}:
             _require_axes(objects, item, "three_d_axes", path)
     entered: dict[str, int] = {}
+    # A transform takes its source off screen: source id to destination id (D09, F012).
+    transformed: dict[str, str] = {}
     for index, beat in enumerate(project.scene.beats):
         path = f"scene.beats[{index}]"
         targets = f"{path}.targets"
@@ -995,9 +1010,12 @@ def _check_timeline(project: Project) -> None:
                 raise DocumentError(f"{path} transforms something other than a formula", field=targets)
             if source_id not in entered:
                 raise DocumentError(f"{path} transforms {source_id} before it is on screen", field=targets)
+            if source_id in transformed:
+                raise _off_screen(path, "transforms", source_id, transformed[source_id], targets)
             if dest_id in entered:
                 raise DocumentError(f"{path} brings {dest_id} on screen a second time", field=targets)
             entered[dest_id] = index
+            transformed[source_id] = dest_id
             continue
         if len(beat.targets) != 1:
             raise DocumentError(f"{targets} must name one object for {beat.action}", field=targets)
@@ -1019,10 +1037,20 @@ def _check_timeline(project: Project) -> None:
             continue
         if target_id not in entered:
             raise DocumentError(f"{path} changes {target_id} before it is on screen", field=targets)
+        if target_id in transformed:
+            raise _off_screen(path, "changes", target_id, transformed[target_id], targets)
     for index, item in enumerate(project.scene.objects):
         if item.id not in entered:
             path = f"scene.objects[{index}]"
             raise DocumentError(f"{path} {item.id} has no entrance beat", field=path)
+
+
+def _off_screen(path: str, verb: str, source_id: str, dest_id: str, field: str) -> DocumentError:
+    """A beat that targets a formula after a transform took it off screen. Manim would bring it back."""
+    return DocumentError(
+        f"{path} {verb} {source_id}, but {source_id} left the screen when it was transformed into {dest_id}",
+        field=field,
+    )
 
 
 def _check_sampling(plot: SceneObject, axes: SceneObject, path: str) -> None:
