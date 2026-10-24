@@ -13,6 +13,8 @@
 # Typst, with a SHA-256 for every download. The interpreter is PYTHON_VERSION,
 # or PYTHON_FALLBACK_VERSION only when a locked package has no wheel for it.
 # runtime.json is written last, after the bundle has passed its checks.
+# scripts/generate_notices.py writes THIRD_PARTY_NOTICES.txt afterwards, and
+# scripts/check_bundle.py checks the finished bundle before `tauri build`.
 
 set -euo pipefail
 
@@ -54,7 +56,9 @@ PACKAGES=(
 )
 
 mkdir -p "$CACHE" "$DEST"
-rm -f "$DEST/runtime.json"
+# Neither may survive from an older build: runtime.json is written last, and
+# the notices describe the finished bundle.
+rm -f "$DEST/runtime.json" "$DEST/THIRD_PARTY_NOTICES.txt"
 
 download() {
   local url="$1"
@@ -296,13 +300,13 @@ PY
 read -r PY_FULL MANIM_FULL <<<"$(tail -n 1 <<<"$probe")"
 echo "bundled python $PY_FULL manim $MANIM_FULL"
 
-# Everything in packaging/bundle ships. The check removes entries outside the
+# Everything in packaging/bundle ships. --prune removes entries outside the
 # bundle layout, such as a crash dump or the venv of an older build, and all
-# bytecode, which names the path of its source. It then fails if a link leaves
-# the bundle or a file names the checkout or the builder's home. Running the
-# bundled interpreter from this checkout writes such bytecode again, so run the
-# check once more right before `tauri build`.
-"$PY_BIN" -I -B "$ROOT/scripts/check_bundle.py" "$DEST"
+# bytecode, which names the path of its source. The check then fails if a link
+# leaves the bundle or a file names the checkout or the builder's home. Running
+# the bundled interpreter from this checkout writes such bytecode again, which
+# the check without --prune reports before `tauri build`.
+"$PY_BIN" -I -B "$ROOT/scripts/check_bundle.py" --prune "$DEST"
 
 DEST="$DEST" \
   PY_FULL="$PY_FULL" \

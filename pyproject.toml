@@ -14,6 +14,9 @@ dev = [
   "ruff==0.17.2",
   "mypy==2.4.0",
   "pre-commit==4.7.0",
+  "bump-my-version==1.6.3",
+  "git-cliff==2.14.2",
+  "pip-audit==2.10.1",
 ]
 render = ["manim[typst]==0.22.0"]
 

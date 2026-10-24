@@ -11,6 +11,8 @@
 # Typst, with a SHA-256 for every download. The interpreter is PYTHON_VERSION,
 # or PYTHON_FALLBACK_VERSION only when a locked package has no wheel for it.
 # runtime.json is written last, after the bundle has passed its checks.
+# scripts/generate_notices.py writes THIRD_PARTY_NOTICES.txt afterwards, and
+# scripts/check_bundle.py checks the finished bundle before `tauri build`.
 #
 # Windows assets:
 #   uv-x86_64-pc-windows-msvc.zip
@@ -125,8 +127,12 @@ $Packages = @(
 )
 
 Write-Log "bundle destination $Dest"
+# Neither may survive from an older build: runtime.json is written last, and
+# the notices describe the finished bundle.
 $Manifest = Join-Path $Dest "runtime.json"
-if (Test-Path $Manifest) { Remove-Item -Force $Manifest }
+foreach ($stale in @($Manifest, (Join-Path $Dest "THIRD_PARTY_NOTICES.txt"))) {
+    if (Test-Path $stale) { Remove-Item -Force $stale }
+}
 
 function Get-Uv {
     # The uv release decides which CPython builds exist (uv 0.10.9 did not list
@@ -421,13 +427,13 @@ if ($LASTEXITCODE -ne 0) {
 $pyFull, $manimFull = $probeLine -split " "
 Write-Log "bundled python $pyFull manim $manimFull"
 
-# Everything in packaging/bundle ships. The check removes entries outside the
+# Everything in packaging/bundle ships. --prune removes entries outside the
 # bundle layout, such as a crash dump or the venv of an older build, and all
-# bytecode, which names the path of its source. It then fails if a file names
-# the checkout or the builder's profile. Running the bundled interpreter from
-# this checkout writes such bytecode again, so run the check once more right
-# before `tauri build`.
-Invoke-Checked $Python @("-I", "-B", (Join-Path $Root "scripts\check_bundle.py"), $Dest)
+# bytecode, which names the path of its source. The check then fails if a file
+# names the checkout or the builder's profile. Running the bundled interpreter
+# from this checkout writes such bytecode again, which the check without
+# --prune reports before `tauri build`.
+Invoke-Checked $Python @("-I", "-B", (Join-Path $Root "scripts\check_bundle.py"), "--prune", $Dest)
 
 $base = [System.IO.Path]::GetFullPath($Dest)
 if (-not $base.EndsWith("\")) { $base = $base + "\" }
