@@ -56,7 +56,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 
-from mathimator_worker.argv import build_manim_argv, manim_environment, profile_size
+from mathimator_worker.argv import build_manim_argv, manim_environment, manim_interpreter, profile_size
 from mathimator_worker.clip_check import SEGMENT_SUFFIXES, ClipChecker
 from mathimator_worker.codegen import CodegenError, generate, needs_latex
 from mathimator_worker.document import (
@@ -210,6 +210,8 @@ class Supervisor:
         init: bool,
     ) -> None:
         self.python = python
+        # What runs Manim: the real interpreter behind a venv launcher (D16).
+        self._manim_python, self._venv_launcher = manim_interpreter(python)
         # Resolve like _open_project does. Windows may hand over an 8.3 alias
         # such as C:\Users\JOHNSM~1, and TeX stops reading a path at "~" (G4.1).
         self.project = project.resolve()
@@ -275,12 +277,15 @@ class Supervisor:
             self._bind_claim_locked(claim)
 
     def close(self) -> None:
-        """Stop the running job, drop the held ones and release the project lock, as exiting does."""
+        """Stop the running job, drop the held ones and release the project lock, as exiting does.
+
+        The running job gets 1 s to end, so a Manim that starts while the
+        worker closes is still killed by its job, not left running (F028).
+        """
         with self._state_lock:
             current, self._held_export, self._held_preview = self._current, None, None
         if current is not None:
-            current.tell_to_stop()
-            self._kill_process(current)
+            self._stop(current)
         with self._doc_lock:
             if self._binding is not None:
                 self._binding.lock.release()
@@ -874,11 +879,18 @@ class Supervisor:
                 proc.kill()
 
     def _release_job(self, job: _Job) -> None:
-        """Close the job's Job Object, whose kill-on-close ends whatever Manim left running."""
+        """Close the job's Job Object, whose kill-on-close ends whatever Manim left running.
+
+        The handle leaves the job under the lock, so it is closed once, by
+        whichever call takes it first (F023).
+        """
         with self._state_lock:
             handle, job.win_job = job.win_job, None
         if handle:
-            close_job(handle)
+            try:
+                close_job(handle)
+            except OSError as exc:
+                self.log(f"job close failed: {exc}")
 
     def _clear_cache(self, request: Request) -> None:
         """Delete the derived files (C8.3). Files another program holds stay, and the reply says so (D58)."""
@@ -1096,7 +1108,7 @@ class Supervisor:
                 encoding="utf-8",
                 errors="replace",
                 cwd=job.manim_dir,
-                env=manim_environment(os.environ, job.manim_dir),
+                env=manim_environment(os.environ, job.manim_dir, self._venv_launcher),
                 bufsize=1,
                 startupinfo=startupinfo,
                 creationflags=creationflags,
@@ -1138,6 +1150,8 @@ class Supervisor:
         with self._state_lock:
             job.win_job = handle
             stopped = job.cancel.is_set()
+        # Logged once the job holds it, so the log write does not widen the window before the assignment.
+        self.log(f"manim started pid={proc.pid}")
         if handle:
             self.log(f"job assigned pid={proc.pid}")
         elif sys.platform == "win32":
@@ -1398,7 +1412,7 @@ class Supervisor:
             fps = project.export_profile.fps
         job.quality = f"{height}p{fps}"
         job.argv = build_manim_argv(
-            self.python,
+            self._manim_python,
             job.profile,
             str(project.seed),
             width=width,
@@ -1423,7 +1437,7 @@ class Supervisor:
         _width, height, fps = profile_size(job.profile)
         job.quality = f"{height}p{fps}"
         job.manim_dir = self.scene_path.parent
-        job.argv = build_manim_argv(self.python, job.profile)
+        job.argv = build_manim_argv(self._manim_python, job.profile)
         return True
 
     def _existing_export_locked(self, project: Project) -> Path | None:

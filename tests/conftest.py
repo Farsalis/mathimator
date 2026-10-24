@@ -5,7 +5,9 @@ Windows enables the job unless ``MATHIMATOR_WIN32_JOBS=0``. The reap tests in
 only that opt-in is allowed to turn the job back on.
 
 Tests marked ``typst`` run the ``typst`` binary from PATH. They are skipped,
-not failed, when PATH has no ``typst``.
+not failed, when PATH has no ``typst``. Tests marked ``process_table`` are
+skipped off Windows where there is no ``/proc`` to walk, as on macOS, which is
+untested (D47).
 
 The ``fake_manim`` fixture puts ``support.FakeManim`` on PYTHONPATH for the
 tests that run jobs in-process without Manim, and ``stdout`` reads what an
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,12 +27,15 @@ from tests.support import FakeManim, Stdout
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    if shutil.which("typst") is not None:
-        return
-    missing = pytest.mark.skip(reason="typst is not on PATH")
+    skips: dict[str, pytest.MarkDecorator] = {}
+    if shutil.which("typst") is None:
+        skips["typst"] = pytest.mark.skip(reason="typst is not on PATH")
+    if sys.platform != "win32" and not Path("/proc").is_dir():
+        skips["process_table"] = pytest.mark.skip(reason="there is no /proc to walk")
     for item in items:
-        if item.get_closest_marker("typst") is not None:
-            item.add_marker(missing)
+        for marker, skip in skips.items():
+            if item.get_closest_marker(marker) is not None:
+                item.add_marker(skip)
 
 
 @pytest.fixture(autouse=True)

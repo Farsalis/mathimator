@@ -18,11 +18,10 @@ from pathlib import Path
 
 import pytest
 
-from mathimator_worker.argv import LAUNCHER, build_manim_argv
+from mathimator_worker.argv import build_manim_argv
 from mathimator_worker.process_group import (
-    _descendant_pids,
+    descendant_pids,
     process_alive,
-    process_command_line,
     process_name,
     terminate_process_group,
 )
@@ -36,6 +35,7 @@ from tests.support import (
     SupervisorClient,
     assert_phase1_argv,
     handwritten_project,
+    manim_pids,
     media_dir,
     probe_video,
     read_argv,
@@ -225,8 +225,8 @@ def test_cancel_ends_grandchild_within_one_second() -> None:
         argv = read_argv(log_path, timeout=60)
         assert_phase1_argv(argv, width=854, height=480, fps=15)
 
-        manim_pid = _wait_for_in_flight_manim(client, log_path, observed_tex)
-        children = _descendant_pids(manim_pid)
+        manim_pid = _wait_for_in_flight_manim(log_path, observed_tex)
+        children = descendant_pids(manim_pid)
         watched = {manim_pid, *children}
         started = time.perf_counter()
         client.send({"cmd": "cancel", "id": "cancel-1", "jobId": "job-cancel"})
@@ -417,18 +417,15 @@ def _render(
         client.close()
 
 
-def _wait_for_in_flight_manim(
-    client: SupervisorClient,
-    log_path: Path,
-    observed_tex: list[str],
-) -> int:
+def _wait_for_in_flight_manim(log_path: Path, observed_tex: list[str]) -> int:
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
-        manim_pid = _find_manim_pid(client.proc.pid)
-        if manim_pid is None:
+        started = manim_pids(log_path)
+        if not started:
             time.sleep(0.05)
             continue
-        for pid in _descendant_pids(manim_pid):
+        manim_pid = started[-1]
+        for pid in descendant_pids(manim_pid):
             name = _process_comm(pid)
             if name in {"latex", "dvisvgm", "pdftex", "xelatex"} and name not in observed_tex:
                 observed_tex.append(name)
@@ -441,18 +438,6 @@ def _wait_for_in_flight_manim(
             return manim_pid
         time.sleep(0.02)
     raise AssertionError("manim grandchild did not start")
-
-
-def _find_manim_pid(supervisor_pid: int) -> int | None:
-    for pid in _descendant_pids(supervisor_pid):
-        command = _process_cmdline(pid)
-        if f"-m {LAUNCHER} render" in command:
-            return pid
-    return None
-
-
-def _process_cmdline(pid: int) -> str:
-    return process_command_line(pid)
 
 
 def _process_comm(pid: int) -> str:

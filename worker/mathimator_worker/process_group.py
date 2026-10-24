@@ -1,10 +1,23 @@
-"""Stop a grandchild and the processes it has spawned.
+"""Stop a Manim process and every process it started, when no Job Object does.
 
-Unix keeps the phase 1 mechanism: a new session, ``killpg``, and ``/proc`` so a
-TeX helper that left the group is still found. Windows ignores
-``start_new_session`` and has no ``/proc``. The Windows path asks a helper
-process, through ``subprocess``, for parent/child ids and then stops each one
-with ``os.kill``. That stays inside Python's process APIs.
+On Windows each Manim normally runs in a kill-on-close Job Object
+(``win32_job``). This module is the fallback when Job Objects are off
+(``MATHIMATOR_WIN32_JOBS=0``) or assigning or terminating one fails. A hidden
+PowerShell helper lists every process on the system with its parent and its
+creation time. It starts with the first job that runs without a Job Object,
+never when the worker starts (D15). Windows keeps the parent id of a process
+whose parent has exited, and gives that id to new processes, so a process
+counts as a child only when it was created no earlier than its parent, and
+the helper ends one only while a handle shows it is still the process it
+listed (D15, F024). With ``MATHIMATOR_SKIP_PROCESS_TABLE=1`` the helper never
+starts and the fallback ends Manim alone.
+
+Linux keeps the phase 1 mechanism: Manim leads a new session, cancel kills its
+process group, and one scan of ``/proc`` finds a TeX helper that left the
+group. macOS is untested (D47). It has no ``/proc``, so only the group is
+killed there.
+
+``process_alive``, ``process_name`` and ``descendant_pids`` are for the tests.
 """
 
 from __future__ import annotations
@@ -14,15 +27,24 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
+from typing import NamedTuple
 
 if sys.platform == "win32":
     import _winapi
 else:
     _winapi = None
+
+# The OpenProcess access that reads an exit code, and the exit code of a process that still runs.
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+STILL_ACTIVE = 259
+
+_PROC = Path("/proc")
 
 _HELPER_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
@@ -34,10 +56,15 @@ $InformationPreference = 'SilentlyContinue'
 $OutputEncoding = [Console]::OutputEncoding
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class MathimatorProc {
     const uint SNAPPROCESS = 0x00000002;
+    const uint TERMINATE = 0x0001;
+    const uint QUERY_LIMITED_INFORMATION = 0x1000;
+    const uint STILL_ACTIVE = 259;
+    const int ERROR_INVALID_PARAMETER = 87;
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct PROCESSENTRY32 {
         public uint dwSize;
@@ -63,43 +90,37 @@ public static class MathimatorProc {
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] buffer, IntPtr size, out IntPtr read);
-    [DllImport("ntdll.dll")]
-    static extern int NtQueryInformationProcess(
-        IntPtr process, int klass, byte[] information, int length, out int returned);
+    static extern bool GetProcessTimes(
+        IntPtr process, out long created, out long exited, out long kernel, out long user);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool TerminateProcess(IntPtr process, uint code);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetExitCodeProcess(IntPtr process, out uint code);
     static string Clean(string value) {
         if (value == null) return "";
         return value.Replace("\t", " ").Replace("\r", " ").Replace("\n", " ");
     }
-    public static string CommandLine(uint pid) {
-        IntPtr handle = OpenProcess(0x0410, false, pid);
-        if (handle == IntPtr.Zero) return "";
+    // The creation time of an open process as a FILETIME, or 0 when it cannot be read.
+    static long Created(IntPtr process) {
+        long created, exited, kernel, user;
+        return GetProcessTimes(process, out created, out exited, out kernel, out user) ? created : 0;
+    }
+    static long Created(uint pid) {
+        IntPtr process = OpenProcess(QUERY_LIMITED_INFORMATION, false, pid);
+        if (process == IntPtr.Zero) return 0;
         try {
-            byte[] basic = new byte[48];
-            int returned;
-            if (NtQueryInformationProcess(handle, 0, basic, basic.Length, out returned) != 0) return "";
-            long peb = BitConverter.ToInt64(basic, 8);
-            if (peb == 0) return "";
-            byte[] parameters = new byte[8];
-            IntPtr read;
-            if (!ReadProcessMemory(handle, new IntPtr(peb + 0x20), parameters, new IntPtr(8), out read)) return "";
-            long block = BitConverter.ToInt64(parameters, 0);
-            if (block == 0) return "";
-            byte[] text = new byte[16];
-            if (!ReadProcessMemory(handle, new IntPtr(block + 0x70), text, new IntPtr(16), out read)) return "";
-            int length = BitConverter.ToUInt16(text, 0);
-            long buffer = BitConverter.ToInt64(text, 8);
-            if (length <= 0 || length > 32768 || buffer == 0) return "";
-            byte[] chars = new byte[length];
-            if (!ReadProcessMemory(handle, new IntPtr(buffer), chars, new IntPtr(length), out read)) return "";
-            return Clean(Encoding.Unicode.GetString(chars));
-        } catch (Exception) {
-            return "";
+            return Created(process);
         } finally {
-            CloseHandle(handle);
+            CloseHandle(process);
         }
     }
-    public static string Snapshot() {
+    // Whether an open process has not exited. One whose exit code cannot be read counts as running.
+    static bool Running(IntPtr process) {
+        uint code;
+        return !GetExitCodeProcess(process, out code) || code == STILL_ACTIVE;
+    }
+    // Every process as one Toolhelp snapshot lists it.
+    static List<PROCESSENTRY32> Processes() {
         IntPtr snap = CreateToolhelp32Snapshot(SNAPPROCESS, 0);
         if (snap == IntPtr.Zero || snap == new IntPtr(-1)) {
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
@@ -110,22 +131,66 @@ public static class MathimatorProc {
             if (!Process32First(snap, ref entry)) {
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
             }
-            var builder = new StringBuilder();
+            var processes = new List<PROCESSENTRY32>();
             do {
-                string name = Clean(entry.szExeFile);
-                builder.Append(entry.th32ProcessID);
-                builder.Append('\t');
-                builder.Append(entry.th32ParentProcessID);
-                builder.Append('\t');
-                builder.Append(name);
-                builder.Append('\t');
-                builder.Append(CommandLine(entry.th32ProcessID));
-                builder.Append('\n');
+                processes.Add(entry);
             } while (Process32Next(snap, ref entry));
-            return builder.ToString();
+            return processes;
         } finally {
             CloseHandle(snap);
         }
+    }
+    // One line per process: its pid, its parent's pid, its creation time and its executable.
+    // The times are read by pid after the snapshot, so a second snapshot checks each pid: one
+    // it lists under another parent went to a new process in between, and its time is written as 0.
+    public static string Snapshot() {
+        List<PROCESSENTRY32> processes = Processes();
+        var created = new long[processes.Count];
+        for (int i = 0; i < processes.Count; i++) created[i] = Created(processes[i].th32ProcessID);
+        var parents = new Dictionary<uint, uint>();
+        foreach (PROCESSENTRY32 entry in Processes()) parents[entry.th32ProcessID] = entry.th32ParentProcessID;
+        var builder = new StringBuilder();
+        for (int i = 0; i < processes.Count; i++) {
+            PROCESSENTRY32 entry = processes[i];
+            uint parent;
+            bool reused = parents.TryGetValue(entry.th32ProcessID, out parent) && parent != entry.th32ParentProcessID;
+            builder.Append(entry.th32ProcessID).Append('\t');
+            builder.Append(entry.th32ParentProcessID).Append('\t');
+            builder.Append(reused ? 0 : created[i]).Append('\t');
+            builder.Append(Clean(entry.szExeFile)).Append('\n');
+        }
+        return builder.ToString();
+    }
+    // Ends each "pid:created" in order, while that pid is still the process created then.
+    // The check and the kill use one handle, so a pid reused in between is never hit.
+    // A process already gone is skipped. One that could not be ended fails the command once the rest are tried.
+    public static void Kill(string victims) {
+        var failures = new List<string>();
+        foreach (string victim in victims.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)) {
+            string[] parts = victim.Split(':');
+            IntPtr process = OpenProcess(TERMINATE | QUERY_LIMITED_INFORMATION, false, uint.Parse(parts[0]));
+            if (process == IntPtr.Zero) {
+                // ERROR_INVALID_PARAMETER: no process has this pid any more.
+                int error = Marshal.GetLastWin32Error();
+                if (error != ERROR_INVALID_PARAMETER) failures.Add(Failure(parts[0], error));
+                continue;
+            }
+            try {
+                if (Created(process) == long.Parse(parts[1]) && !TerminateProcess(process, 1)) {
+                    int error = Marshal.GetLastWin32Error();
+                    // Ending a process that has already exited fails too.
+                    if (Running(process)) failures.Add(Failure(parts[0], error));
+                }
+            } finally {
+                CloseHandle(process);
+            }
+        }
+        if (failures.Count > 0) {
+            throw new InvalidOperationException("could not end " + string.Join(", ", failures));
+        }
+    }
+    static string Failure(string pid, int error) {
+        return pid + " (" + new System.ComponentModel.Win32Exception(error).Message + ")";
     }
 }
 '@
@@ -136,10 +201,10 @@ while ($true) {
         if ($cmd -eq 'PIDS') {
             $text = [MathimatorProc]::Snapshot()
             if ($text) { Write-Output $text }
-            Write-Output '___END___'
-        } else {
-            Write-Output '___END___'
+        } elseif ($cmd.StartsWith('KILL ')) {
+            [MathimatorProc]::Kill($cmd.Substring(5))
         }
+        Write-Output '___END___'
     } catch {
         Write-Output ('ERROR ' + $_.Exception.Message)
         Write-Output '___END___'
@@ -148,68 +213,86 @@ while ($true) {
 """
 
 
+class _Process(NamedTuple):
+    """A process the Windows helper listed."""
+
+    ppid: int
+    # A FILETIME, or 0 when the helper could not read it or the pid went to another process meanwhile.
+    created: int
+    name: str
+
+
+class _Stat(NamedTuple):
+    """The fields of ``/proc/<pid>/stat`` the kill reads."""
+
+    state: str
+    ppid: int
+    pgrp: int
+    # Clock ticks after boot.
+    created: int
+
+
 class _WindowsProcessTable:
-    """Parent map and command lines for the current user session."""
+    """Every process on the system, listed by the PowerShell helper, which also does the checked kill."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._proc: subprocess.Popen[str] | None = None
-        self._pids: list[tuple[int, int, str, str]] = []
-        self._pids_at = 0.0
+        self._script: Path | None = None
+        self._rows: dict[int, _Process] = {}
+        self._rows_at = 0.0
 
-    def pids(self, *, fresh: bool) -> list[tuple[int, int, str, str]]:
+    def rows(self, *, fresh: bool) -> dict[int, _Process]:
+        """Each process by its pid. Unless ``fresh``, a list taken in the last 0.1 s will do."""
         with self._lock:
             now = time.monotonic()
-            if not fresh and self._pids and now - self._pids_at < 0.1:
-                return list(self._pids)
-            lines = self._ask("PIDS")
-            rows: list[tuple[int, int, str, str]] = []
-            for line in lines:
-                if line.startswith("ERROR "):
-                    raise OSError(f"process table helper failed: {line[6:]}")
+            if not fresh and self._rows and now - self._rows_at < 0.1:
+                return dict(self._rows)
+            rows: dict[int, _Process] = {}
+            for line in self._ask("PIDS"):
                 parts = line.split("\t", 3)
-                if len(parts) < 3:
+                if len(parts) < 4:
                     continue
                 try:
-                    pid = int(parts[0])
-                    ppid = int(parts[1])
+                    pid, ppid, created = int(parts[0]), int(parts[1]), int(parts[2])
                 except ValueError:
                     continue
-                name = parts[2].strip()
-                command = parts[3].strip() if len(parts) == 4 else ""
-                rows.append((pid, ppid, name, command))
+                rows[pid] = _Process(ppid, created, parts[3].strip())
             if not rows:
                 # A live system always lists System and Idle, so an empty table is a failed snapshot (F098).
                 raise OSError("process table helper listed no processes")
-            self._pids = rows
-            self._pids_at = now
-            return list(rows)
+            self._rows = rows
+            self._rows_at = now
+            return dict(rows)
 
-    def command_line(self, pid: int) -> str:
-        for row_pid, _ppid, _name, command in self.pids(fresh=False):
-            if row_pid == pid:
-                return command
-        return ""
+    def kill(self, victims: list[tuple[int, int]]) -> None:
+        """End each ``(pid, created)`` in order, while ``pid`` is still the process created then (D15).
+
+        Raises OSError naming each process that still runs because it could not be ended (F098).
+        """
+        with self._lock:
+            self._ask("KILL " + " ".join(f"{pid}:{created}" for pid, created in victims))
 
     def close(self) -> None:
         with self._lock:
-            proc = self._proc
-            self._proc = None
-            if proc is None or proc.poll() is not None:
-                return
-            if proc.stdin is not None:
+            proc, self._proc = self._proc, None
+            if proc is not None and proc.poll() is None:
+                if proc.stdin is not None:
+                    with suppress(OSError):
+                        proc.stdin.write("EXIT\n")
+                        proc.stdin.flush()
                 try:
-                    proc.stdin.write("EXIT\n")
-                    proc.stdin.flush()
-                except OSError:
-                    pass
-            try:
-                proc.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=1)
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=1)
+            if self._script is not None:
+                with suppress(OSError):
+                    self._script.unlink(missing_ok=True)
+                self._script = None
 
     def _ask(self, command: str) -> list[str]:
+        """Send ``command`` and return the lines of the answer. An ``ERROR`` line raises OSError (F098)."""
         proc = self._ensure()
         assert proc.stdin is not None
         assert proc.stdout is not None
@@ -230,17 +313,23 @@ class _WindowsProcessTable:
                 raise OSError(f"process table helper exited: {detail}")
             text = line.strip("\r\n").lstrip("\ufeff")
             if text == "___END___":
-                return lines
+                break
             if text:
                 lines.append(text)
+        # Only now, so the next answer starts after this one's end line.
+        for text in lines:
+            if text.startswith("ERROR "):
+                raise OSError(f"process table helper failed: {text[6:]}")
+        return lines
 
     def _ensure(self) -> subprocess.Popen[str]:
         if sys.platform != "win32":
             raise OSError("the process table helper runs only on Windows")
         if self._proc is not None and self._proc.poll() is None:
             return self._proc
-        script = Path(os.environ.get("TEMP", ".")) / "mathimator-proc-snap-v1.ps1"
-        script.write_text(_HELPER_SCRIPT, encoding="utf-8")
+        # Named for this worker, so two workers never rewrite each other's script (F027).
+        self._script = Path(tempfile.gettempdir()) / f"mathimator-proc-table-{os.getpid()}.ps1"
+        self._script.write_text(_HELPER_SCRIPT, encoding="utf-8")
         startup = subprocess.STARTUPINFO()
         startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startup.wShowWindow = subprocess.SW_HIDE
@@ -252,7 +341,7 @@ class _WindowsProcessTable:
                 "-ExecutionPolicy",
                 "Bypass",
                 "-File",
-                str(script),
+                str(self._script),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -277,129 +366,142 @@ def _close_table() -> None:
 atexit.register(_close_table)
 
 
-def warm_process_table() -> None:
-    """Start the Windows process table helper before a timed cancel."""
+def _table() -> _WindowsProcessTable | None:
+    """The Windows process table, or None off Windows and while ``MATHIMATOR_SKIP_PROCESS_TABLE=1`` (F028)."""
     if os.environ.get("MATHIMATOR_SKIP_PROCESS_TABLE") == "1":
-        return
-    if _TABLE is None:
-        return
-    _TABLE.pids(fresh=True)
+        return None
+    return _TABLE
+
+
+def warm_process_table() -> None:
+    """Start the Windows process table helper, so a cancel without a Job Object does not wait for it."""
+    table = _table()
+    if table is not None:
+        table.rows(fresh=True)
 
 
 def terminate_process_group(proc: subprocess.Popen[str]) -> None:
-    """Kill ``proc`` and its descendants, then reap what this process can reap."""
-    if proc.poll() is not None:
-        _reap_zombies([proc.pid])
-        return
+    """Kill ``proc`` and the processes it started, never one created before its parent (D15).
 
+    On Windows a failed process table, or a process the helper could not
+    end, raises OSError after ``proc`` itself is killed (F025, F098).
+    """
+    if proc.poll() is not None:
+        return
     if sys.platform == "win32":
         _terminate_windows(proc)
         return
-
     pid = proc.pid
     try:
         pgid = os.getpgid(pid)
     except ProcessLookupError:
         return
-
-    victims = {pid}
-    victims.update(_pids_in_group(pgid))
-    victims.update(_descendant_pids(pid))
-
-    if hasattr(os, "killpg"):
-        with suppress(ProcessLookupError):
-            os.killpg(pgid, signal.SIGKILL)
+    table = _proc_table()
+    victims = {pid, *(other for other, stat in table.items() if stat.pgrp == pgid)}
+    victims.update(_descendants(pid, {other: (stat.ppid, stat.created) for other, stat in table.items()}))
+    with suppress(ProcessLookupError):
+        os.killpg(pgid, signal.SIGKILL)
     for victim in victims:
         with suppress(ProcessLookupError):
             os.kill(victim, signal.SIGKILL)
-
     with suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=1)
-    _reap_zombies(victims)
 
 
 def process_alive(pid: int) -> bool:
-    """Return whether ``pid`` still exists and is not a zombie."""
+    """Whether ``pid`` still runs and is not a zombie. For the tests.
+
+    Without ``/proc``, as on macOS, every process ``os.kill(pid, 0)`` reaches
+    counts, zombies too (D47).
+    """
     if pid <= 0:
         return False
     if sys.platform == "win32":
         return _windows_process_alive(pid)
+    if not _PROC.is_dir():
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
     stat = _read_stat(pid)
-    if stat is None:
-        return False
-    return stat[0] != "Z"
+    return stat is not None and stat.state != "Z"
 
 
 def process_name(pid: int) -> str:
-    """Executable name without a trailing ``.exe``, lowercased on Windows."""
+    """Executable name without a trailing ``.exe``, lowercased on Windows. For the tests."""
     if sys.platform == "win32":
-        if _TABLE is None:
+        table = _table()
+        row = None if table is None else table.rows(fresh=False).get(pid)
+        if row is None:
             return ""
-        for row_pid, _ppid, name, _command in _TABLE.pids(fresh=False):
-            if row_pid == pid:
-                stem = name[:-4] if name.lower().endswith(".exe") else name
-                return stem.lower()
-        return ""
-    path = Path("/proc") / str(pid) / "comm"
+        stem = row.name[:-4] if row.name.lower().endswith(".exe") else row.name
+        return stem.lower()
     try:
-        return path.read_text(encoding="utf-8").strip()
+        return (_PROC / str(pid) / "comm").read_text(encoding="utf-8").strip()
     except OSError:
         return ""
 
 
-def process_command_line(pid: int) -> str:
-    """Return the command line, or an empty string when it cannot be read."""
+def descendant_pids(root: int) -> set[int]:
+    """Every process below ``root``, by the rules the kill follows. For the tests."""
     if sys.platform == "win32":
-        if _TABLE is None:
-            return ""
-        return _TABLE.command_line(pid)
-    path = Path("/proc") / str(pid) / "cmdline"
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return ""
-    return data.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+        table = _table()
+        rows = {} if table is None else table.rows(fresh=False)
+        return set(_descendants(root, {pid: (row.ppid, row.created) for pid, row in rows.items()}))
+    return set(_descendants(root, {pid: (stat.ppid, stat.created) for pid, stat in _proc_table().items()}))
 
 
 def _terminate_windows(proc: subprocess.Popen[str]) -> None:
-    """Kill the tree under ``proc``. When the process table fails, kill the root anyway, then raise (F025)."""
-    pid = proc.pid
+    """Kill what ``proc`` started, deepest first, then ``proc`` itself through the handle Popen holds."""
+    table = _table()
     failure: OSError | None = None
-    rows: list[tuple[int, int, str, str]] = []
-    if _TABLE is not None:
+    if table is not None:
         try:
-            rows = _TABLE.pids(fresh=True)
+            rows = table.rows(fresh=True)
+            victims = _descendants(proc.pid, {pid: (row.ppid, row.created) for pid, row in rows.items()})
+            if victims:
+                table.kill([(pid, rows[pid].created) for pid in victims])
         except OSError as exc:
             failure = exc
-    parents = {row_pid: ppid for row_pid, ppid, _name, _command in rows}
-    victims = _descendants_from_parents(pid, parents)
-    victims.add(pid)
-    for victim in _deepest_first(pid, victims, parents):
-        _terminate_pid(victim)
-    try:
+    proc.terminate()
+    with suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        _terminate_pid(pid)
     if failure is not None:
         raise failure
 
 
-def _terminate_pid(pid: int) -> None:
-    if pid <= 0:
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        return
+def _descendants(root: int, parents: Mapping[int, tuple[int, int]]) -> list[int]:
+    """The processes below ``root``, deepest first. ``parents`` maps a pid to its parent's pid and its creation time.
+
+    A process is a child of its parent only when both creation times are known
+    and it was created no earlier than the parent (D15). Windows keeps the
+    parent id of a process whose parent has exited and reuses ids, so a
+    long-running process could otherwise pass for a child of a new one.
+    """
+    children: dict[int, list[int]] = {}
+    for pid, (ppid, _created) in parents.items():
+        children.setdefault(ppid, []).append(pid)
+    depth: dict[int, int] = {}
+    stack = [root]
+    while stack:
+        parent = stack.pop()
+        born = parents.get(parent, (0, 0))[1]
+        for child in children.get(parent, []):
+            if child == root or child in depth or not 0 < born <= parents[child][1]:
+                continue
+            depth[child] = depth.get(parent, 0) + 1
+            stack.append(child)
+    return sorted(depth, key=depth.__getitem__, reverse=True)
 
 
 def _windows_process_alive(pid: int) -> bool:
     if _winapi is None:
         return False
-    access = 0x1000
-    still_active = 259
     try:
-        handle = _winapi.OpenProcess(access, False, pid)
+        handle = _winapi.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     except OSError:
         return False
     try:
@@ -408,113 +510,29 @@ def _windows_process_alive(pid: int) -> bool:
         return False
     finally:
         _winapi.CloseHandle(handle)
-    return code == still_active
+    return code == STILL_ACTIVE
 
 
-def _descendants_from_parents(root: int, parents: dict[int, int]) -> set[int]:
-    children: dict[int, list[int]] = {}
-    for pid, ppid in parents.items():
-        children.setdefault(ppid, []).append(pid)
-    found: set[int] = set()
-    stack = [root]
-    while stack:
-        current = stack.pop()
-        for child in children.get(current, []):
-            if child in found or child == root:
-                continue
-            found.add(child)
-            stack.append(child)
-    return found
+def _proc_table() -> dict[int, _Stat]:
+    """Every process ``/proc`` lists, in one scan. Empty without ``/proc``."""
+    table: dict[int, _Stat] = {}
+    if not _PROC.is_dir():
+        return table
+    for entry in _PROC.iterdir():
+        if entry.name.isdigit() and (stat := _read_stat(int(entry.name))) is not None:
+            table[int(entry.name)] = stat
+    return table
 
 
-def _deepest_first(root: int, victims: set[int], parents: dict[int, int]) -> list[int]:
-    depth = {root: 0}
-    for pid in victims:
-        cursor = pid
-        seen: list[int] = []
-        while cursor not in depth and cursor in parents and cursor not in seen:
-            seen.append(cursor)
-            cursor = parents[cursor]
-        base = depth.get(cursor, 0)
-        for offset, item in enumerate(reversed(seen), start=1):
-            depth[item] = base + offset
-    ordered = [pid for pid in victims if pid != root]
-    ordered.sort(key=lambda item: depth.get(item, 0), reverse=True)
-    ordered.append(root)
-    return ordered
-
-
-def _reap_zombies(pids: set[int] | list[int]) -> None:
-    if sys.platform == "win32" or not hasattr(os, "waitpid"):
-        return
-    for pid in pids:
-        try:
-            os.waitpid(pid, os.WNOHANG)
-        except (ChildProcessError, OSError, PermissionError):
-            continue
-
-
-def _pids_in_group(pgid: int) -> set[int]:
-    found: set[int] = set()
-    proc_root = Path("/proc")
-    if not proc_root.is_dir():
-        return found
-    for entry in proc_root.iterdir():
-        if not entry.name.isdigit():
-            continue
-        parsed = _read_stat(int(entry.name))
-        if parsed is None:
-            continue
-        _state, _ppid, pgrp = parsed
-        if pgrp == pgid:
-            found.add(int(entry.name))
-    return found
-
-
-def _descendant_pids(root: int) -> set[int]:
-    if sys.platform == "win32":
-        if _TABLE is None:
-            return set()
-        rows = _TABLE.pids(fresh=False)
-        parents = {pid: ppid for pid, ppid, _name, _command in rows}
-        return _descendants_from_parents(root, parents)
-    children: dict[int, list[int]] = {}
-    proc_root = Path("/proc")
-    if not proc_root.is_dir():
-        return set()
-    for entry in proc_root.iterdir():
-        if not entry.name.isdigit():
-            continue
-        pid = int(entry.name)
-        parsed = _read_stat(pid)
-        if parsed is None:
-            continue
-        _state, ppid, _pgrp = parsed
-        children.setdefault(ppid, []).append(pid)
-    found: set[int] = set()
-    stack = [root]
-    while stack:
-        current = stack.pop()
-        for child in children.get(current, []):
-            if child in found:
-                continue
-            found.add(child)
-            stack.append(child)
-    return found
-
-
-def _read_stat(pid: int) -> tuple[str, int, int] | None:
-    """Return ``(state, ppid, pgrp)`` from ``/proc/<pid>/stat``."""
-    path = Path("/proc") / str(pid) / "stat"
+def _read_stat(pid: int) -> _Stat | None:
+    """``/proc/<pid>/stat``, or None when it cannot be read."""
     try:
-        text = path.read_text(encoding="utf-8")
+        text = (_PROC / str(pid) / "stat").read_text(encoding="utf-8")
     except OSError:
         return None
     try:
-        rest = text.rsplit(")", 1)[1].split()
-        state = rest[0]
-        ppid = int(rest[1])
-        pgrp = int(rest[2])
+        # The name before these fields is in parentheses and may hold spaces and parentheses itself.
+        fields = text.rsplit(")", 1)[1].split()
+        return _Stat(fields[0], int(fields[1]), int(fields[2]), int(fields[19]))
     except (IndexError, ValueError):
         return None
-    return state, ppid, pgrp

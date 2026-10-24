@@ -391,7 +391,9 @@ def start_supervisor(
     python: Path | None = None,
     init: bool = False,
     supervisor_python: Path | None = None,
+    pythonpath: list[Path] | None = None,
 ) -> SupervisorClient:
+    """Start a supervisor for ``project``. ``pythonpath`` goes before the worker on PYTHONPATH, for it and its Manim."""
     interpreter = supervisor_python or venv_python()
     if not interpreter.is_file():
         raise FileNotFoundError(
@@ -401,7 +403,7 @@ def start_supervisor(
     project.mkdir(parents=True, exist_ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(WORKER)
+    env["PYTHONPATH"] = os.pathsep.join([*map(str, pythonpath or []), str(WORKER)])
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
@@ -438,6 +440,14 @@ def read_argv(log_path: Path, timeout: float = 60) -> list[str]:
                     return json.loads(line.split(marker, 1)[1])
         time.sleep(0.05)
     raise TimeoutError(f"argv was not logged in {log_path}")
+
+
+def manim_pids(log_path: Path) -> list[int]:
+    """The pid of each Manim the supervisor's log says it started, in order."""
+    if not log_path.is_file():
+        return []
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return [int(line.rsplit("pid=", 1)[1]) for line in lines if "manim started pid=" in line]
 
 
 def assert_phase1_argv(argv: list[str], *, width: int, height: int, fps: int) -> None:

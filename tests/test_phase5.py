@@ -245,6 +245,10 @@ def _export_with_fake(
         assert client.wait_for(lambda event: event.get("jobId") == "profile", 10)["event"] == "state"
         client.send({"cmd": "export", "id": "export"})
         argv = _wait_argv(log_path, flag)
+        # Cancelled before the worker closes, so no fake Manim outlives the test (F028).
+        client.send({"cmd": "cancel", "id": "cancel", "jobId": "export"})
+        ended = client.wait_for(lambda event: event.get("jobId") == "export" and event.get("event") == "error", 10)
+        assert ended["code"] == "cancelled"
     finally:
         client.close()
     return argv, log_path.read_text(encoding="utf-8")

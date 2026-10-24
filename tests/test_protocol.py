@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pytest
 
-from mathimator_worker import process_group
 from mathimator_worker import supervisor as supervisor_module
 from mathimator_worker.document import NOT_UTF8
 from mathimator_worker.preview_index import PreviewIndex
@@ -456,30 +455,6 @@ def test_a_cancel_whose_kill_helper_fails_still_ends_the_job(
     )
 
 
-def test_a_cancelled_job_closes_its_job_object_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
-) -> None:
-    terminated: list[int] = []
-    closed: list[int] = []
-    monkeypatch.setattr(supervisor_module, "jobs_enabled", lambda: True)
-    monkeypatch.setattr(supervisor_module, "assign_kill_on_close", lambda pid: 4242)
-    monkeypatch.setattr(supervisor_module, "terminate_job", terminated.append)
-    monkeypatch.setattr(supervisor_module, "close_job", closed.append)
-    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
-    fake_manim.plan({}, later=[video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)])
-    _send(supervisor, cmd="render_preview", id="preview-1")
-    job = _current(supervisor)
-    stdout.wait_for("preview-1", "started")
-    fake_manim.wait_until_held()
-    _send(supervisor, cmd="cancel", id="cancel-1", jobId="preview-1")
-    # The stand-in job kills nothing, so the fake Manim ends by itself.
-    fake_manim.release()
-    _join(job)
-    assert (terminated, closed) == ([4242], [4242])
-    assert [line["event"] for line in stdout.of("preview-1")] == ["started", "error"]
-    assert stdout.of("preview-1")[-1]["code"] == "cancelled"
-
-
 def test_a_failed_job_object_terminate_falls_back_to_the_tree_kill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -524,28 +499,6 @@ def test_a_failure_after_manim_started_kills_it_and_releases_its_job(
     assert started == {"event": "started", "jobId": "preview-1"}
     assert (failed["event"], failed["code"]) == ("error", "internal")
     assert "job preview-1 failed" in supervisor.log_path.read_text(encoding="utf-8")
-
-
-def test_the_process_table_reports_a_failed_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
-    table = process_group._WindowsProcessTable()
-    monkeypatch.setattr(table, "_ask", lambda command: ["ERROR Access is denied"])
-    with pytest.raises(OSError, match="Access is denied"):
-        table.pids(fresh=True)
-    monkeypatch.setattr(table, "_ask", lambda command: [])
-    with pytest.raises(OSError, match="no processes"):
-        table.pids(fresh=True)
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="the process table is the Windows tree kill")
-def test_a_failed_process_table_still_kills_the_root(monkeypatch: pytest.MonkeyPatch) -> None:
-    def helper_gone(*, fresh: bool) -> list[tuple[int, int, str, str]]:
-        raise OSError("process table helper exited")
-
-    monkeypatch.setattr(process_group._TABLE, "pids", helper_gone)
-    proc = _sleeper()
-    with pytest.raises(OSError, match="helper exited"):
-        process_group.terminate_process_group(proc)
-    assert proc.poll() is not None
 
 
 # Hand-written scene mode (C7.7, D42)

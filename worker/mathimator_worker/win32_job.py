@@ -2,16 +2,21 @@
 
 Craig approved this binding: on Windows each Manim process is assigned to a
 job with ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``. Cancel calls
-``TerminateJobObject``, which also ends ``latex`` and ``dvisvgm``. Linux and
-macOS keep the process-group path in ``process_group``.
+``TerminateJobObject``, which also ends ``latex`` and ``dvisvgm``. When no job
+can be used, ``process_group`` stops the tree instead.
 
 On Windows the job is the default. ``MATHIMATOR_WIN32_JOBS=0`` turns it off.
 The tests that create a job are skipped unless ``MATHIMATOR_WIN32_TESTS=1``.
+
+A job handle has one owner, which may terminate the job any number of times
+and closes the handle once (F023). A failed call raises the OSError of its
+Windows error code (F101).
 """
 
 from __future__ import annotations
 
 import ctypes
+import functools
 import os
 import sys
 from ctypes import wintypes
@@ -71,81 +76,80 @@ class _ExtendedLimit(ctypes.Structure):
     ]
 
 
-def assign_kill_on_close(pid: int) -> int:
-    """Put ``pid`` in a new kill-on-close job. Returns the job handle.
-
-    The caller keeps the handle alive. Closing it, or calling
-    ``terminate_job``, ends the process and every process it created.
-    """
-    if sys.platform != "win32" or not jobs_enabled():
-        raise OSError("Job Object assignment is disabled")
-    if pid <= 0:
-        raise OSError(f"invalid pid {pid}")
+@functools.cache
+def _kernel32() -> ctypes.CDLL:
+    """kernel32 with the prototype of every call this module makes, bound once (F106)."""
+    if sys.platform != "win32":
+        raise OSError("Job Objects exist only on Windows")
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
     kernel.CreateJobObjectW.restype = wintypes.HANDLE
-    kernel.SetInformationJobObject.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_int,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-    ]
+    kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
     kernel.SetInformationJobObject.restype = wintypes.BOOL
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel.OpenProcess.restype = wintypes.HANDLE
     kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel.TerminateJobObject.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
+    return kernel
 
+
+def _failed(name: str) -> OSError:
+    """The error of the kernel32 call ``name``, which has just failed: ``[WinError <code>] <name> failed: ...``."""
+    if sys.platform != "win32":
+        raise OSError("Job Objects exist only on Windows")
+    code = ctypes.get_last_error()
+    return ctypes.WinError(code, f"{name} failed: {ctypes.FormatError(code)}")
+
+
+def assign_kill_on_close(pid: int) -> int:
+    """Put ``pid`` in a new kill-on-close job. Returns the job handle.
+
+    The caller owns the handle. ``terminate_job`` ends the process and every
+    process it created, and so does closing the handle with ``close_job``.
+    """
+    if sys.platform != "win32" or not jobs_enabled():
+        raise OSError("Job Object assignment is disabled")
+    if pid <= 0:
+        raise OSError(f"invalid pid {pid}")
+    kernel = _kernel32()
     job = kernel.CreateJobObjectW(None, None)
     if not job:
-        raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
-    info = _ExtendedLimit()
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    if not kernel.SetInformationJobObject(
-        job,
-        JobObjectExtendedLimitInformation,
-        ctypes.byref(info),
-        ctypes.sizeof(info),
-    ):
-        error = ctypes.get_last_error()
+        raise _failed("CreateJobObjectW")
+    try:
+        info = _ExtendedLimit()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel.SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            raise _failed("SetInformationJobObject")
+        process = kernel.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
+        if not process:
+            raise _failed("OpenProcess")
+        try:
+            if not kernel.AssignProcessToJobObject(job, process):
+                raise _failed("AssignProcessToJobObject")
+        finally:
+            kernel.CloseHandle(process)
+    except OSError:
         kernel.CloseHandle(job)
-        raise OSError(error, "SetInformationJobObject failed")
-    process = kernel.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
-    if not process:
-        error = ctypes.get_last_error()
-        kernel.CloseHandle(job)
-        raise OSError(error, "OpenProcess failed")
-    assigned = kernel.AssignProcessToJobObject(job, process)
-    kernel.CloseHandle(process)
-    if not assigned:
-        error = ctypes.get_last_error()
-        kernel.CloseHandle(job)
-        raise OSError(error, "AssignProcessToJobObject failed")
+        raise
     return int(job)
 
 
 def terminate_job(handle: int) -> None:
-    """End every process in the job. The caller still owns the handle and closes it with ``close_job``."""
-    if sys.platform != "win32" or not jobs_enabled():
-        raise OSError("Job Object termination is disabled")
-    if handle <= 0:
-        raise OSError("invalid job handle")
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
-    kernel.TerminateJobObject.restype = wintypes.BOOL
-    if not kernel.TerminateJobObject(wintypes.HANDLE(handle), 1):
-        raise OSError(ctypes.get_last_error(), "TerminateJobObject failed")
+    """End every process in the job. The handle stays open for its owner to close once with ``close_job``."""
+    if not _kernel32().TerminateJobObject(handle, 1):
+        raise _failed("TerminateJobObject")
 
 
 def close_job(handle: int) -> None:
-    """Close a job handle. Kill-on-close then reaps anything still inside."""
-    if handle <= 0:
-        return
-    if sys.platform != "win32":
-        raise OSError("Job Object handles exist only on Windows")
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel.CloseHandle.restype = wintypes.BOOL
-    kernel.CloseHandle(wintypes.HANDLE(handle))
+    """Close a job handle. Kill-on-close then ends whatever is still inside."""
+    if not _kernel32().CloseHandle(handle):
+        raise _failed("CloseHandle")

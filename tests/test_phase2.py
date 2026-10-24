@@ -32,15 +32,12 @@ from mathimator_worker.document import (
 )
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import expression_to_python
-from mathimator_worker.process_group import (
-    _descendant_pids,
-    process_alive,
-    process_command_line,
-)
+from mathimator_worker.process_group import process_alive
 from mathimator_worker.session import Session
 from tests.support import (
     REPO,
     SupervisorClient,
+    manim_pids,
     read_argv,
     start_supervisor,
     write_fake_interpreter,
@@ -362,7 +359,6 @@ def test_manim_draws_whole_seconds_exactly() -> None:
             assert int(seconds / step) == seconds * fps
 
 
-@pytest.mark.process_table
 def test_expression_rejection_does_not_spawn_manim(tmp_path: Path) -> None:
     project = tmp_path / "expr-project"
     log_path = tmp_path / "worker.log"
@@ -389,7 +385,6 @@ def test_expression_rejection_does_not_spawn_manim(tmp_path: Path) -> None:
         assert rejected["code"] == "unsupported_expression"
         assert rejected["field"] == "expression"
         assert client.proc.poll() is None
-        assert _fake_pids(client.proc.pid, "manim") == []
     finally:
         client.close()
     log = log_path.read_text(encoding="utf-8")
@@ -414,17 +409,20 @@ def test_preview_waits_behind_export_and_edits_do_not_cancel_it(tmp_path: Path) 
         assert renamed["event"] == "state"
         time.sleep(0.3)
         assert _argv_count(log_path) == 1
-        assert _fake_pids(client.proc.pid, str(fake))
+        assert process_alive(_wait_manim(log_path))
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and _argv_count(log_path) < 2:
             time.sleep(0.05)
         assert _argv_count(log_path) == 2
+        _end(client, "preview-wait")
     finally:
         client.close()
 
 
 @pytest.mark.process_table
-def test_a_new_preview_cancels_the_in_flight_preview(tmp_path: Path) -> None:
+def test_a_new_preview_cancels_the_in_flight_preview(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The fake has no children, so the kill needs no process table and its time is the stop alone.
+    monkeypatch.setenv("MATHIMATOR_SKIP_PROCESS_TABLE", "1")
     project = tmp_path / "cancel-preview"
     log_path = tmp_path / "cancel-preview.log"
     fake = write_fake_interpreter(tmp_path / "fake-manim.py", 30)
@@ -432,8 +430,7 @@ def test_a_new_preview_cancels_the_in_flight_preview(tmp_path: Path) -> None:
     try:
         _ready(client)
         client.send({"cmd": "render_preview", "id": "preview-1"})
-        read_argv(log_path, timeout=10)
-        first = _wait_fake(client.proc.pid, fake)
+        first = _wait_manim(log_path)
         started = time.perf_counter()
         client.send({"cmd": "render_preview", "id": "preview-2"})
         deadline = started + 1.0
@@ -443,11 +440,11 @@ def test_a_new_preview_cancels_the_in_flight_preview(tmp_path: Path) -> None:
             time.sleep(0.01)
         assert not process_alive(first)
         assert time.perf_counter() - started < 1.0
+        _end(client, "preview-2")
     finally:
         client.close()
 
 
-@pytest.mark.process_table
 def test_existing_export_does_not_spawn_manim(tmp_path: Path) -> None:
     project = tmp_path / "export-hit"
     shutil.copytree(FIXTURES / "journey-a", project)
@@ -483,7 +480,6 @@ def test_existing_export_does_not_spawn_manim(tmp_path: Path) -> None:
         )
         assert done["event"] == "done"
         assert done["path"] == str(movie)
-        assert _fake_pids(client.proc.pid, str(fake)) == []
     finally:
         client.close()
     assert "argv:" not in log_path.read_text(encoding="utf-8")
@@ -553,34 +549,18 @@ def _argv_count(log_path: Path) -> int:
     return log_path.read_text(encoding="utf-8", errors="replace").count("argv: ")
 
 
-def _cmdline(pid: int) -> str:
-    return process_command_line(pid)
-
-
-def _fake_pids(supervisor_pid: int, needle: str) -> list[int]:
-    """Return descendant pids that are Manim, not the supervisor.
-
-    On Windows the venv interpreter stays as a parent of the real worker, and
-    that child's command line includes ``--python`` plus the fake executable.
-    Matching the executable path alone would treat the worker as Manim. The
-    worker command is ``-m mathimator_worker``; Manim's is ``-m mathimator_worker.manim_main``.
-    """
-    found: list[int] = []
-    for pid in _descendant_pids(supervisor_pid):
-        command = _cmdline(pid)
-        if f"-m {LAUNCHER}" not in command:
-            continue
-        if needle != "manim" and needle not in command:
-            continue
-        found.append(pid)
-    return found
-
-
-def _wait_fake(supervisor_pid: int, fake: Path) -> int:
+def _wait_manim(log_path: Path) -> int:
+    """The pid of the first Manim the supervisor starts."""
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        found = _fake_pids(supervisor_pid, str(fake))
-        if found:
-            return found[0]
+        started = manim_pids(log_path)
+        if started:
+            return started[0]
         time.sleep(0.02)
     raise AssertionError("fake manim did not start")
+
+
+def _end(client: SupervisorClient, job_id: str) -> None:
+    """Cancel the job and wait for its last line, so closing the worker leaves no fake Manim behind (F028)."""
+    client.send({"cmd": "cancel", "id": f"cancel-{job_id}", "jobId": job_id})
+    client.wait_for(lambda event: event.get("jobId") == job_id and event.get("event") in {"done", "error"}, 10)

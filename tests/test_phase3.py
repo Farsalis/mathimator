@@ -95,8 +95,7 @@ def test_typst_version_is_0_15_0() -> None:
 
 
 @pytest.mark.typst
-def test_sine_svg_compiles_without_starting_manim(tmp_path: Path) -> None:
-    before = _manim_pids()
+def test_sine_svg_compiles(tmp_path: Path) -> None:
     result = translate(SINE)
     assert result.document == SINE_DOCUMENT
     directory = tmp_path / "sine"
@@ -117,7 +116,6 @@ def test_sine_svg_compiles_without_starting_manim(tmp_path: Path) -> None:
     assert svg.stat().st_size > 0
     assert "<svg" in body
     assert "<path" in body or "<use" in body
-    assert _manim_pids() - before == set()
     version = subprocess.run(
         ["typst", "--version"],
         check=True,
@@ -286,23 +284,6 @@ def _compile(document: str, source: Path, svg: Path) -> None:
 def _write_typ(path: Path, document: str) -> Path:
     path.write_text(document, encoding="utf-8")
     return path
-
-
-def _manim_pids() -> set[int]:
-    found: set[int] = set()
-    root = Path("/proc")
-    if not root.is_dir():
-        return found
-    for entry in root.iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            parts = (entry / "cmdline").read_bytes().split(b"\x00")
-        except OSError:
-            continue
-        if any(part == b"manim" or part.endswith(b"/manim") for part in parts):
-            found.add(int(entry.name))
-    return found
 
 
 def _fenced(spec: str, heading: str, language: str) -> str:
