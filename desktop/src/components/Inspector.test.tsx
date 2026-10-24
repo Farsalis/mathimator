@@ -24,6 +24,7 @@ const OBJECTS: SceneObject[] = [
   },
   { id: "axes_1", name: "Axes", type: "axes", params: { showLabels: true } },
   { id: "axes_2", name: "Plain axes", type: "axes", params: { showLabels: false } },
+  { id: "text_1", name: "Caption", type: "text", params: { text: "Area", anchor: "edge_down", shift: [0, 0.5] } },
 ];
 
 const UNSUPPORTED: FieldError = {
@@ -192,6 +193,76 @@ describe("Inspector fields", () => {
     renderInspector("eq_1", { onEdit });
     typeAndLeave(screen.getByLabelText("dx"), " 2,5 ");
     expect(onEdit).toHaveBeenCalledExactlyOnceWith({ op: "set_object_shift", objectId: "eq_1", shift: [2.5, 0] });
+  });
+
+  it("commits a number once on Enter", () => {
+    const onEdit = vi.fn(() => Promise.resolve());
+    renderInspector("eq_1", { onEdit });
+    const dy = screen.getByLabelText<HTMLInputElement>("dy");
+    dy.focus();
+    fireEvent.change(dy, { target: { value: "-2" } });
+    fireEvent.keyDown(dy, { key: "Enter" });
+    expect(document.activeElement).not.toBe(dy);
+    expect(onEdit).toHaveBeenCalledExactlyOnceWith({ op: "set_object_shift", objectId: "eq_1", shift: [1.5, -2] });
+  });
+
+  it("commits a hex colour typed in the field when it loses focus (C10)", () => {
+    const onEdit = vi.fn(() => Promise.resolve());
+    renderInspector("eq_1", { onEdit });
+    const { picker, hex } = colorInputs();
+    fireEvent.change(hex, { target: { value: "#58C4DD" } });
+    expect(picker.value).toBe("#58c4dd");
+    expect(onEdit).not.toHaveBeenCalled();
+    fireEvent.blur(hex);
+    expect(onEdit).toHaveBeenCalledExactlyOnceWith({ op: "set_object_color", objectId: "eq_1", color: "#58C4DD" });
+  });
+
+  it("places a text with the same anchor, colour and shift fields as a formula (F119)", () => {
+    const onEdit = vi.fn(() => Promise.resolve());
+    renderInspector("text_1", { onEdit });
+    const anchor = screen.getByLabelText<HTMLSelectElement>("Anchor");
+    expect(anchor.value).toBe("edge_down");
+    fireEvent.change(anchor, { target: { value: "origin" } });
+    typeAndLeave(screen.getByLabelText("dx"), "3");
+    expect(onEdit.mock.calls).toEqual([
+      [{ op: "set_anchor", objectId: "text_1", anchor: "origin" }],
+      [{ op: "set_object_shift", objectId: "text_1", shift: [3, 0.5] }],
+    ]);
+  });
+
+  it("edits a surface's expression with its variables and refusal shown, as a plot's (C9.3, F119)", () => {
+    const surface: SceneObject = { id: "surface_1", name: "Surface", type: "surface", params: { expression: "x*y" } };
+    const onEdit = vi.fn(() => Promise.resolve());
+    render(
+      <Inspector
+        scene={{
+          kind: "three_d_scene",
+          camera: { phi: 75, theta: -45, zoom: 1 },
+          objects: [surface],
+          beats: [],
+          templateInstances: [],
+        }}
+        objects={[surface]}
+        beats={[]}
+        selectedBeatId={null}
+        selectedObjectId={null}
+        fieldError={{ ...UNSUPPORTED, objectId: "surface_1" }}
+        texBlocked={false}
+        disabled={false}
+        onSelectObject={vi.fn()}
+        onEdit={onEdit}
+      />,
+    );
+    const field = screen.getByTestId<HTMLInputElement>("surface-expression");
+    expect(field.value).toBe("x*y");
+    expect(screen.getByTestId("field-error-surface_1-expression").textContent).toBe(UNSUPPORTED.message);
+    expect(screen.getByText("Natural log is log. Variables: x and y.")).toBeTruthy();
+    typeAndLeave(field, "x + y");
+    expect(onEdit).toHaveBeenCalledExactlyOnceWith({
+      op: "set_expression",
+      objectId: "surface_1",
+      expression: "x + y",
+    });
   });
 
   it("keeps a number while its edit is pending and shows the stored value once it is refused (F045)", async () => {

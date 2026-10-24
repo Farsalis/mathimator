@@ -58,7 +58,13 @@ describe("invokeWorker", () => {
   it("returns a state reply", async () => {
     invokeMock.mockResolvedValueOnce(STATE);
     await expect(invokeWorker("get_state")).resolves.toEqual(STATE);
-    expect(invokeMock).toHaveBeenCalledWith("get_state", undefined);
+    expect(invokeMock).toHaveBeenCalledExactlyOnceWith("get_state");
+  });
+
+  it("passes a command's arguments as given", async () => {
+    invokeMock.mockResolvedValueOnce(null);
+    await invokeWorker("export_movie", { jobId: "export-3", force: true });
+    expect(invokeMock).toHaveBeenCalledExactlyOnceWith("export_movie", { jobId: "export-3", force: true });
   });
 
   it("throws WorkerRefusal with the code, message and field of a rejected reply", async () => {

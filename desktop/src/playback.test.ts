@@ -1,27 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { PREVIEW_FPS, playbackAt, playheadAt, type FilePlayback, type Playback } from "./playback";
-import type { IndexBeat, PreviewIndex } from "./types";
+import { derivedStarts } from "./format";
+import {
+  patchBeat,
+  PREVIEW_FPS,
+  playbackAt,
+  playheadAt,
+  shouldSeek,
+  type FilePlayback,
+  type Playback,
+} from "./playback";
+import type { EditorState, IndexBeat, PreviewIndex } from "./types";
 
 const MOVIE = "C:/Users/Ana/Sine/.mathimator/cache/MainScene.mp4";
 const LAST_GOOD = "C:/Users/Ana/Sine/.mathimator/cache/last-good/partial-1.mp4";
 
 /** A finished preview of beats with `durations`: every beat fresh with its partial movie, plus the movie. */
 function finished(durations: readonly number[]): PreviewIndex {
-  let cursor = 0;
-  const beats = durations.map((duration, index): IndexBeat => {
-    const beat = {
-      id: `beat_${index + 1}`,
-      index,
-      derivedStart: Math.round(cursor * 1000) / 1000,
-      duration,
-      partial: `C:/Users/Ana/Sine/.mathimator/cache/partial-${index}.mp4`,
-      lastGood: null,
-      fresh: true,
-    };
-    cursor += duration;
-    return beat;
-  });
+  const starts = derivedStarts(durations);
+  const beats = durations.map((duration, index): IndexBeat => ({
+    id: `beat_${index + 1}`,
+    index,
+    derivedStart: starts[index] ?? 0,
+    duration,
+    partial: partialOf(index),
+    lastGood: null,
+    fresh: true,
+  }));
   return { output: MOVIE, beats };
+}
+
+function partialOf(index: number): string {
+  return `C:/Users/Ana/Sine/.mathimator/cache/partial-${index}.mp4`;
+}
+
+/** `index` after an edit to beat index 0 since it rendered: its partial is still on disk, and so is the movie. */
+function dirtied(index: PreviewIndex, lastGood: string | null = null): PreviewIndex {
+  return {
+    ...index,
+    beats: index.beats.map((beat) => (beat.index === 0 ? { ...beat, fresh: false, lastGood } : beat)),
+  };
 }
 
 /** The preview's frame at `seconds` into a file. */
@@ -142,5 +159,83 @@ describe("playhead from the playing video", () => {
     expect(partial.beatIndex).toBe(1);
     expect(playheadAt(index, partial, 1.5)).toBeCloseTo(3.5, 9);
     expect(playheadAt(index, partial, 3.2)).toBe(5);
+  });
+});
+
+describe("playback (F147)", () => {
+  it("shows neither the movie nor the stale partial of a dirty beat, but a blank canvas with the badge", () => {
+    expect(playbackAt(dirtied(finished([2, 2])), 0.2)).toEqual({
+      mode: "blank",
+      badge: true,
+      path: null,
+      time: 0.2,
+      beatIndex: 0,
+    });
+  });
+
+  it("shows a dirty beat's last good partial with the badge", () => {
+    expect(playbackAt(dirtied(finished([2, 2]), LAST_GOOD), 0.2)).toMatchObject({
+      mode: "partial",
+      badge: true,
+      path: LAST_GOOD,
+      beatIndex: 0,
+    });
+  });
+
+  it("badges the fresh partial of another beat while one is dirty", () => {
+    expect(playbackAt(dirtied(finished([2, 2])), 2.2)).toMatchObject({
+      mode: "partial",
+      badge: true,
+      path: partialOf(1),
+      beatIndex: 1,
+    });
+  });
+
+  it("falls back to the beat partial when the movie file is missing", () => {
+    expect(playbackAt(finished([2, 2]), 0.2, (path) => path !== MOVIE)).toMatchObject({
+      mode: "partial",
+      badge: false,
+      path: partialOf(0),
+      beatIndex: 0,
+    });
+  });
+
+  it("shows a blank canvas with the badge when the partial file is missing", () => {
+    expect(playbackAt({ ...finished([2, 2]), output: null }, 2.2, () => false)).toMatchObject({
+      mode: "blank",
+      badge: true,
+      path: null,
+      beatIndex: 1,
+    });
+  });
+
+  it("holds the last beat past the end and shows nothing without beats", () => {
+    expect(playbackAt(finished([2, 2]), 9).beatIndex).toBe(1);
+    expect(playbackAt({ output: null, beats: [] }, 1).mode).toBe("empty");
+    expect(playbackAt(null, 1).mode).toBe("empty");
+  });
+
+  it("marks a beat fresh with its new partial and drops the stale movie when a partial arrives", () => {
+    const state: EditorState = {
+      event: "state",
+      projectPath: "C:/Users/Ana/Sine",
+      document: {
+        name: "Sine",
+        scene: { kind: "scene", camera: null, objects: [], beats: [], templateInstances: [] },
+        exportProfile: { format: "mp4", width: 1920, height: 1080, fps: 30, transparent: false },
+      },
+      derived: { starts: [0, 2], total: 4, dirty: [true, false], canUndo: false, canRedo: false },
+      index: dirtied(finished([2, 2])),
+      source: null,
+    };
+    const next = patchBeat(state, 0, "C:/new/partial-0.mp4");
+    expect(next?.index?.output).toBeNull();
+    expect(next?.index?.beats[0]).toMatchObject({ fresh: true, partial: "C:/new/partial-0.mp4" });
+    expect(next?.index?.beats[1]).toEqual(state.index?.beats[1]);
+  });
+
+  it("seeks for any scrub over a millisecond", () => {
+    expect(shouldSeek(1, 1.05)).toBe(true);
+    expect(shouldSeek(1, 1.0001)).toBe(false);
   });
 });

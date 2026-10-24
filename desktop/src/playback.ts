@@ -1,3 +1,4 @@
+import { roundMs } from "./format";
 import type { EditorState, IndexBeat, PreviewIndex } from "./types";
 
 /** The preview profile's frame rate, which is fixed (spec §1). */
@@ -27,7 +28,7 @@ export function playbackAt(
   if (!index || !beat) {
     return { mode: "empty", badge: false, path: null, time: 0, beatIndex: null };
   }
-  const offset = Math.max(0, Math.round((clamped - beat.derivedStart) * 1000) / 1000);
+  const offset = Math.max(0, roundMs(clamped - beat.derivedStart));
   /** The middle of the frame at `offset`, in the beat's own partial movie. */
   const clipTime = (frameIn(beat, offset) + 0.5) / PREVIEW_FPS;
   const allFresh = index.beats.every((item) => item.fresh);

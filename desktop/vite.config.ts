@@ -30,5 +30,14 @@ export default defineConfig({
     // Component and hook tests opt into jsdom with a `// @vitest-environment jsdom` comment.
     environment: "node",
     include: ["src/**/*.test.{ts,tsx}"],
+    // Where the junit reporter of `npm run test:ci` writes, for the CI test report.
+    outputFile: { junit: "reports/junit-vitest.xml" },
+    // Coverage is reported, never enforced (D78): the text total for the badge, Cobertura for merge request diffs.
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/main.tsx", "src/**/*.d.ts"],
+      reporter: ["text", "cobertura"],
+    },
   },
 });

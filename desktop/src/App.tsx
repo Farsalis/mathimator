@@ -14,11 +14,10 @@ import { useEditor } from "./useEditor";
 
 export function App() {
   const editor = useEditor();
-  const document = editor.state?.document ?? null;
-  const beats = document?.scene.beats ?? [];
-  const objects = document?.scene.objects ?? [];
+  const doc = editor.state?.document ?? null;
+  const beats = doc?.scene.beats ?? [];
+  const objects = doc?.scene.objects ?? [];
   const dirty = editor.state?.derived.dirty ?? [];
-  const durations = beats.map((beat) => editor.drafts[beat.id] ?? beat.duration);
   const selectedBeatId = editor.selection.kind === "beat" ? editor.selection.id : null;
   const selectedObjectId = editor.selection.kind === "object" ? editor.selection.id : null;
   const canSaveAs = editor.ready && !editor.exporting;
@@ -59,7 +58,7 @@ export function App() {
     <>
       <main className="app" inert={editor.changedPrompt !== null}>
         <TopBar
-          name={document?.name ?? "Untitled"}
+          name={doc?.name ?? "Untitled"}
           projectPath={editor.state?.projectPath ?? null}
           ready={editor.ready}
           canUndo={editor.state?.derived.canUndo === true}
@@ -127,18 +126,18 @@ export function App() {
           onTime={editor.setPlayhead}
           onPlaying={editor.setPlaying}
         />
-        {editor.codeOpen ? (
+        {editor.panel === "code" ? (
           <CodeView
             source={editor.state?.source ?? null}
             sourceError={editor.state?.sourceError}
-            onClose={() => editor.setCodeOpen(false)}
+            onClose={editor.onClosePanel}
             onExport={() => void editor.onExportCode()}
           />
-        ) : editor.noticesOpen ? (
-          <NoticesView onClose={() => editor.setNoticesOpen(false)} />
+        ) : editor.panel === "notices" ? (
+          <NoticesView onClose={editor.onClosePanel} />
         ) : (
           <Inspector
-            scene={document?.scene ?? null}
+            scene={doc?.scene ?? null}
             objects={objects}
             beats={beats}
             selectedBeatId={selectedBeatId}
@@ -152,7 +151,7 @@ export function App() {
         )}
         <Timeline
           beats={beats}
-          durations={durations}
+          durations={editor.durations}
           starts={editor.starts}
           dirty={dirty}
           selectedBeatId={selectedBeatId}
@@ -164,9 +163,9 @@ export function App() {
           onCommit={editor.onCommitDuration}
         />
         {editor.exportPath ? <p className="export-path">Export: {editor.exportPath}</p> : null}
-        {editor.presetOpen && document?.exportProfile ? (
+        {editor.presetOpen && doc?.exportProfile ? (
           <ExportPanel
-            initial={document.exportProfile}
+            initial={doc.exportProfile}
             canStart={editor.ready && beats.length > 0 && !editor.exporting}
             onStart={editor.onStartExport}
             onClose={() => editor.setPresetOpen(false)}

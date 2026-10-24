@@ -15,47 +15,7 @@ import {
   type Handshake,
   type HandshakeStep,
 } from "./jobSession";
-import { patchBeat, playbackAt, shouldSeek } from "./playback";
-import type { EditorState, PreviewIndex, WorkerEvent } from "./types";
-
-const index: PreviewIndex = {
-  output: "C:/old/preview.mp4",
-  beats: [
-    {
-      id: "beat_1",
-      index: 0,
-      derivedStart: 0,
-      duration: 2,
-      partial: "C:/old/partial-0.mp4",
-      lastGood: null,
-      fresh: false,
-    },
-    {
-      id: "beat_2",
-      index: 1,
-      derivedStart: 2,
-      duration: 2,
-      partial: "C:/old/partial-1.mp4",
-      lastGood: null,
-      fresh: true,
-    },
-  ],
-};
-
-function state(): EditorState {
-  return {
-    event: "state",
-    projectPath: "C:/project",
-    document: {
-      name: "Sine",
-      scene: { kind: "scene", camera: null, objects: [], beats: [], templateInstances: [] },
-      exportProfile: { format: "mp4", width: 1920, height: 1080, fps: 30, transparent: false },
-    },
-    derived: { starts: [], total: 0, dirty: [], canUndo: false, canRedo: false },
-    index,
-    source: null,
-  };
-}
+import type { WorkerEvent } from "./types";
 
 const idle = loaded(createHandshake());
 
@@ -363,41 +323,5 @@ describe("worker exit and the Open reset", () => {
     const shown = { ...beginPreview(idle, "preview-2"), exportPath: "C:/e/2.mp4", note: "Code exported to C:/s.py" };
     const reset = openReset(exporting(shown, "export-2"));
     expect(reset).toMatchObject({ exportPath: null, note: null, previewStale: true, preempted: false });
-  });
-});
-
-describe("playback", () => {
-  it("does not play the previous movie once a beat is dirty", () => {
-    const fresh = {
-      ...index,
-      beats: index.beats.map((beat) => ({ ...beat, fresh: true })),
-    };
-    const choice = playbackAt(fresh, 0.2, (path) => path !== fresh.output);
-    expect(choice.mode).toBe("partial");
-    expect(choice.path).toBe("C:/old/partial-0.mp4");
-  });
-
-  it("holds the last beat past the end and shows nothing without beats", () => {
-    expect(playbackAt(index, 9).beatIndex).toBe(1);
-    expect(playbackAt({ output: null, beats: [] }, 1).mode).toBe("empty");
-  });
-
-  it("uses a blank canvas when the partial file is missing", () => {
-    const choice = playbackAt(index, 2.2, () => false);
-    expect(choice.mode).toBe("blank");
-    expect(choice.path).toBeNull();
-    expect(choice.badge).toBe(true);
-  });
-
-  it("clears the stale movie path when a partial arrives", () => {
-    const next = patchBeat(state(), 0, "C:/new/partial-0.mp4");
-    expect(next?.index?.output).toBeNull();
-    expect(next?.index?.beats[0]?.fresh).toBe(true);
-    expect(next?.index?.beats[0]?.partial).toBe("C:/new/partial-0.mp4");
-  });
-
-  it("seeks for a scrub smaller than a quarter second", () => {
-    expect(shouldSeek(1, 1.05)).toBe(true);
-    expect(shouldSeek(1, 1.0001)).toBe(false);
   });
 });

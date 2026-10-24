@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { invokeShell } from "../commands";
 import { applyGlyph, NO_GLYPH, parseGlyph, type GlyphView } from "../glyph";
 import { errorMessage } from "../workerQueue";
 
@@ -35,7 +36,7 @@ export function FormulaPreview({ slot, latex }: FormulaPreviewProps) {
       generation += 1;
       request = generation;
       inFlight = true;
-      void invoke<unknown>("compile_equation_preview", { latex, slot, generation: request }).then(
+      void invokeShell("compile_equation_preview", { latex, slot, generation: request }).then(
         (value) => {
           inFlight = false;
           if (!active) {
@@ -63,7 +64,7 @@ export function FormulaPreview({ slot, latex }: FormulaPreviewProps) {
       active = false;
       window.clearTimeout(handle);
       if (inFlight) {
-        void invoke("cancel_equation_preview", { slot, generation: request });
+        void invokeShell("cancel_equation_preview", { slot, generation: request });
       }
     };
   }, [latex, slot]);

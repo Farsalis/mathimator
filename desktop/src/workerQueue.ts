@@ -1,24 +1,7 @@
-import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
+import type { ArgsOf, WorkerCommand } from "./commands";
 import { isRecord } from "./parse";
 import { parseWorkerEvent } from "./types";
-
-/** The worker-bound shell commands. Each one goes through `invokeWorker` inside a queued task (C9.2). */
-export type WorkerCommand =
-  | "get_state"
-  | "edit_document"
-  | "undo_document"
-  | "redo_document"
-  | "clear_cache"
-  | "reload_project"
-  | "overwrite_project"
-  | "new_project"
-  | "open_sample"
-  | "open_project_dialog"
-  | "save_project_as_dialog"
-  | "export_code_dialog"
-  | "render_preview"
-  | "export_movie"
-  | "cancel_render";
 
 const TIMEOUT_MESSAGE = "The worker did not answer in time.";
 
@@ -84,8 +67,8 @@ export function errorMessage(reason: unknown): string {
  * Invokes a worker-bound command and returns its success value; a cancelled dialog returns null. Throws
  * WorkerRefusal for a `rejected` reply and WorkerFailure for an `error` reply or a shell failure (D46).
  */
-export async function invokeWorker(command: WorkerCommand, args?: InvokeArgs): Promise<unknown> {
-  const reply = await invoke<unknown>(command, args).catch((reason: unknown) => {
+export async function invokeWorker<C extends WorkerCommand>(command: C, ...args: ArgsOf<C>): Promise<unknown> {
+  const reply = await invoke<unknown>(command, ...args).catch((reason: unknown) => {
     throw shellFailure(reason);
   });
   const event = parseWorkerEvent(reply);

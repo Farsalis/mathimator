@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TopBar } from "./TopBar";
 
@@ -7,7 +7,10 @@ afterEach(cleanup);
 
 const PROJECT_ACTIONS = ["new-button", "open-button", "save-as-button", "sample-button"];
 
-function renderTopBar(exporting: boolean, handlers: { onNew?: () => void; onSaveAs?: () => void } = {}): void {
+function renderTopBar(
+  exporting: boolean,
+  handlers: { onNew?: () => void; onSaveAs?: () => void; onRename?: (name: string) => Promise<void> } = {},
+): void {
   const ignore = (): void => undefined;
   render(
     <TopBar
@@ -17,7 +20,7 @@ function renderTopBar(exporting: boolean, handlers: { onNew?: () => void; onSave
       canUndo
       canRedo={false}
       exporting={exporting}
-      onRename={() => Promise.resolve()}
+      onRename={handlers.onRename ?? (() => Promise.resolve())}
       onNew={handlers.onNew ?? ignore}
       onOpen={ignore}
       onSaveAs={handlers.onSaveAs ?? ignore}
@@ -46,6 +49,7 @@ describe("TopBar", () => {
     expect(button("export-button").disabled).toBe(false);
     expect(button("export-button").textContent).toBe("Rendering export");
     expect(button("undo-button").disabled).toBe(false);
+    expect(button("redo-button").disabled).toBe(true);
   });
 
   it("enables the project actions and labels the button Export otherwise", () => {
@@ -65,5 +69,38 @@ describe("TopBar", () => {
     fireEvent.click(button("save-as-button"));
     expect(onNew).toHaveBeenCalledOnce();
     expect(onSaveAs).toHaveBeenCalledOnce();
+  });
+
+  it("renames on Enter with the trimmed name, and shows it until the rename settles", async () => {
+    let settle: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const onRename = vi.fn(() => pending);
+    renderTopBar(false, { onRename });
+    const field = screen.getByTestId<HTMLInputElement>("project-name");
+    field.focus();
+    fireEvent.change(field, { target: { value: "  Cosine " } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(onRename).toHaveBeenCalledExactlyOnceWith("Cosine");
+    expect(field.value).toBe("  Cosine ");
+    await act(async () => {
+      settle();
+      await pending;
+    });
+    expect(field.value).toBe("Sine");
+  });
+
+  it.each([
+    ["an empty name", "   "],
+    ["the same name", " Sine "],
+  ])("shows the name again for %s and sends no rename", (_, text) => {
+    const onRename = vi.fn(() => Promise.resolve());
+    renderTopBar(false, { onRename });
+    const field = screen.getByTestId<HTMLInputElement>("project-name");
+    fireEvent.change(field, { target: { value: text } });
+    fireEvent.blur(field);
+    expect(onRename).not.toHaveBeenCalled();
+    expect(field.value).toBe("Sine");
   });
 });

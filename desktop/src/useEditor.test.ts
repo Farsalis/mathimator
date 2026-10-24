@@ -304,7 +304,7 @@ describe("useEditor timeout resync", () => {
     expect(editor.selection).toEqual({ kind: "none" });
     expect(editor.playhead).toBe(0);
     expect(editor.playing).toBe(false);
-    expect(editor.codeOpen).toBe(false);
+    expect(editor.panel).toBe("inspector");
     expect(editor.drafts).toEqual({});
     expect(editor.note).toBeNull();
     expect(editor.exportPath).toBeNull();
@@ -317,7 +317,7 @@ describe("useEditor timeout resync", () => {
     expect(editor.selection).toEqual({ kind: "object", id: "plot_1" });
     expect(editor.playhead).toBe(1.5);
     expect(editor.playing).toBe(true);
-    expect(editor.codeOpen).toBe(true);
+    expect(editor.panel).toBe("code");
     expect(editor.drafts).toEqual({ beat_1: 3 });
     expect(editor.note).toBe("Code exported to C:/first/scene.py");
     expect(editor.exportPath).toBe("C:/first/scene.mp4");
@@ -485,7 +485,7 @@ describe("useEditor projects", () => {
     expect(result.current.state?.projectPath).toBe("C:/kept");
     expect(result.current.selection).toEqual({ kind: "none" });
     expect(result.current.playhead).toBe(0);
-    expect(result.current.codeOpen).toBe(false);
+    expect(result.current.panel).toBe("inspector");
     await afterDebounce();
     expect(callsOf("render_preview")).toBe(0);
   });
@@ -497,11 +497,25 @@ describe("useEditor projects", () => {
     });
     const result = await started();
     act(() => result.current.onViewCode());
-    expect(result.current.codeOpen).toBe(true);
+    expect(result.current.panel).toBe("code");
     expect(result.current.state?.source).toBe("class MainScene: ...");
     await act(() => result.current.commit(RENAME, false));
     expect(result.current.state?.source).toBe("class Renamed: ...");
     expect(commands()).toEqual(["app_status", "get_state", "edit_document"]);
+  });
+
+  it("keeps the Notices open through Save As (C9.2) and shows the Inspector after Open", async () => {
+    script({
+      get_state: [stateReply("C:/temp")],
+      save_project_as_dialog: [stateReply("C:/kept")],
+      open_project_dialog: [stateReply("C:/other")],
+    });
+    const result = await started();
+    act(() => result.current.onNotices());
+    await act(() => result.current.onSaveAs());
+    expect(result.current.panel).toBe("notices");
+    await act(() => result.current.onOpen());
+    expect(result.current.panel).toBe("inspector");
   });
 });
 
@@ -650,6 +664,30 @@ describe("useEditor export", () => {
     expect(result.current.presetOpen).toBe(false);
     emit({ event: "started", jobId: "export-1" });
     expect(result.current.note).toBe("An export is already running.");
+  });
+});
+
+describe("useEditor job ids", () => {
+  it.each([
+    ["preview", ["edit_document", "reserve_job_id"]],
+    ["export", ["reserve_job_id"]],
+  ] as const)("sends no %s when reserve_job_id does not answer with a string (C7.1)", async (job, sent) => {
+    script({ get_state: [stateReply("C:/first")], edit_document: [stateReply("C:/first")], reserve_job_id: [42] });
+    const result = await started();
+    if (job === "preview") {
+      await act(() => result.current.commit(DURATION, true));
+    } else {
+      act(() => result.current.onStartExport(PROFILE, false));
+    }
+    await waitFor(() =>
+      expect(result.current.error).toEqual({
+        code: null,
+        message: "Unexpected reply from the worker: reserve_job_id must be a string.",
+      }),
+    );
+    expect(commands().slice(2)).toEqual(sent);
+    expect(result.current.exporting).toBe(false);
+    expect(result.current.status).toBe("Ready");
   });
 });
 

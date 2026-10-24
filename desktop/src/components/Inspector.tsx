@@ -76,7 +76,7 @@ export function Inspector({
           ))}
         </ul>
         {scene?.kind === "three_d_scene" && scene.camera ? (
-          <ThreeDPanel scene={scene} camera={scene.camera} objects={objects} fieldError={fieldError} onEdit={onEdit} />
+          <ThreeDPanel scene={scene} camera={scene.camera} objects={objects} context={context} />
         ) : null}
         {beat ? <BeatFields beat={beat} onEdit={onEdit} /> : null}
         {beat && beat.action === "transform_formula"
@@ -180,15 +180,14 @@ function ThreeDPanel({
   scene,
   camera,
   objects,
-  fieldError,
-  onEdit,
+  context,
 }: {
   scene: ProjectDocument["scene"];
   camera: Camera;
   objects: SceneObject[];
-  fieldError: FieldError | null;
-  onEdit: (edit: Edit) => Promise<void>;
+  context: FieldContext;
 }) {
+  const { fieldError, onEdit } = context;
   const template = scene.templateInstances.find((item) => item.templateId === "three_d_axes");
   const mode: ThreeDMode = template?.params.mode === "curve" ? "curve" : "surface";
   const surface = objects.find((item) => item.type === "surface");
@@ -214,14 +213,13 @@ function ThreeDPanel({
       </label>
       {mode === "surface" && surface ? (
         <>
-          <CommitText
-            label="Expression"
-            value={stringParam(surface.params.expression, "sin(x)*cos(y)")}
+          <ExpressionField
+            object={surface}
+            fallback="sin(x)*cos(y)"
+            variables="x and y"
             testId="surface-expression"
-            onCommit={(expression) => onEdit({ op: "set_expression", objectId: surface.id, expression })}
+            context={context}
           />
-          <FieldMessage error={fieldError} objectId={surface.id} field="expression" />
-          <p className="hint">Natural log is log. Variables: x and y.</p>
           <CommitNumber
             label="Resolution u"
             value={resolution[0]}
@@ -350,14 +348,7 @@ function PlotFields({ object, context }: { object: SceneObject; context: FieldCo
   const { onEdit } = context;
   return (
     <>
-      <CommitText
-        label="Expression"
-        value={stringParam(object.params.expression, "sin(x)")}
-        testId="plot-expression"
-        onCommit={(expression) => onEdit({ op: "set_expression", objectId: object.id, expression })}
-      />
-      <FieldMessage error={context.fieldError} objectId={object.id} field="expression" />
-      <p className="hint">Natural log is log. Variables: x.</p>
+      <ExpressionField object={object} fallback="sin(x)" variables="x" testId="plot-expression" context={context} />
       <ColorField
         label="Color"
         value={stringParam(object.params.color, "#58C4DD")}
@@ -413,6 +404,31 @@ function FormulaFields({ object, context }: { object: SceneObject; context: Fiel
         </p>
       ) : null}
       <FormulaPreview slot={object.id} latex={draft.text} />
+      <PlacementFields object={object} onEdit={onEdit} />
+    </>
+  );
+}
+
+function TextFields({ object, context }: { object: SceneObject; context: FieldContext }) {
+  const { onEdit } = context;
+  return (
+    <>
+      <CommitText
+        label="Text"
+        value={stringParam(object.params.text, "Text")}
+        testId="text-value"
+        onCommit={(text) => onEdit({ op: "set_text", objectId: object.id, text })}
+      />
+      <FieldMessage error={context.fieldError} objectId={object.id} field="text" />
+      <PlacementFields object={object} onEdit={onEdit} />
+    </>
+  );
+}
+
+/** Where a formula or a text sits and its colour: the anchor, the colour and the shift from the anchor. */
+function PlacementFields({ object, onEdit }: { object: SceneObject; onEdit: (edit: Edit) => Promise<void> }) {
+  return (
+    <>
       <AnchorField
         value={anchorParam(object.params.anchor)}
         onCommit={(anchor) => onEdit({ op: "set_anchor", objectId: object.id, anchor })}
@@ -430,30 +446,30 @@ function FormulaFields({ object, context }: { object: SceneObject; context: Fiel
   );
 }
 
-function TextFields({ object, context }: { object: SceneObject; context: FieldContext }) {
-  const { onEdit } = context;
+/** The expression of a plot or a surface, its refusal, and the variables it may use. */
+function ExpressionField({
+  object,
+  fallback,
+  variables,
+  testId,
+  context,
+}: {
+  object: SceneObject;
+  fallback: string;
+  variables: string;
+  testId: string;
+  context: FieldContext;
+}) {
   return (
     <>
       <CommitText
-        label="Text"
-        value={stringParam(object.params.text, "Text")}
-        testId="text-value"
-        onCommit={(text) => onEdit({ op: "set_text", objectId: object.id, text })}
+        label="Expression"
+        value={stringParam(object.params.expression, fallback)}
+        testId={testId}
+        onCommit={(expression) => context.onEdit({ op: "set_expression", objectId: object.id, expression })}
       />
-      <FieldMessage error={context.fieldError} objectId={object.id} field="text" />
-      <AnchorField
-        value={anchorParam(object.params.anchor)}
-        onCommit={(anchor) => onEdit({ op: "set_anchor", objectId: object.id, anchor })}
-      />
-      <ColorField
-        label="Color"
-        value={stringParam(object.params.color, "#FFFFFF")}
-        onCommit={(color) => onEdit({ op: "set_object_color", objectId: object.id, color })}
-      />
-      <ShiftFields
-        value={pairParam(object.params.shift)}
-        onCommit={(shift) => onEdit({ op: "set_object_shift", objectId: object.id, shift })}
-      />
+      <FieldMessage error={context.fieldError} objectId={object.id} field="expression" />
+      <p className="hint">{`Natural log is log. Variables: ${variables}.`}</p>
     </>
   );
 }

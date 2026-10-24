@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_TOTAL_SECONDS, MIN_BEAT_SECONDS } from "../format";
 import type { Beat } from "../types";
 import { Timeline } from "./Timeline";
 
@@ -44,6 +45,16 @@ describe("Timeline duration drag (D48, F110)", () => {
     expect(onDraft).toHaveBeenLastCalledWith("beat_1", 3);
     fireEvent.pointerUp(handle(), { pointerId: 3, pointerType, clientX: 124 });
     expect(onCommit).toHaveBeenCalledExactlyOnceWith("beat_1", 2.5);
+  });
+
+  it("drafts whole milliseconds, from the shortest beat to the longest timeline (spec §4)", () => {
+    fireEvent.pointerDown(handle(), { pointerId: 1, clientX: 500 });
+    fireEvent.pointerMove(handle(), { pointerId: 1, clientX: 501 });
+    expect(onDraft).toHaveBeenLastCalledWith("beat_1", 2.021);
+    fireEvent.pointerMove(handle(), { pointerId: 1, clientX: 500 - 48 * 3 });
+    expect(onDraft).toHaveBeenLastCalledWith("beat_1", MIN_BEAT_SECONDS);
+    fireEvent.pointerUp(handle(), { pointerId: 1, clientX: 500 + 48 * 200 });
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith("beat_1", MAX_TOTAL_SECONDS);
   });
 
   it("ignores every pointer but the one that started the drag", () => {

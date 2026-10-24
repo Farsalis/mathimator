@@ -1,21 +1,31 @@
 import type { Beat } from "./types";
 
+/** The shortest beat, in seconds (spec §4). The worker refuses a shorter one, by document.py's MIN_BEAT_SECONDS. */
+export const MIN_BEAT_SECONDS = 0.1;
+
+/** The longest timeline, in seconds (spec §4). The worker refuses a longer one, by document.py's MAX_TOTAL_SECONDS. */
+export const MAX_TOTAL_SECONDS = 120;
+
 /** Plain decimal notation, with a dot or a comma as the decimal point: no exponent, hex, or other forms. */
 const DECIMAL = /^[+-]?(\d+([.,]\d*)?|[.,]\d+)$/;
 
-export function derivedStarts(durations: number[]): number[] {
+/** `seconds` rounded to the millisecond, the precision of the times the timeline shows and edits. */
+export function roundMs(seconds: number): number {
+  return Math.round(seconds * 1000) / 1000;
+}
+
+export function derivedStarts(durations: readonly number[]): number[] {
   const starts: number[] = [];
   let cursor = 0;
   for (const duration of durations) {
-    starts.push(Math.round(cursor * 1000) / 1000);
+    starts.push(roundMs(cursor));
     cursor += duration;
   }
   return starts;
 }
 
 export function formatSeconds(value: number): string {
-  const rounded = Math.round(value * 1000) / 1000;
-  const text = rounded.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  const text = roundMs(value).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
   if (text.includes(".")) {
     return `${text}s`;
   }
@@ -28,9 +38,9 @@ export function parseDecimal(text: string): number | null {
   return DECIMAL.test(trimmed) ? Number(trimmed.replace(",", ".")) : null;
 }
 
+/** The duration `next` for beat `beatId`, in milliseconds and inside both limits given the other beats. */
 export function clampDuration(beats: Beat[], beatId: string, next: number): number {
-  const quantized = Math.round(next * 1000) / 1000;
   const others = beats.reduce((sum, beat) => sum + (beat.id === beatId ? 0 : beat.duration), 0);
-  const max = Math.max(0.1, Math.round((120 - others) * 1000) / 1000);
-  return Math.min(max, Math.max(0.1, quantized));
+  const max = Math.max(MIN_BEAT_SECONDS, roundMs(MAX_TOTAL_SECONDS - others));
+  return Math.min(max, Math.max(MIN_BEAT_SECONDS, roundMs(next)));
 }
