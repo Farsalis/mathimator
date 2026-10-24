@@ -42,7 +42,6 @@ import contextlib
 import json
 import math
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -59,29 +58,25 @@ from typing import IO
 from mathimator_worker.argv import build_manim_argv, manim_environment, manim_interpreter, profile_size
 from mathimator_worker.clip_check import SEGMENT_SUFFIXES, ClipChecker
 from mathimator_worker.codegen import CodegenError, generate, needs_latex
-from mathimator_worker.document import (
-    MANIM_VERSION,
-    Project,
-    beat_chain_keys,
-    derived_starts,
-    dumps_project,
-    empty_project,
-    export_artifact_name,
-    export_folder_name,
-    export_key,
-    load_bytes,
-    load_text,
-    scene_hash,
-)
+from mathimator_worker.document import ProfileName, Project, dumps_project, empty_project, load_bytes, load_text
 from mathimator_worker.document_error import DocumentError
+from mathimator_worker.exports import (
+    PublishFailed,
+    existing_export,
+    find_export_output,
+    frame_count_problem,
+    publish_export,
+)
+from mathimator_worker.identity import beat_chain_keys, export_key
+from mathimator_worker.jsonio import dumps_record, read_record
+from mathimator_worker.layout import ProjectLayout
 from mathimator_worker.manim_paths import manim_root
-from mathimator_worker.preview_index import IndexBeat, PreviewIndex, load_index
+from mathimator_worker.preview_index import PreviewIndex, load_index, rebuild_index
 from mathimator_worker.process_group import terminate_process_group, warm_process_table
 from mathimator_worker.progress import ManimProgress, discard_unfinished_partials, file_stamps, written_since
 from mathimator_worker.project_folder import (
     ProjectLock,
     ProjectLocked,
-    copy_atomically,
     fingerprint,
     folder_identity,
     make_folders,
@@ -110,7 +105,6 @@ PROJECT_UNAVAILABLE = "The project folder was moved or deleted."
 PROJECT_LOCKED = "This project is open in another Mathimator window."
 PROJECT_CHANGED = "project.json was changed outside Mathimator."
 EXPORT_RUNNING = "An export is already running."
-CLOSE_AND_RETRY = "If the file is open in another program, close it and export again."
 FILES_IN_USE = (
     "Some cache files are in use and were not removed. Close other programs using this project and try again."
 )
@@ -124,25 +118,20 @@ _POLL_SECONDS = 0.1
 _DRAIN_SECONDS = 0.5
 # The output lines a failure keeps as its details (D23).
 _TAIL_LINES = 80
-# Manim's closing line for a PNG sequence. Rich may wrap the folder onto later lines, but the count stays with "images".
-_IMAGES_READY = re.compile(r"(\d+)\s+images\s+ready\s+at")
-_VIDEO_FORMATS = {".mp4": "mp4", ".gif": "gif", ".webm": "webm"}
 
 
 @dataclass
 class _Job:
     job_id: str
-    profile: str
+    profile: ProfileName
     thread: threading.Thread
     cancel: threading.Event
     # An export that skips the export cache (D56).
     force: bool = False
     proc: subprocess.Popen[str] | None = None
     win_job: int | None = None
-    project_dir: Path | None = None
-    scene_path: Path | None = None
-    media_dir: Path | None = None
-    run_marker: Path | None = None
+    # The folder the job started in. It renders and publishes there, whatever is bound later.
+    layout: ProjectLayout | None = None
     # The scene's folder, which Manim runs in and takes as its home, through the project's 8.3 alias if TeX needs it.
     manim_dir: Path | None = None
     argv: list[str] = field(default_factory=list)
@@ -176,8 +165,8 @@ class _Job:
     @property
     def video_dir(self) -> Path:
         """The quality folder Manim writes this job's partials and movie into."""
-        assert self.media_dir is not None and self.scene_path is not None
-        return self.media_dir / "videos" / self.scene_path.stem / self.quality
+        assert self.layout is not None
+        return self.layout.video_dir(self.quality)
 
 
 @dataclass
@@ -214,7 +203,8 @@ class Supervisor:
         self._manim_python, self._venv_launcher = manim_interpreter(python)
         # Resolve like _open_project does. Windows may hand over an 8.3 alias
         # such as C:\Users\JOHNSM~1, and TeX stops reading a path at "~" (G4.1).
-        self.project = project.resolve()
+        # One attribute, so a bind replaces the folder and all its paths at once.
+        self.layout = ProjectLayout(project.resolve())
         self._log_override = log_path
         self._log_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -252,8 +242,17 @@ class Supervisor:
             "export": self._export,
             "cancel": self._cancel,
         }
-        self._bind_paths()
         self._start(init)
+
+    @property
+    def project(self) -> Path:
+        """The folder the worker is bound to, or would bind at startup."""
+        return self.layout.root
+
+    @property
+    def log_path(self) -> Path:
+        """The ``--log`` file, or else the bound folder's worker.log."""
+        return self._log_override if self._log_override is not None else self.layout.log_path
 
     def _start(self, init: bool) -> None:
         """Bind the startup folder in the order of C8.2. A refusal leaves the worker unbound and serving."""
@@ -262,7 +261,7 @@ class Supervisor:
             # Nothing is created, and the log goes to stderr (G1.3).
             self._startup_error = DocumentError(PROJECT_UNAVAILABLE, code="project_unavailable")
             return
-        if not init and not self.project_file.exists():
+        if not init and not self.layout.project_file.exists():
             self._handwritten = True
             self._startup_error = DocumentError(NOT_A_PROJECT, code="not_a_project")
             self._sweep_interrupted_run()
@@ -290,35 +289,21 @@ class Supervisor:
             if self._binding is not None:
                 self._binding.lock.release()
 
-    def _bind_paths(self) -> None:
-        root = self.project / ".mathimator"
-        self.scene_path = root / "codegen" / "scene.py"
-        self.media_dir = root / "cache" / "media"
-        self.last_good_dir = root / "cache" / "last-good"
-        self.rendered_path = root / "cache" / "rendered.json"
-        self.index_path = root / "cache" / "preview-index.json"
-        self.run_marker = root / "cache" / "manim-run.json"
-        self.project_file = self.project / "project.json"
-        if self._log_override is not None:
-            self.log_path = self._log_override
-        else:
-            self.log_path = root / "logs" / "worker.log"
-
     def _sweep_interrupted_run(self) -> None:
         """Remove what a Manim run cut off by a quit, a crash or a kill left behind (G1.1)."""
-        started = _marker_start(self.run_marker)
+        started = _marker_start(self.layout.run_marker)
         if started is None:
             return
         self.log(f"sweeping media from an interrupted run started={started}")
         try:
-            removed = discard_unfinished_partials(self.media_dir, started, set())
+            removed = discard_unfinished_partials(self.layout.media_dir, started, set())
         except OSError as exc:
             # The marker stays, so the next bind sweeps again.
-            self.log(f"could not sweep {self.media_dir}: {exc}")
+            self.log(f"could not sweep {self.layout.media_dir}: {exc}")
             return
         for path in removed:
             self.log(f"removed unfinished media {path}")
-        self._remove_run_marker(self.run_marker)
+        self._remove_run_marker(self.layout.run_marker)
 
     def _warm_process_control(self) -> None:
         try:
@@ -343,7 +328,7 @@ class Supervisor:
 
     def _append_log_locked(self, line: str) -> bool:
         """Append ``line`` to the log file. Return False when there is none or it cannot take the line."""
-        # Read once: a bind on another thread changes the project and then its log path.
+        # Read once: log_path comes from the layout, which a bind on another thread may swap.
         log_path = self.log_path
         if self._log_override is None:
             if self._binding is None and not self._handwritten:
@@ -431,7 +416,7 @@ class Supervisor:
         folder keeps its lock. A refusal raises DocumentError after undoing
         what the attempt created.
         """
-        project_file = folder / "project.json"
+        project_file = ProjectLayout(folder).project_file
         with contextlib.ExitStack() as undo:
             bound = self._binding
             if bound is not None and bound.identity == identity:
@@ -466,13 +451,12 @@ class Supervisor:
         whole, with its lock still held (D03, F005).
         """
         previous, old_session = self._binding, self.session
-        kept = (self.project, previous, old_session, self._index, self._handwritten, self._startup_error)
+        kept = (self.layout, previous, old_session, self._index, self._handwritten, self._startup_error)
         try:
-            self.project, self._binding, self.session = folder, binding, session
+            self.layout, self._binding, self.session = ProjectLayout(folder), binding, session
             self._handwritten = False
             self._startup_error = None
-            self._bind_paths()
-            if not self._render_running_in(self.media_dir):
+            if not self._render_running_in(self.layout):
                 self._sweep_interrupted_run()
             if session is not old_session:
                 session.load_rendered(self._read_rendered())
@@ -480,8 +464,7 @@ class Supervisor:
             self._rebuild_index_locked()
             self._save_sidecars_locked()
         except BaseException:
-            self.project, self._binding, self.session, self._index, self._handwritten, self._startup_error = kept
-            self._bind_paths()
+            self.layout, self._binding, self.session, self._index, self._handwritten, self._startup_error = kept
             raise
         self._generation += 1
         if previous is not None and previous.lock is not binding.lock:
@@ -596,7 +579,7 @@ class Supervisor:
         init = request.flag("init")
         # An empty path names no folder, although Path("") is the working directory.
         identity = folder_identity(folder) if raw_path else None
-        if identity is None or not (init or (folder / "project.json").exists()):
+        if identity is None or not (init or ProjectLayout(folder).project_file.exists()):
             self._reject(request.id, "not_a_project", NOT_A_PROJECT)
             return
         try:
@@ -674,8 +657,9 @@ class Supervisor:
                 lock = ProjectLock.acquire(target)
                 undo.callback(lock.discard)
                 self._stop_previews()
-                write_atomically(target / "project.json", data)
-                undo.callback(remove_quietly, target / "project.json")
+                project_file = ProjectLayout(target).project_file
+                write_atomically(project_file, data)
+                undo.callback(remove_quietly, project_file)
                 self._copy_cache_to(target, session)
                 rollback = undo.pop_all()
         except OSError as exc:
@@ -708,23 +692,23 @@ class Supervisor:
         generated code, the glyph files, the logs, the lock or a temp-project
         marker.
         """
-        exports = self.project / ".mathimator" / "exports"
-        for source in (self.media_dir, self.last_good_dir, exports):
+        layout = self.layout
+        for source in (layout.media_dir, layout.last_good_dir, layout.exports_dir):
             if not source.is_dir():
                 continue
             try:
-                shutil.copytree(source, target / source.relative_to(self.project))
+                shutil.copytree(source, target / source.relative_to(layout.root))
             except shutil.Error as exc:
                 # copytree reports each file it could not copy as text. The first one says why.
                 raise OSError(exc.args[0][0][2]) from exc
         with self._doc_lock:
-            records: dict[Path, object] = {self.rendered_path: session.rendered_payload()}
+            records: dict[Path, object] = {layout.rendered_path: session.rendered_payload()}
             if self._index is not None:
-                records[self.index_path] = self._index.stored(self.project)
+                records[layout.index_path] = self._index.stored(layout.root)
         for path, value in records.items():
-            copy = target / path.relative_to(self.project)
+            copy = target / path.relative_to(layout.root)
             make_folders(target, copy.parent)
-            copy.write_text(_record_text(value), encoding="utf-8", newline="\n")
+            copy.write_text(dumps_record(value), encoding="utf-8", newline="\n")
 
     def _export_running(self) -> bool:
         with self._state_lock:
@@ -814,7 +798,7 @@ class Supervisor:
         job.thread.join(timeout=max(0.0, told + 1 - time.monotonic()))
         return not job.thread.is_alive()
 
-    def _new_job(self, job_id: str, profile: str, *, force: bool = False) -> _Job:
+    def _new_job(self, job_id: str, profile: ProfileName, *, force: bool = False) -> _Job:
         job = _Job(job_id, profile, threading.Thread(), threading.Event(), force=force)
         job.thread = threading.Thread(
             target=self._run_job,
@@ -932,10 +916,9 @@ class Supervisor:
             if not isinstance(exc, FileNotFoundError):
                 left.append(f"{path}: {exc}")
 
-        state = self.project / ".mathimator"
-        for name in ("cache", "codegen", "equation", "typst"):
-            shutil.rmtree(state / name, onexc=collect)
-        logs = state / "logs"
+        for folder in self.layout.derived_dirs:
+            shutil.rmtree(folder, onexc=collect)
+        logs = self.layout.log_path.parent
         if logs.is_dir():
             for child in list(logs.iterdir()):
                 if child == self.log_path:
@@ -990,10 +973,10 @@ class Supervisor:
             self.log(f"starting held {held.profile} {held.job_id}")
             self._launch_locked(held)
 
-    def _render_running_in(self, media_dir: Path) -> bool:
+    def _render_running_in(self, layout: ProjectLayout) -> bool:
         with self._state_lock:
             current = self._current
-            return current is not None and current.media_dir == media_dir
+            return current is not None and current.layout == layout
 
     def _run_job_inner(self, job: _Job) -> None:
         with self._doc_lock:
@@ -1006,8 +989,8 @@ class Supervisor:
         self.log("argv: " + json.dumps(argv))
         if job.cancel.is_set():
             return
-        marker = job.run_marker
-        assert marker is not None
+        assert job.layout is not None
+        marker = job.layout.run_marker
         if not self._write_run_marker(job, marker, time.time()):
             return
         try:
@@ -1024,10 +1007,9 @@ class Supervisor:
         TeX source or DVI file it finds there, so a shared project could plant
         one that reads local files past the formula allowlist (D18, F076).
         """
-        media_dir = job.media_dir
-        scene_path = job.scene_path
-        assert media_dir is not None and scene_path is not None
-        tex = media_dir / "Tex"
+        layout = job.layout
+        assert layout is not None
+        tex = layout.media_dir / "Tex"
         try:
             _remove_tex_inputs(tex)
         except OSError as exc:
@@ -1035,14 +1017,14 @@ class Supervisor:
             self._end(job, error(job.job_id, "render_failed", message))
             return False
         if job.output_format == "png_sequence":
-            frames = png_frames_dir(media_dir, scene_path.stem)
+            frames = layout.png_frames_dir
             try:
                 _remove_tree(frames)
             except OSError as exc:
                 message = f"could not remove the old PNG frames in {frames}: {exc}"
                 self._end(job, error(job.job_id, "render_failed", message))
                 return False
-        self._drop_incomplete_clips(partial_movie_dir(media_dir, scene_path.stem, job.quality))
+        self._drop_incomplete_clips(layout.partial_movie_dir(job.quality))
         return True
 
     def _drop_incomplete_clips(self, folder: Path) -> None:
@@ -1080,7 +1062,8 @@ class Supervisor:
             self.log(f"could not remove {marker}: {exc}")
 
     def _run_manim(self, job: _Job, argv: list[str]) -> None:
-        assert job.media_dir is not None and job.manim_dir is not None
+        assert job.layout is not None and job.manim_dir is not None
+        tex = job.layout.media_dir / "Tex"
         if sys.platform == "win32":
             # start_new_session is ignored on Windows, so the grandchild would
             # stay in this console and could open its own window. A new process
@@ -1097,7 +1080,7 @@ class Supervisor:
             start_new_session = True
         # What the folders hold before Manim starts, which tells the files this run writes.
         progress = ManimProgress(job.video_dir, self._clips, job.ready, job.waiting)
-        tex_logs = file_stamps(job.media_dir / "Tex", "*.log")
+        tex_logs = file_stamps(tex, "*.log")
         try:
             proc = subprocess.Popen(
                 argv,
@@ -1133,7 +1116,7 @@ class Supervisor:
             # Manim may have been killed from outside or crashed natively, so
             # its newest partial can be cut off (G1.1).
             self._discard(progress)
-            tex_log = failed_tex_log(written_since(tex_logs, file_stamps(job.media_dir / "Tex", "*.log")))
+            tex_log = failed_tex_log(written_since(tex_logs, file_stamps(tex, "*.log")))
             message = format_render_failure(return_code, output, tex_log)
             self._end(job, error(job.job_id, "render_failed", message, output.rstrip() or None))
         else:
@@ -1224,7 +1207,7 @@ class Supervisor:
             self._end(job, error(job.job_id, "render_failed", "manim exited 0 without a movie"))
             return
         if job.output_format == "png_sequence":
-            problem = _frame_count_problem(movie, output)
+            problem = frame_count_problem(movie, output)
             if problem is not None:
                 self._end(job, error(job.job_id, "render_failed", problem))
                 return
@@ -1246,7 +1229,8 @@ class Supervisor:
             if not self._may_report_locked(job):
                 return
             if job.capture_keys is not None:
-                self._record_locked(job, beats)
+                assert self._index is not None
+                self._index.record(beats, job.capture_keys)
                 self._write_index_locked()
             self._emit_beats(job, beats)
 
@@ -1259,7 +1243,7 @@ class Supervisor:
         with self._doc_lock:
             if self._may_report_locked(job):
                 if job.capture_keys is not None and self.session is not None and self._index is not None:
-                    self._record_locked(job, enumerate(segments))
+                    self._index.record(enumerate(segments), job.capture_keys)
                     self._index.output = str(movie)
                     self.session.mark_rendered("preview")
                     self._save_sidecars_locked()
@@ -1286,17 +1270,6 @@ class Supervisor:
         """Whether ``job`` renders the document open now, beat for beat. Caller holds ``_doc_lock``."""
         return self.session is not None and job.capture_keys == beat_chain_keys(self.session.project, "preview")
 
-    def _record_locked(self, job: _Job, beats: Iterable[tuple[int, Path]]) -> None:
-        """Make each partial the fresh file of its beat, tagged with the key it was rendered for (F034, F135)."""
-        assert self._index is not None and job.capture_keys is not None
-        for index, path in beats:
-            if index >= len(self._index.beats):
-                continue
-            beat = self._index.beats[index]
-            beat.partial, beat.partial_key, beat.fresh = str(path), job.capture_keys[index], True
-            # A fresh partial replaces the older last good file (F034).
-            beat.last_good = beat.last_good_key = None
-
     def _emit_beats(self, job: _Job, beats: Iterable[tuple[int, Path]]) -> None:
         for index, path in beats:
             self.emit({"event": "beat_ready", "jobId": job.job_id, "beatIndex": index, "path": str(path)})
@@ -1310,49 +1283,23 @@ class Supervisor:
             # Hand-written mode: Manim's own output, with no copy in exports/ and no current (C7.7).
             self._end(job, {"event": "done", "jobId": job.job_id, "path": str(movie)})
             return
+        assert job.layout is not None
         try:
-            published = self._publish_export(job, movie)
-        except _PublishFailed as exc:
+            # Outside the document lock, so edits do not wait for the copy (F031, F164).
+            published = publish_export(job.layout, captured, movie, job.quality)
+        except PublishFailed as exc:
             self._end(job, error(job.job_id, "publish_failed", str(exc)))
             return
         with self._doc_lock:
             current = self.session is not None and export_key(captured) == export_key(self.session.project)
         self._end(job, {"event": "done", "jobId": job.job_id, "path": str(published), "current": current})
 
-    def _publish_export(self, job: _Job, movie: Path) -> Path:
-        """Copy the finished export and its export.json into ``exports/<key16>/``. Return the published path.
-
-        Only the job's own data and ``exports/`` are touched, so this runs
-        outside the document lock and edits do not wait for the copy (F031,
-        F164). The copy replaces the older file of the same key only once it
-        is whole, and export.json is written after it, so a failure leaves
-        both as they were (C7.2). Raises _PublishFailed with the message.
-        """
-        captured, project_dir = job.captured, job.project_dir
-        assert captured is not None and project_dir is not None
-        folder = project_dir / ".mathimator" / "exports" / export_folder_name(captured)
-        target = folder / export_artifact_name(captured.export_profile.format)
-        problem = _export_problem(job, movie, target)
-        if problem is not None:
-            raise _PublishFailed(f"Could not save the export to {target}: {problem}.")
-        try:
-            make_folders(project_dir, folder)
-            copy_atomically(movie, target)
-            write_atomically(folder / "export.json", _record_text(_export_manifest(captured)).encode("utf-8"))
-        except OSError as exc:
-            reason = f"Could not save the export to {target}: {os_reason(exc)}. {CLOSE_AND_RETRY}"
-            raise _PublishFailed(reason) from exc
-        return target
-
     def _prepare_job_locked(self, job: _Job) -> bool:
         """Run the start checks of C7.2 in order, then write the scene and the argv.
 
         Return False when the job has ended without Manim.
         """
-        job.project_dir = self.project
-        job.scene_path = self.scene_path
-        job.media_dir = self.media_dir
-        job.run_marker = self.run_marker
+        layout = job.layout = self.layout
         job.generation = self._generation
         if self.session is None:
             return self._prepare_handwritten_locked(job)
@@ -1365,18 +1312,18 @@ class Supervisor:
             latex = needs_latex(project)
             if latex and self._tex_error is not None:
                 raise DocumentError(self._tex_error, code="tex_unavailable")
-            root = manim_root(self.project, latex=latex)
+            root = manim_root(layout.root, latex=latex)
         except DocumentError as exc:
             self._end(job, _refusal(job.job_id, exc))
             return False
-        make_folders(self.project, self.media_dir)
+        make_folders(layout.root, layout.media_dir)
         export_format = "mp4"
         export_transparent = False
         if job.profile == "export":
             export_format = project.export_profile.format
             export_transparent = project.export_profile.transparent
             # Re-export skips the cache; the older file stays until the new one replaces it (D56).
-            existing = None if job.force else self._existing_export_locked(project)
+            existing = None if job.force else existing_export(layout, project)
             if existing is not None:
                 self.log("export cache hit")
                 self._end(job, {"event": "done", "jobId": job.job_id, "path": str(existing), "current": True})
@@ -1385,15 +1332,15 @@ class Supervisor:
         # module that shadows one Manim imports. Manim imports scene.py from
         # this folder, and runs in it, so it holds nothing but the scene just
         # written (F170, D60).
-        codegen = self.scene_path.parent
+        codegen = layout.scene_path.parent
         try:
             _remove_tree(codegen)
-            make_folders(self.project, codegen)
-            self.scene_path.write_text(source, encoding="utf-8", newline="\n")
+            make_folders(layout.root, codegen)
+            layout.scene_path.write_text(source, encoding="utf-8", newline="\n")
         except OSError as exc:
-            self._end(job, error(job.job_id, "render_failed", f"could not write {self.scene_path}: {exc}"))
+            self._end(job, error(job.job_id, "render_failed", f"could not write {layout.scene_path}: {exc}"))
             return False
-        job.manim_dir = root / codegen.relative_to(self.project)
+        job.manim_dir = root / codegen.relative_to(layout.root)
         job.captured = load_text(dumps_project(project))
         if job.profile == "preview":
             width = project.preview_profile.width
@@ -1429,101 +1376,52 @@ class Supervisor:
             # D42: a project.json that was refused never renders a scene.py left from before.
             self._end(job, self._no_project(job.job_id))
             return False
-        if not self.scene_path.is_file():
-            message = f"No project is open, and {self.scene_path} does not exist."
+        layout = self.layout
+        if not layout.scene_path.is_file():
+            message = f"No project is open, and {layout.scene_path} does not exist."
             self._end(job, rejected(job.job_id, "no_project", message))
             return False
-        make_folders(self.project, self.media_dir)
+        make_folders(layout.root, layout.media_dir)
         _width, height, fps = profile_size(job.profile)
         job.quality = f"{height}p{fps}"
-        job.manim_dir = self.scene_path.parent
+        job.manim_dir = layout.scene_path.parent
         job.argv = build_manim_argv(self._manim_python, job.profile)
         return True
-
-    def _existing_export_locked(self, project: Project) -> Path | None:
-        folder = self.project / ".mathimator" / "exports" / export_folder_name(project)
-        manifest_path = folder / "export.json"
-        artifact = folder / export_artifact_name(project.export_profile.format)
-        if project.export_profile.format == "png_sequence":
-            ready = artifact.is_dir() and any(artifact.glob("*.png"))
-        else:
-            ready = artifact.is_file()
-        if not ready or not manifest_path.is_file():
-            return None
-        manifest = _read_record(manifest_path)
-        if not isinstance(manifest, dict) or manifest.get("exportKey") != export_key(project):
-            return None
-        return artifact
 
     def _copy_last_good_locked(self) -> None:
         """Copy each stale beat's newest file into last-good/, where the next render cannot replace it (spec §6)."""
         if self._index is None:
             return
-        make_folders(self.project, self.last_good_dir)
+        layout = self.layout
+        make_folders(layout.root, layout.last_good_dir)
         for beat in self._index.beats:
             if beat.fresh or beat.last_good is None:
                 continue
             source = Path(beat.last_good)
             # Reading the index kept only paths inside these folders; check again before reading the file (F035).
-            if not any(source.is_relative_to(folder) for folder in (self.media_dir, self.last_good_dir)):
+            if not any(source.is_relative_to(folder) for folder in (layout.media_dir, layout.last_good_dir)):
                 continue
             if not source.is_file():
                 continue
-            dest = self.last_good_dir / f"{beat.id}.mp4"
+            dest = layout.last_good_dir / f"{beat.id}.mp4"
             if source.resolve() != dest.resolve():
                 shutil.copyfile(source, dest)
             beat.last_good = str(dest)
 
     def _rebuild_index_locked(self) -> None:
-        """Fit the preview index to the document (F010, F034, F135).
-
-        A beat is fresh when one of its files was rendered for it as it is
-        now, that is, for its chain key. A stale beat keeps its newest file as
-        last good, which the canvas shows under the badge until a new partial
-        is ready. Only a complete clip counts (C14 Q3). The full movie stays
-        only while every beat is fresh and it is the render of this very
-        document.
-        """
+        """Fit the preview index to the document (``preview_index.rebuild_index``). Caller holds ``_doc_lock``."""
         session = self.session
         if session is None:
             self._index = None
             return
         project = session.project
-        previous = {beat.id: beat for beat in self._index.beats} if self._index is not None else {}
-        keys = beat_chain_keys(project, "preview")
-        starts = derived_starts([beat.duration for beat in project.scene.beats])
-        beats: list[IndexBeat] = []
-        for index, beat in enumerate(project.scene.beats):
-            prior = previous.get(beat.id)
-            # The beat's files, newest first.
-            files: list[tuple[str | None, str | None]] = []
-            if prior is not None:
-                files = [(prior.partial, prior.partial_key), (prior.last_good, prior.last_good_key)]
-            usable = [(path, key) for path, key in files if path is not None and self._clips.complete(Path(path))]
-            current = next(((path, key) for path, key in usable if key == keys[index]), None)
-            partial, partial_key = current if current is not None else (None, None)
-            last_good, last_good_key = usable[0] if current is None and usable else (None, None)
-            beats.append(
-                IndexBeat(
-                    id=beat.id,
-                    index=index,
-                    derived_start=float(starts[index]),
-                    duration=float(beat.duration),
-                    partial=partial,
-                    last_good=last_good,
-                    fresh=current is not None,
-                    partial_key=partial_key,
-                    last_good_key=last_good_key,
-                )
-            )
-        output = self._index.output if self._index is not None else None
-        if output is not None and not (
-            all(beat.fresh for beat in beats)
-            and session.output_current("preview")
-            and self._clips.complete(Path(output))
-        ):
-            output = None
-        self._index = PreviewIndex(output=output, beats=beats)
+        self._index = rebuild_index(
+            self._index,
+            project.scene.beats,
+            beat_chain_keys(project, "preview"),
+            self._clips.complete,
+            lambda: session.output_current("preview"),
+        )
 
     def _check_root_locked(self) -> _Binding:
         """Check 1 of C8.1: the bound folder is still there, with the identity it was bound with (D57)."""
@@ -1535,14 +1433,14 @@ class Supervisor:
     def _check_file_locked(self) -> _Binding:
         """Checks 1 and 2 of C8.1: the folder, and a project.json in it."""
         binding = self._check_root_locked()
-        if not self.project_file.exists():
+        if not self.layout.project_file.exists():
             raise DocumentError(PROJECT_UNAVAILABLE, code="project_unavailable")
         return binding
 
     def _read_disk_locked(self) -> tuple[_Binding, bytes]:
         """Checks 1 to 3 of C8.1: the folder, then the bytes of its project.json (G5.9)."""
         binding = self._check_file_locked()
-        return binding, _read_project_bytes(self.project_file)
+        return binding, _read_project_bytes(self.layout.project_file)
 
     def _check_disk_locked(self) -> _Binding:
         """The checks of C8.1 before a write or a render, ending with the fingerprint (D59)."""
@@ -1560,7 +1458,7 @@ class Supervisor:
         binding = self._check_file_locked() if overwrite else self._check_disk_locked()
         data = payload.encode("utf-8")
         try:
-            write_atomically(self.project_file, data)
+            write_atomically(self.layout.project_file, data)
         except OSError as exc:
             raise _save_failed(exc) from exc
         binding.fingerprint = fingerprint(data)
@@ -1568,71 +1466,34 @@ class Supervisor:
     def _save_sidecars_locked(self) -> None:
         if self.session is None:
             return
-        self._write_record(self.rendered_path, self.session.rendered_payload())
+        self._write_record(self.layout.rendered_path, self.session.rendered_payload())
         self._write_index_locked()
 
     def _write_index_locked(self) -> None:
         if self._index is None:
             return
-        self._write_record(self.index_path, self._index.stored(self.project))
+        self._write_record(self.layout.index_path, self._index.stored(self.project))
 
     def _write_record(self, path: Path, value: object) -> None:
         """Write one cache record. A record that cannot be written is logged, not fatal (C8.1)."""
         try:
             make_folders(self.project, path.parent)
-            path.write_text(_record_text(value), encoding="utf-8", newline="\n")
+            path.write_text(dumps_record(value), encoding="utf-8", newline="\n")
         except OSError as exc:
             self.log(f"could not write {path}: {exc}")
 
     def _read_rendered(self) -> object:
-        return _read_record(self.rendered_path)
+        return read_record(self.layout.rendered_path)
 
     def _read_index(self) -> PreviewIndex | None:
         """The stored index, keeping only paths inside this project's media and last-good folders (D18, F035)."""
-        return load_index(_read_record(self.index_path), self.project, (self.media_dir, self.last_good_dir))
+        layout = self.layout
+        return load_index(read_record(layout.index_path), layout.root, (layout.media_dir, layout.last_good_dir))
 
     def _find_output(self, job: _Job) -> Path | None:
-        if job.scene_path is None or job.media_dir is None or not job.quality:
+        if job.layout is None or not job.quality:
             return None
-        return find_export_output(job.media_dir, job.scene_path.stem, job.quality, job.output_format)
-
-
-def find_export_output(media_dir: Path, scene_stem: str, quality: str, fmt: str) -> Path | None:
-    """Locate the primary artifact Manim wrote for one export format.
-
-    GIF files are named ``MainScene_ManimCE_v<version>.gif``. MP4 and WebM use
-    ``MainScene.<ext>``. PNG sequence is the ``images/<stem>/MainScene`` directory.
-    A preview MP4 in ``480p15`` is not returned for another format.
-    """
-    if fmt == "png_sequence":
-        images = png_frames_dir(media_dir, scene_stem)
-        if images.is_dir() and any(images.glob("*.png")):
-            return images
-        return None
-    extensions = {"mp4": ".mp4", "gif": ".gif", "webm": ".webm"}
-    extension = extensions.get(fmt)
-    if extension is None:
-        return None
-    folder = media_dir / "videos" / scene_stem / quality
-    if not folder.is_dir():
-        return None
-    exact = folder / f"MainScene{extension}"
-    if exact.is_file():
-        return exact
-    matches = [path for path in folder.glob(f"MainScene*{extension}") if path.is_file()]
-    if not matches:
-        return None
-    matches.sort(key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
-    return matches[0]
-
-
-def png_frames_dir(media_dir: Path, scene_stem: str) -> Path:
-    """Manim writes every PNG sequence here, whatever its size or frame rate."""
-    return media_dir / "images" / scene_stem / "MainScene"
-
-
-def partial_movie_dir(media_dir: Path, scene_stem: str, quality: str) -> Path:
-    return media_dir / "videos" / scene_stem / quality / "partial_movie_files" / "MainScene"
+        return find_export_output(job.layout, job.quality, job.output_format)
 
 
 def _segments(folder: Path) -> list[Path]:
@@ -1640,70 +1501,6 @@ def _segments(folder: Path) -> list[Path]:
     if not folder.is_dir():
         return []
     return [path for path in folder.iterdir() if path.suffix.lower() in SEGMENT_SUFFIXES and path.is_file()]
-
-
-def _frame_count_problem(frames: Path, output: str) -> str | None:
-    """Describe why a PNG sequence cannot be published, or return None (F021).
-
-    The frames in the folder must be as many as Manim reports in ``output``,
-    the last lines it wrote, which guards against frames left from before.
-    """
-    written = sum(1 for _ in frames.glob("*.png"))
-    reported = _IMAGES_READY.findall(output)
-    if not reported:
-        return f"manim did not report how many PNG frames it wrote to {frames}"
-    if written != int(reported[-1]):
-        return f"manim reported {reported[-1]} PNG frames, but {frames} holds {written}"
-    return None
-
-
-class _PublishFailed(Exception):
-    """A finished export that could not be published. The message is for the user (C5.2)."""
-
-
-def _export_problem(job: _Job, movie: Path, target: Path) -> str | None:
-    """Why ``movie`` must not be published as ``job``'s export at ``target``, or None (the preview-file guard).
-
-    The path is judged below the media folder only, so a user folder named
-    480p15 above the project does not look like the preview (G4.9).
-    """
-    assert job.captured is not None and job.media_dir is not None
-    fmt = job.captured.export_profile.format
-    try:
-        parts = movie.resolve().relative_to(job.media_dir.resolve()).parts
-    except ValueError:
-        return "the render is not in the project's media folder"
-    if fmt == "png_sequence":
-        if not movie.is_dir() or not any(movie.glob("*.png")):
-            return "the render holds no PNG frames"
-        # A preview movie lives under 480p15. PNG frames do not, unless a caller hands that folder over by mistake.
-        return "the render is the preview" if "480p15" in parts else None
-    if job.quality not in parts or ("480p15" in parts and job.quality != "480p15"):
-        return "the render is the preview"
-    if not movie.is_file() or _VIDEO_FORMATS.get(movie.suffix.lower()) != fmt:
-        return f"the render is not a {fmt.upper()} file"
-    if movie.resolve() == target.resolve():
-        return "the render is the published file itself"
-    return None
-
-
-def _export_manifest(captured: Project) -> dict[str, object]:
-    """The export.json beside a published export, which makes it the export of its key."""
-    profile = captured.export_profile
-    return {
-        "exportKey": export_key(captured),
-        "manimVersion": MANIM_VERSION,
-        "generatorVersion": captured.generator_version,
-        "sceneHash": scene_hash(captured),
-        "file": export_artifact_name(profile.format),
-        "profile": {
-            "format": profile.format,
-            "width": profile.width,
-            "height": profile.height,
-            "fps": profile.fps,
-            "transparent": profile.transparent,
-        },
-    }
 
 
 def _read_project_bytes(project_file: Path) -> bytes:
@@ -1742,10 +1539,6 @@ def _save_as_failed(target: Path, reason: str) -> str:
     return f"Could not save the project to {target}: {reason}."
 
 
-def _record_text(value: object) -> str:
-    return json.dumps(value, indent=2) + "\n"
-
-
 def _refusal(job_id: str, exc: DocumentError) -> dict[str, object]:
     return rejected(job_id, exc.code, str(exc), exc.field)
 
@@ -1756,14 +1549,6 @@ def _scene_source(project: Project) -> str:
         return generate(project)
     except CodegenError as exc:
         raise DocumentError(str(exc)) from exc
-
-
-def _read_record(path: Path) -> object:
-    """The JSON in a cache record, or None when it is missing or unreadable, which rebuilds the record."""
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):
-        return None
 
 
 def _marker_start(marker: Path) -> float | None:

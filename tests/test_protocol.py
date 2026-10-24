@@ -94,7 +94,7 @@ def test_a_malformed_request_is_a_bad_request(
     assert ready["event"] == "ready"
 
 
-@pytest.mark.parametrize("edit", [{"op": "no_such_op"}, {}, {"op": 5}])
+@pytest.mark.parametrize("edit", [{"op": "no_such_op"}, {}, {"op": 5}, {"op": ["set_text"]}])
 def test_a_bad_edit_op_is_an_invalid_edit_refusal(
     edit: dict[str, object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout
 ) -> None:
@@ -116,7 +116,7 @@ def test_an_unexpected_failure_is_internal_and_changes_nothing(
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
     _send(supervisor, cmd="edit", id="rename", edit={"op": "set_project_name", "name": "Renamed"})
-    saved = supervisor.project_file.read_bytes()
+    saved = supervisor.layout.project_file.read_bytes()
 
     def broken(*args: object) -> None:
         raise RuntimeError("handler bug")
@@ -133,7 +133,7 @@ def test_an_unexpected_failure_is_internal_and_changes_nothing(
     }
     assert ready["event"] == "ready"
     assert _undo_depth(supervisor) == 1
-    assert supervisor.project_file.read_bytes() == saved
+    assert supervisor.layout.project_file.read_bytes() == saved
     log = supervisor.log_path.read_text(encoding="utf-8")
     assert "edit e failed\nTraceback (most recent call last):" in log
     assert "RuntimeError: handler bug" in log
@@ -144,7 +144,7 @@ def test_a_change_that_cannot_be_saved_is_not_applied(
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
     _send(supervisor, cmd="edit", id="rename", edit={"op": "set_project_name", "name": "Renamed"})
-    saved = supervisor.project_file.read_bytes()
+    saved = supervisor.layout.project_file.read_bytes()
 
     def locked(source: object, target: object) -> None:
         raise PermissionError(13, "The file is in use")
@@ -159,11 +159,11 @@ def test_a_change_that_cannot_be_saved_is_not_applied(
     assert supervisor.session is not None
     assert supervisor.session.project.name == "Renamed"
     assert (_undo_depth(supervisor), supervisor.session.can_redo()) == (1, False)
-    assert supervisor.project_file.read_bytes() == saved
+    assert supervisor.layout.project_file.read_bytes() == saved
     assert sorted(path.name for path in supervisor.project.iterdir()) == [".mathimator", "project.json"]
     _send(supervisor, cmd="undo", id="undo-again")
     assert stdout.last()["event"] == "state"
-    assert json.loads(supervisor.project_file.read_text(encoding="utf-8"))["name"] == "Sine introduction"
+    assert json.loads(supervisor.layout.project_file.read_text(encoding="utf-8"))["name"] == "Sine introduction"
 
 
 def test_a_reply_json_cannot_hold_becomes_an_internal_error(
@@ -191,7 +191,7 @@ def test_the_log_never_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     supervisor = _supervisor(tmp_path / "project", monkeypatch)
-    supervisor.log_path = tmp_path
+    monkeypatch.setattr(supervisor, "_log_override", tmp_path)
     supervisor.log("a folder cannot take this line")
     assert "a folder cannot take this line" in capsys.readouterr().err
 
@@ -306,9 +306,9 @@ def test_a_switch_that_fails_part_way_keeps_the_old_binding(
     renamed, failed, state, undone = stdout.read()
     assert (failed["event"], failed["jobId"], failed["code"]) == ("error", "open", "internal")
     assert {**state, "jobId": "rename", "changed": True} == renamed
-    assert supervisor.project_file == first.resolve() / "project.json"
+    assert supervisor.layout.project_file == first.resolve() / "project.json"
     assert (undone["event"], undone["document"]["name"]) == ("state", "Sine introduction")
-    assert json.loads(supervisor.project_file.read_text(encoding="utf-8"))["name"] == "Sine introduction"
+    assert json.loads(supervisor.layout.project_file.read_text(encoding="utf-8"))["name"] == "Sine introduction"
     # The failed attempt released the second folder's lock and removed what it created there.
     assert sorted(path.name for path in second.iterdir()) == ["project.json"]
 
@@ -336,7 +336,7 @@ def test_cancel_ends_a_running_job_with_one_cancelled_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
-    fake_manim.plan({}, later=[video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)])
+    fake_manim.plan({}, later=[video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4)])
     _send(supervisor, cmd="render_preview", id="preview-1")
     job = _current(supervisor)
     stdout.wait_for("preview-1", "started")
@@ -375,9 +375,13 @@ def test_an_automatic_cancel_ends_the_preview_with_one_cancelled_line(
     fake_manim: FakeManim,
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
-    media = supervisor.media_dir
     clips = [complete_clip(".mp4")] * 4
-    fake_manim.plan({}, later=[{**video_render(media, "480p15", clips), **video_render(media, "1080p30", clips)}])
+    fake_manim.plan(
+        {},
+        later=[
+            {**video_render(supervisor.layout, "480p15", clips), **video_render(supervisor.layout, "1080p30", clips)}
+        ],
+    )
     _send(supervisor, cmd="render_preview", id="preview-1")
     preview = _current(supervisor)
     stdout.wait_for("preview-1", "started")
@@ -401,7 +405,7 @@ def test_held_previews_are_cancelled_while_the_export_runs_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
-    fake_manim.plan(video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4), hold=True)
+    fake_manim.plan(video_render(supervisor.layout, "1080p30", [complete_clip(".mp4")] * 4), hold=True)
     _send(supervisor, cmd="export", id="export-1")
     export = _current(supervisor)
     stdout.wait_for("export-1", "started")
@@ -438,7 +442,7 @@ def test_a_cancel_whose_kill_helper_fails_still_ends_the_job(
 
     monkeypatch.setattr(supervisor_module, "terminate_process_group", helper_gone)
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
-    fake_manim.plan({}, later=[video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)])
+    fake_manim.plan({}, later=[video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4)])
     _send(supervisor, cmd="render_preview", id="preview-1")
     job = _current(supervisor)
     stdout.wait_for("preview-1", "started")
@@ -483,7 +487,7 @@ def test_a_failure_after_manim_started_kills_it_and_releases_its_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4), hold=True)
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4), hold=True)
 
     def broken(progress: ManimProgress) -> list[tuple[int, Path]]:
         raise RuntimeError("progress bug")
@@ -520,9 +524,11 @@ def test_hand_written_mode_renders_the_scene_in_the_folder(
     # Hand-written mode takes no lock.
     assert not (supervisor.project / ".mathimator" / "lock").exists()
 
-    media = supervisor.media_dir
+    media = supervisor.layout.media_dir
     clips = [complete_clip(".mp4")] * 2
-    fake_manim.plan({**video_render(media, "480p15", clips), **video_render(media, "1080p30", clips)})
+    fake_manim.plan(
+        {**video_render(supervisor.layout, "480p15", clips), **video_render(supervisor.layout, "1080p30", clips)}
+    )
     _run(supervisor, cmd="render_preview", id="preview-1")
     started, *beats, done = stdout.of("preview-1")
     assert started == {"event": "started", "jobId": "preview-1"}
@@ -540,14 +546,14 @@ def test_hand_written_mode_renders_the_scene_in_the_folder(
     ]
     assert not (supervisor.project / ".mathimator" / "exports").exists()
 
-    supervisor.scene_path.unlink()
+    supervisor.layout.scene_path.unlink()
     _run(supervisor, cmd="render_preview", id="preview-2")
     assert stdout.of("preview-2") == [
         {
             "event": "rejected",
             "jobId": "preview-2",
             "code": "no_project",
-            "message": f"No project is open, and {supervisor.scene_path} does not exist.",
+            "message": f"No project is open, and {supervisor.layout.scene_path} does not exist.",
         }
     ]
 

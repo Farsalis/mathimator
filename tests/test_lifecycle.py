@@ -22,7 +22,8 @@ import pytest
 
 from mathimator_worker import process_group
 from mathimator_worker import supervisor as supervisor_module
-from mathimator_worker.document import beat_chain_keys, dumps_project, empty_project, load_text
+from mathimator_worker.document import dumps_project, empty_project, load_text
+from mathimator_worker.identity import beat_chain_keys
 from mathimator_worker.project_folder import ProjectLock, replace
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import (
@@ -160,7 +161,7 @@ def test_a_failed_init_write_leaves_the_folder_as_it_was(
 def test_an_unreadable_project_json_is_read_failed(tmp_path: Path, start: Start, stdout: Stdout) -> None:
     supervisor = start(_journey(tmp_path / "bound"))
     other = _journey(tmp_path / "other")
-    with _unreadable(other / "project.json"), _unreadable(supervisor.project_file):
+    with _unreadable(other / "project.json"), _unreadable(supervisor.layout.project_file):
         _send(supervisor, cmd="open_project", id="open", path=str(other))
         _send(supervisor, cmd="reload", id="reload")
         _send(supervisor, cmd="edit", id="edit", edit=_rename("Renamed"))
@@ -176,14 +177,14 @@ def test_an_outside_change_is_refused_until_overwrite_or_reload(
     supervisor = start(_journey(tmp_path / "journey"))
     _send(supervisor, cmd="edit", id="first", edit=_rename("First"))
     outside = JOURNEY.read_text(encoding="utf-8").replace("Sine introduction", "Edited elsewhere")
-    supervisor.project_file.write_text(outside, encoding="utf-8", newline="\n")
+    supervisor.layout.project_file.write_text(outside, encoding="utf-8", newline="\n")
     _send(supervisor, cmd="edit", id="second", edit=_rename("Second"))
     _send(supervisor, cmd="undo", id="undo")
     _run(supervisor, cmd="render_preview", id="preview-1")
     for job_id in ("second", "undo", "preview-1"):
         (refused,) = stdout.of(job_id)
         assert refused == {"event": "rejected", "jobId": job_id, "code": "project_changed", "message": PROJECT_CHANGED}
-    assert supervisor.project_file.read_text(encoding="utf-8") == outside
+    assert supervisor.layout.project_file.read_text(encoding="utf-8") == outside
     assert not fake_manim.ran()
 
     _send(supervisor, cmd="overwrite", id="overwrite")
@@ -191,7 +192,7 @@ def test_an_outside_change_is_refused_until_overwrite_or_reload(
     _send(supervisor, cmd="edit", id="third", edit=_rename("Third"))
     assert (stdout.last()["changed"], _saved_name(supervisor)) == (True, "Third")
 
-    supervisor.project_file.write_text(outside, encoding="utf-8", newline="\n")
+    supervisor.layout.project_file.write_text(outside, encoding="utf-8", newline="\n")
     _send(supervisor, cmd="reload", id="reload")
     reloaded = stdout.last()
     assert reloaded["document"]["name"] == "Edited elsewhere"
@@ -261,7 +262,7 @@ def test_a_folder_put_in_place_of_the_bound_one_is_not_written(
 
 def test_a_deleted_project_json_is_not_written_again(tmp_path: Path, start: Start, stdout: Stdout) -> None:
     supervisor = start(_journey(tmp_path / "journey"))
-    supervisor.project_file.unlink()
+    supervisor.layout.project_file.unlink()
     _send(supervisor, cmd="edit", id="edit", edit=_rename("Renamed"))
     # Overwrite skips the fingerprint, but not the check that project.json is there (D57).
     _send(supervisor, cmd="overwrite", id="overwrite")
@@ -269,19 +270,19 @@ def test_a_deleted_project_json_is_not_written_again(tmp_path: Path, start: Star
     for job_id in ("edit", "overwrite", "reload"):
         (refused,) = stdout.of(job_id)
         assert (refused["code"], refused["message"]) == ("project_unavailable", PROJECT_UNAVAILABLE)
-    assert not supervisor.project_file.exists()
+    assert not supervisor.layout.project_file.exists()
 
 
 def test_a_cache_record_that_cannot_be_written_does_not_refuse_the_edit(
     tmp_path: Path, start: Start, stdout: Stdout
 ) -> None:
     supervisor = start(_journey(tmp_path / "journey"))
-    shutil.rmtree(supervisor.rendered_path.parent)
-    supervisor.rendered_path.parent.write_text("in the way", encoding="utf-8")
+    shutil.rmtree(supervisor.layout.rendered_path.parent)
+    supervisor.layout.rendered_path.parent.write_text("in the way", encoding="utf-8")
     _send(supervisor, cmd="edit", id="rename", edit=_rename("Renamed"))
     reply = stdout.last()
     assert (reply["event"], reply["changed"], _saved_name(supervisor)) == ("state", True, "Renamed")
-    assert f"could not write {supervisor.rendered_path}" in supervisor.log_path.read_text(encoding="utf-8")
+    assert f"could not write {supervisor.layout.rendered_path}" in supervisor.log_path.read_text(encoding="utf-8")
 
 
 # Saving project.json (D05, C13.2 E3, G5.9)
@@ -357,8 +358,8 @@ def test_an_edit_that_changes_nothing_is_not_recorded(tmp_path: Path, start: Sta
     supervisor = start(_journey(tmp_path / "journey"))
     _send(supervisor, cmd="edit", id="red", edit=_color("#FF0000"))
     _send(supervisor, cmd="undo", id="undo")
-    saved = supervisor.project_file.read_bytes()
-    stamp = supervisor.project_file.stat().st_mtime_ns
+    saved = supervisor.layout.project_file.read_bytes()
+    stamp = supervisor.layout.project_file.stat().st_mtime_ns
     current = {"format": "mp4", "width": 1920, "height": 1080, "fps": 30, "transparent": False}
     _send(supervisor, cmd="edit", id="same-profile", edit={"op": "set_export_profile", **current})
     unchanged = stdout.last()
@@ -367,7 +368,10 @@ def test_an_edit_that_changes_nothing_is_not_recorded(tmp_path: Path, start: Sta
         False,
         True,
     )
-    assert (supervisor.project_file.read_bytes(), supervisor.project_file.stat().st_mtime_ns) == (saved, stamp)
+    assert (supervisor.layout.project_file.read_bytes(), supervisor.layout.project_file.stat().st_mtime_ns) == (
+        saved,
+        stamp,
+    )
 
     gif = {"format": "gif", "width": 854, "height": 480, "fps": 15, "transparent": False}
     _send(supervisor, cmd="edit", id="gif", edit={"op": "set_export_profile", **gif})
@@ -386,11 +390,11 @@ def test_an_edit_that_changes_nothing_is_not_recorded(tmp_path: Path, start: Sta
 def test_an_edit_that_changes_nothing_skips_the_disk_checks(tmp_path: Path, start: Start, stdout: Stdout) -> None:
     supervisor = start(_journey(tmp_path / "journey"))
     outside = JOURNEY.read_text(encoding="utf-8").replace("Sine introduction", "Edited elsewhere")
-    supervisor.project_file.write_text(outside, encoding="utf-8", newline="\n")
+    supervisor.layout.project_file.write_text(outside, encoding="utf-8", newline="\n")
     _send(supervisor, cmd="edit", id="same", edit=_rename("Sine introduction"))
     unchanged = stdout.last()
     assert (unchanged["event"], unchanged["changed"]) == ("state", False)
-    assert supervisor.project_file.read_text(encoding="utf-8") == outside
+    assert supervisor.layout.project_file.read_text(encoding="utf-8") == outside
 
 
 # Startup (C8.2)
@@ -437,7 +441,7 @@ def test_startup_starts_no_helper_process(tmp_path: Path, monkeypatch: pytest.Mo
 def test_save_as_moves_a_rendered_project(tmp_path: Path, start: Start, stdout: Stdout, fake_manim: FakeManim) -> None:
     source = _journey(tmp_path / "temp")
     supervisor = start(source)
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
     _run(supervisor, cmd="render_preview", id="preview-1")
     _send(supervisor, cmd="edit", id="rename", edit=_rename("Saved"))
     state = source / ".mathimator"
@@ -496,8 +500,8 @@ def test_save_as_refuses_a_folder_that_cannot_take_the_project(tmp_path: Path, s
 @pytest.mark.skipif(sys.platform != "win32", reason="only Windows refuses to copy a file that is open")
 def test_save_as_says_why_the_cache_could_not_be_copied(tmp_path: Path, start: Start, stdout: Stdout) -> None:
     supervisor = start(_journey(tmp_path / "journey"))
-    held = write_clip(_made(supervisor.media_dir / "held.mp4"))
-    write_clip(supervisor.media_dir / "loose.mp4")
+    held = write_clip(_made(supervisor.layout.media_dir / "held.mp4"))
+    write_clip(supervisor.layout.media_dir / "loose.mp4")
     target = tmp_path / "copy-fails"
     target.mkdir()
     with _unreadable(held):
@@ -518,7 +522,7 @@ def test_open_and_save_as_wait_for_a_running_export(
     tmp_path: Path, start: Start, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = start(_journey(tmp_path / "journey"))
-    fake_manim.plan(video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4), hold=True)
+    fake_manim.plan(video_render(supervisor.layout, "1080p30", [complete_clip(".mp4")] * 4), hold=True)
     _send(supervisor, cmd="export", id="export-1")
     export = _current(supervisor)
     try:
@@ -548,9 +552,9 @@ def test_a_copied_project_finds_its_own_previews(
 ) -> None:
     original = _journey(tmp_path / "lesson")
     supervisor = start(original)
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
     _run(supervisor, cmd="render_preview", id="preview-1")
-    stored = json.loads(supervisor.index_path.read_text(encoding="utf-8"))
+    stored = json.loads(supervisor.layout.index_path.read_text(encoding="utf-8"))
     assert stored["output"] == ".mathimator/cache/media/videos/scene/480p15/MainScene.mp4"
     assert all(beat["partial"].startswith(".mathimator/cache/media/videos/scene/") for beat in stored["beats"])
     supervisor.close()
@@ -616,8 +620,8 @@ def test_clear_cache_keeps_the_project_files_and_empties_the_log(tmp_path: Path,
 @pytest.mark.skipif(sys.platform != "win32", reason="only Windows refuses to delete a file that is open")
 def test_clear_cache_reports_files_another_program_holds(tmp_path: Path, start: Start, stdout: Stdout) -> None:
     supervisor = start(_journey(tmp_path / "journey"))
-    held = write_clip(_made(supervisor.media_dir / "held.mp4"))
-    loose = write_clip(supervisor.media_dir / "loose.mp4")
+    held = write_clip(_made(supervisor.layout.media_dir / "held.mp4"))
+    loose = write_clip(supervisor.layout.media_dir / "loose.mp4")
     with held.open("rb"):
         _send(supervisor, cmd="clear_cache", id="clear")
     cleared = stdout.last()
@@ -651,15 +655,15 @@ def test_a_line_logged_while_a_bind_is_part_way_does_not_fail_the_bind(
     supervisor = start(gone, log=False)
     _binding_lock(supervisor).release()
     shutil.rmtree(gone)
-    bind_paths = supervisor._bind_paths
+    sweep = supervisor._sweep_interrupted_run
 
     def logging_first() -> None:
-        # Another thread, such as a preview that outlived its stop, logs after
-        # the bind has changed the project and before it has moved the log.
+        # Another thread, such as a preview that outlived its stop, logs while
+        # the bind is part way, after the folder has changed.
         supervisor.log("a line from another thread")
-        bind_paths()
+        sweep()
 
-    monkeypatch.setattr(supervisor, "_bind_paths", logging_first)
+    monkeypatch.setattr(supervisor, "_sweep_interrupted_run", logging_first)
     other = _journey(tmp_path / "other")
     _send(supervisor, cmd="open_project", id="open", path=str(other))
     assert (stdout.last()["event"], stdout.last()["projectPath"]) == ("state", str(other.resolve()))
@@ -723,7 +727,7 @@ def _undo_depth(supervisor: Supervisor) -> int:
 
 
 def _saved_name(supervisor: Supervisor) -> str:
-    name: str = json.loads(supervisor.project_file.read_text(encoding="utf-8"))["name"]
+    name: str = json.loads(supervisor.layout.project_file.read_text(encoding="utf-8"))["name"]
     return name
 
 

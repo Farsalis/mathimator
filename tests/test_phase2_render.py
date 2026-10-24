@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from mathimator_worker.document import export_folder_name, export_key, load_text
+from mathimator_worker.document import load_text
+from mathimator_worker.identity import export_folder_name, export_key
 from tests.support import REPO, SupervisorClient, media_dir, probe_video, sha256_file, start_supervisor
 
 pytestmark = pytest.mark.render

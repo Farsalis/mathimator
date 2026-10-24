@@ -22,16 +22,10 @@ from mathimator_worker import manim_paths
 from mathimator_worker import supervisor as supervisor_module
 from mathimator_worker.argv import CONFIG_FILE, build_manim_argv, manim_environment
 from mathimator_worker.codegen import CodegenError, needs_latex
-from mathimator_worker.document import (
-    MAX_TOTAL_SECONDS,
-    MIN_BEAT_SECONDS,
-    Project,
-    export_artifact_name,
-    export_folder_name,
-    export_key,
-    load_text,
-)
+from mathimator_worker.document import MAX_TOTAL_SECONDS, MIN_BEAT_SECONDS, Project, load_text
 from mathimator_worker.document_error import DocumentError
+from mathimator_worker.exports import existing_export
+from mathimator_worker.identity import export_folder_name, export_key
 from mathimator_worker.manim_main import concat_manifest_bytes
 from mathimator_worker.manim_paths import PARTIAL_FILE, TEX_FILE, longest_folder, manim_root, short_path
 from mathimator_worker.progress import read_manifest
@@ -154,10 +148,10 @@ def test_manim_runs_in_the_scene_folder_with_its_own_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
-    media = supervisor.media_dir
-    fake_manim.plan(video_render(media, "480p15", [complete_clip(".mp4")] * 4))
+    media = supervisor.layout.media_dir
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
     _run(supervisor, cmd="render_preview", id="preview-1")
-    codegen = str(supervisor.scene_path.parent)
+    codegen = str(supervisor.layout.scene_path.parent)
     seen = fake_manim.seen()
     assert seen["cwd"] == codegen
     assert seen["argv"][:3] == ["render", "scene.py", "MainScene"]
@@ -179,13 +173,13 @@ def test_tex_inputs_planted_in_the_project_are_removed_before_manim(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
-    tex = supervisor.media_dir / "Tex"
+    tex = supervisor.layout.media_dir / "Tex"
     # TeX would load the package before its own, and Manim would compile the source or convert the DVI file.
     planted = ["amsmath.sty", f"{TEX_HASH}.tex", f"{TEX_HASH}.dvi", "nested/amsmath.sty"]
     for name in [*planted, f"{TEX_HASH}.svg"]:
         (tex / name).parent.mkdir(parents=True, exist_ok=True)
         (tex / name).write_text("planted", encoding="utf-8")
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
     _run(supervisor, cmd="render_preview", id="preview-1")
     assert stdout.of("preview-1")[-1]["event"] == "done"
     # Manim reuses an SVG file, which draws and reads nothing.
@@ -213,7 +207,7 @@ def test_a_render_stops_when_a_planted_tex_input_cannot_be_removed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
-    tex = supervisor.media_dir / "Tex"
+    tex = supervisor.layout.media_dir / "Tex"
     tex.mkdir(parents=True)
     (tex / "amsmath.sty").write_text("planted", encoding="utf-8")
 
@@ -234,10 +228,10 @@ def test_hand_written_mode_runs_in_the_scene_folder_with_no_checks(
 ) -> None:
     monkeypatch.setenv("MATHIMATOR_TEX_ERROR", TEX_ERROR)
     supervisor = _supervisor(handwritten_project(tmp_path / "hand {written}", REFERENCE), monkeypatch)
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")]))
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")]))
     _run(supervisor, cmd="render_preview", id="preview-1")
     assert stdout.of("preview-1")[-1]["event"] == "done"
-    assert fake_manim.seen()["cwd"] == str(supervisor.scene_path.parent)
+    assert fake_manim.seen()["cwd"] == str(supervisor.layout.scene_path.parent)
 
 
 # Start checks (C7.2: codegen, TeX, path)
@@ -269,7 +263,7 @@ def test_formulas_wait_for_tex_and_other_scenes_render(
     assert not fake_manim.ran()
 
     plain = _supervisor(_plain(tmp_path / "plain"), monkeypatch)
-    fake_manim.plan(video_render(plain.media_dir, "480p15", [complete_clip(".mp4")] * 3))
+    fake_manim.plan(video_render(plain.layout, "480p15", [complete_clip(".mp4")] * 3))
     _run(plain, cmd="render_preview", id="preview-1")
     assert stdout.of("preview-1")[-1]["event"] == "done"
 
@@ -310,7 +304,7 @@ def test_the_start_checks_run_in_the_contract_order(
     # Every check comes before the export cache, which holds an export of this very document.
     assert supervisor.session is not None
     _cache_export(folder, supervisor.session.project)
-    assert supervisor._existing_export_locked(supervisor.session.project) is not None
+    assert existing_export(supervisor.layout, supervisor.session.project) is not None
     saved = (folder / "project.json").read_bytes()
     with monkeypatch.context() as patched:
         patched.setattr(supervisor_module, "generate", _refuse)
@@ -387,8 +381,7 @@ def test_manim_runs_through_the_alias_and_events_keep_the_long_path(
     if alias == folder or not manim_paths._in_ansi_code_page(str(alias)):
         pytest.skip("the code page takes Greek, or this volume does not create 8.3 names")
     supervisor = _supervisor(folder, monkeypatch)
-    media = supervisor.media_dir
-    fake_manim.plan(video_render(media, "480p15", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
     _run(supervisor, cmd="render_preview", id="preview-1")
     assert fake_manim.seen()["cwd"] == str(alias / ".mathimator" / "codegen")
     # Every path sent is the bound folder's long path joined with a path inside it (C5).
@@ -469,7 +462,7 @@ def _cache_export(root: Path, project: Project) -> None:
     """A published export of ``project``, as the export cache finds it."""
     folder = root / ".mathimator" / "exports" / export_folder_name(project)
     folder.mkdir(parents=True)
-    write_clip(folder / export_artifact_name("mp4"))
+    write_clip(folder / "scene.mp4")
     (folder / "export.json").write_text(json.dumps({"exportKey": export_key(project)}), encoding="utf-8")
 
 

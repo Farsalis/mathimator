@@ -15,16 +15,12 @@ import pytest
 
 from mathimator_worker.argv import FORBIDDEN_TOKENS, build_manim_argv
 from mathimator_worker.codegen import generate
-from mathimator_worker.document import (
-    dumps_project,
-    export_artifact_name,
-    export_folder_name,
-    export_key,
-    load_text,
-)
+from mathimator_worker.document import dumps_project, load_text
 from mathimator_worker.document_error import DocumentError
+from mathimator_worker.exports import find_export_output
+from mathimator_worker.identity import export_folder_name, export_key
+from mathimator_worker.layout import ProjectLayout
 from mathimator_worker.session import Session
-from mathimator_worker.supervisor import find_export_output
 from tests.support import REPO, start_supervisor, write_fake_interpreter
 
 FIXTURES = REPO / "tests" / "fixtures"
@@ -118,7 +114,8 @@ def test_export_profile_does_not_change_generated_python() -> None:
 
 
 def test_preview_mp4_is_not_selected_for_gif_or_a_1080p_export(tmp_path: Path) -> None:
-    media = tmp_path / "media"
+    layout = ProjectLayout(tmp_path)
+    media = layout.media_dir
     preview = media / "videos" / "scene" / "480p15" / "MainScene.mp4"
     preview.parent.mkdir(parents=True)
     preview.write_bytes(b"preview")
@@ -127,10 +124,10 @@ def test_preview_mp4_is_not_selected_for_gif_or_a_1080p_export(tmp_path: Path) -
     hd = media / "videos" / "scene" / "1080p30" / "MainScene.mp4"
     hd.parent.mkdir(parents=True)
     hd.write_bytes(b"hd")
-    assert find_export_output(media, "scene", "480p15", "gif") == gif
-    assert find_export_output(media, "scene", "1080p30", "mp4") == hd
-    assert find_export_output(media, "scene", "1080p30", "gif") is None
-    assert find_export_output(media, "scene", "480p15", "mp4") == preview
+    assert find_export_output(layout, "480p15", "gif") == gif
+    assert find_export_output(layout, "1080p30", "mp4") == hd
+    assert find_export_output(layout, "1080p30", "gif") is None
+    assert find_export_output(layout, "480p15", "mp4") == preview
 
 
 def test_gif_and_webm_exports_are_not_refused(tmp_path: Path) -> None:
@@ -166,7 +163,7 @@ def test_unchanged_gif_export_key_does_not_start_manim(tmp_path: Path) -> None:
     loaded = session.project
     folder = project / ".mathimator" / "exports" / export_folder_name(loaded)
     folder.mkdir(parents=True)
-    artifact = folder / export_artifact_name("gif")
+    artifact = folder / "scene.gif"
     artifact.write_bytes(b"already-exported")
     manifest = {
         "exportKey": export_key(loaded),

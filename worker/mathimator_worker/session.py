@@ -1,16 +1,18 @@
 """Document edits, undo, and derived dirty flags.
 
 Undo history lives in this process only. It is not written to ``project.json``
-and it is discarded when the process exits. Fifty edits fit; the stack keeps
-the most recent 100.
+and it is discarded when the process exits. The stack keeps the 100 most
+recent edits, twice the 50 the spec asks for.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from mathimator_worker.codegen import CodegenError, generate
 from mathimator_worker.document import (
+    AXES_CHILD_TYPES,
     CURVE_VARIABLES,
     ENTRANCES,
     MAX_TEXT_LENGTH,
@@ -20,12 +22,11 @@ from mathimator_worker.document import (
     SURFACE_VARIABLES,
     Beat,
     ExportProfile,
+    ProfileName,
     Project,
     SceneObject,
     TemplateInstance,
-    _sync_three_d,
     beat_by_id,
-    beat_cache_keys,
     derived_starts,
     dumps_project,
     load_text,
@@ -39,14 +40,17 @@ from mathimator_worker.document import (
     parse_text,
     project_dict,
     quantize,
-    scene_stamp,
+    sync_three_d,
     total_duration,
 )
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import assert_supported
+from mathimator_worker.identity import beat_cache_keys, scene_stamp
 from mathimator_worker.jsonio import JsonValue
 from mathimator_worker.preview_index import PreviewIndex
 from mathimator_worker.templates import (
+    DEFAULT_LATEX,
+    DEFAULT_TEXT,
     add_axes_function,
     add_formula,
     add_formula_transform,
@@ -70,6 +74,10 @@ class EditResult:
     focus_object_id: str | None = None
 
 
+# One edit operation: it applies the fields of an edit to a document in place.
+Edit = Callable[[Project, dict[str, object]], EditResult]
+
+
 class Session:
     def __init__(self, project: Project) -> None:
         self.project = project
@@ -83,18 +91,29 @@ class Session:
         return result
 
     def edited(self, raw: dict[str, object]) -> tuple[Project, EditResult]:
-        """The document ``raw`` makes, and what to focus. Raises DocumentError; the session is unchanged."""
+        """The document ``raw`` makes, and what to focus. Raises DocumentError; the session is unchanged.
+
+        The edited document is read back as project.json is, which checks it
+        whole. Reading it back must not change it: load rewrites every field
+        a template owns from the template, so an edit that changed such a
+        field without its template would be accepted and lost (F072). That is
+        a bug in the edit, and it raises RuntimeError, which the supervisor
+        answers with ``error internal``.
+        """
         trial = load_text(dumps_project(self.project))
         try:
             result = apply_edit(trial, raw)
         except DocumentError as exc:
             raise _edit_refusal(exc, exc.field) from exc
+        text = dumps_project(trial)
         try:
-            trial = load_text(dumps_project(trial))
+            reloaded = load_text(text)
         except DocumentError as exc:
             # A whole-document rule, such as plot sampling, has no edit field to name.
             raise _edit_refusal(exc, None) from exc
-        return trial, result
+        if dumps_project(reloaded) != text:
+            raise RuntimeError(f"edit {raw.get('op')} changed a field a template owns without changing the template")
+        return reloaded, result
 
     def commit(self, project: Project) -> None:
         """Make ``project`` the document as one undo step. Redo is cleared."""
@@ -134,13 +153,14 @@ class Session:
     def can_redo(self) -> bool:
         return bool(self._redo)
 
-    def mark_rendered(self, profile: str) -> None:
+    def mark_rendered(self, profile: ProfileName) -> None:
         self.rendered[profile] = Rendered(
             stamp=scene_stamp(self.project),
             keys=beat_cache_keys(self.project, profile),
         )
 
-    def dirty_flags(self, profile: str) -> list[bool]:
+    def dirty_flags(self, profile: ProfileName) -> list[bool]:
+        """Whether each beat is dirty: every beat from the first that differs from the last render of ``profile``."""
         count = len(self.project.scene.beats)
         if count == 0:
             return []
@@ -149,16 +169,10 @@ class Session:
             return [True] * count
         keys = beat_cache_keys(self.project, profile)
         shared = min(len(keys), len(record.keys))
-        mismatch = shared
-        for index in range(shared):
-            if keys[index] != record.keys[index]:
-                mismatch = index
-                break
-        else:
-            mismatch = len(record.keys) if len(keys) > len(record.keys) else len(keys)
+        mismatch = next((index for index in range(shared) if keys[index] != record.keys[index]), shared)
         return [index >= mismatch for index in range(count)]
 
-    def output_current(self, profile: str) -> bool:
+    def output_current(self, profile: ProfileName) -> bool:
         """Whether the last full render of ``profile`` was of the document as it is now, beat for beat (F010).
 
         Unlike the dirty flags, a document with fewer beats than that render does not count.
@@ -221,76 +235,29 @@ class Session:
 
 
 def apply_edit(project: Project, raw: dict[str, object]) -> EditResult:
+    """Apply the edit ``raw`` to ``project`` in place. Raises DocumentError naming the edit field at fault."""
     op = raw.get("op")
-    if op == "set_project_name":
-        project.name = _name(raw.get("name"), "name")
-        return EditResult()
-    if op == "set_object_name":
-        item = _object(project, raw)
-        item.name = _name(raw.get("name"), "name")
-        return EditResult(focus_object_id=item.id)
-    if op == "set_object_color":
-        return _set_object_color(project, raw)
-    if op == "set_expression":
-        return _set_expression(project, raw)
-    if op == "set_latex":
-        return _set_latex(project, raw)
-    if op == "set_text":
-        return _set_text(project, raw)
-    if op == "set_anchor":
-        return _set_anchor(project, raw)
-    if op == "set_object_shift":
-        return _set_object_shift(project, raw)
-    if op == "set_axes_range":
-        return _set_axes_range(project, raw)
-    if op == "set_length":
-        return _set_length(project, raw)
-    if op == "set_show_labels":
-        return _set_show_labels(project, raw)
-    if op == "set_domain":
-        return _set_domain(project, raw)
-    if op == "set_beat_duration":
-        return _set_beat_duration(project, raw)
-    if op == "set_beat_color":
-        return _set_beat_color(project, raw)
-    if op == "set_beat_shift":
-        return _set_beat_shift(project, raw)
-    if op == "add_axes_function":
-        beat_id, object_id = add_axes_function(project, _after(raw))
-        return EditResult(focus_beat_id=beat_id, focus_object_id=object_id)
-    if op == "add_formula_transform":
-        beat_id, object_id = add_formula_transform(project, _after(raw))
-        return EditResult(focus_beat_id=beat_id, focus_object_id=object_id)
-    if op == "add_three_d_axes":
-        beat_id, object_id = add_three_d_axes(project, _after(raw))
-        return EditResult(focus_beat_id=beat_id, focus_object_id=object_id)
-    if op == "set_three_d_mode":
-        return _set_three_d_mode(project, raw)
-    if op == "set_camera":
-        return _set_camera(project, raw)
-    if op == "set_resolution":
-        return _set_resolution(project, raw)
-    if op == "set_curve_component":
-        return _set_curve_component(project, raw)
-    if op == "set_export_profile":
-        return _set_export_profile(project, raw)
-    if op == "add_formula":
-        latex = parse_latex(raw.get("latex", "y = \\sin(x)"), "latex")
-        beat_id, object_id = add_formula(project, _after(raw), latex)
-        return EditResult(focus_beat_id=beat_id, focus_object_id=object_id)
-    if op == "add_text":
-        text = parse_text(raw.get("text", "Text"), "text", MAX_TEXT_LENGTH)
-        beat_id, object_id = add_text(project, _after(raw), text)
-        return EditResult(focus_beat_id=beat_id, focus_object_id=object_id)
-    if op == "delete_object":
-        return _delete_object(project, raw)
-    raise DocumentError(f"Unknown edit operation {op}.", field="op")
+    edit = _EDITS.get(op) if isinstance(op, str) else None
+    if edit is None:
+        raise DocumentError(f"Unknown edit operation {op}.", field="op")
+    return edit(project, raw)
 
 
 def _edit_refusal(exc: DocumentError, field: str | None) -> DocumentError:
     """The refusal of an edit: a document rule becomes ``invalid_edit``, and ``field`` is an edit field."""
     code = "invalid_edit" if exc.code == "invalid_document" else exc.code
     return DocumentError(str(exc), code=code, field=field)
+
+
+def _set_project_name(project: Project, raw: dict[str, object]) -> EditResult:
+    project.name = _name(raw.get("name"), "name")
+    return EditResult()
+
+
+def _set_object_name(project: Project, raw: dict[str, object]) -> EditResult:
+    item = _object(project, raw)
+    item.name = _name(raw.get("name"), "name")
+    return EditResult(focus_object_id=item.id)
 
 
 def _set_object_color(project: Project, raw: dict[str, object]) -> EditResult:
@@ -415,10 +382,12 @@ def _set_beat_duration(project: Project, raw: dict[str, object]) -> EditResult:
     beat = _beat(project, raw)
     duration = _finite(raw.get("duration"), "duration")
     if float(duration) < MIN_BEAT_SECONDS:
-        raise DocumentError("duration must be at least 0.1 seconds", code="limit_exceeded", field="duration")
+        message = f"duration must be at least {MIN_BEAT_SECONDS:g} seconds"
+        raise DocumentError(message, code="limit_exceeded", field="duration")
     others = sum(float(item.duration) for item in project.scene.beats if item is not beat)
     if others + float(duration) > MAX_TOTAL_SECONDS + 1e-9:
-        raise DocumentError("total duration must be at most 120 seconds", code="limit_exceeded", field="duration")
+        message = f"total duration must be at most {MAX_TOTAL_SECONDS:g} seconds"
+        raise DocumentError(message, code="limit_exceeded", field="duration")
     beat.duration = duration
     return EditResult(focus_beat_id=beat.id)
 
@@ -446,7 +415,7 @@ def _set_three_d_mode(project: Project, raw: dict[str, object]) -> EditResult:
         raise DocumentError("mode must be surface or curve", field="mode")
     instance = _require_three_d(project)
     instance.params["mode"] = mode
-    _sync_three_d(project, instance)
+    sync_three_d(project, instance)
     return EditResult(focus_beat_id=instance.beat_ids[1], focus_object_id=instance.object_ids[1])
 
 
@@ -457,7 +426,7 @@ def _set_camera(project: Project, raw: dict[str, object]) -> EditResult:
         raise DocumentError("key must be phi, theta, or zoom", field="key")
     value = _positive_number(raw.get("value"), "value") if key == "zoom" else _finite(raw.get("value"), "value")
     instance.params[str(key)] = value
-    _sync_three_d(project, instance)
+    sync_three_d(project, instance)
     return EditResult(focus_object_id=instance.object_ids[0])
 
 
@@ -486,7 +455,7 @@ def _set_curve_component(project: Project, raw: dict[str, object]) -> EditResult
     updated = list(components)
     updated[index] = expression
     instance.params["components"] = updated
-    _sync_three_d(project, instance)
+    sync_three_d(project, instance)
     return EditResult(focus_object_id=item.id)
 
 
@@ -511,10 +480,35 @@ def _set_export_profile(project: Project, raw: dict[str, object]) -> EditResult:
     return EditResult()
 
 
-def _three_d_param(project: Project, object_id: str, key: str, value: object) -> None:
+def _add_formula(project: Project, raw: dict[str, object]) -> EditResult:
+    latex = parse_latex(raw.get("latex", DEFAULT_LATEX), "latex")
+    return _focus(add_formula(project, _after(raw), latex))
+
+
+def _add_text(project: Project, raw: dict[str, object]) -> EditResult:
+    text = parse_text(raw.get("text", DEFAULT_TEXT), "text", MAX_TEXT_LENGTH)
+    return _focus(add_text(project, _after(raw), text))
+
+
+def _insertion(insert: Callable[[Project, str | None], tuple[str, str]]) -> Edit:
+    """The edit that inserts a template after the beat ``afterBeatId`` names."""
+
+    def edit(project: Project, raw: dict[str, object]) -> EditResult:
+        return _focus(insert(project, _after(raw)))
+
+    return edit
+
+
+def _focus(inserted: tuple[str, str]) -> EditResult:
+    """Focus the beat and the object an insertion returns."""
+    beat_id, object_id = inserted
+    return EditResult(focus_beat_id=beat_id, focus_object_id=object_id)
+
+
+def _three_d_param(project: Project, object_id: str, key: str, value: JsonValue) -> None:
     instance = _three_d_for_object(project, object_id)
-    instance.params[key] = value  # type: ignore[assignment]
-    _sync_three_d(project, instance)
+    instance.params[key] = value
+    sync_three_d(project, instance)
 
 
 def _require_three_d(project: Project) -> TemplateInstance:
@@ -580,7 +574,7 @@ def _expand_removal(project: Project, remove: set[str]) -> None:
     while changed:
         changed = False
         for item in project.scene.objects:
-            if item.id in remove or item.type not in {"function_plot", "surface", "parametric_curve"}:
+            if item.id in remove or item.type not in AXES_CHILD_TYPES:
                 continue
             axes_id = item.params.get("axesId")
             if isinstance(axes_id, str) and axes_id in remove:
@@ -618,20 +612,20 @@ def _entrance_indexes(project: Project) -> dict[str, int]:
     return found
 
 
-def _template_plot(project: Project, plot_id: str, key: str, value: object) -> None:
+def _template_plot(project: Project, plot_id: str, key: str, value: JsonValue) -> None:
     for instance in project.scene.template_instances:
         if instance.template_id != "axes_function" or len(instance.object_ids) != 2:
             continue
         if instance.object_ids[1] == plot_id:
-            instance.params[key] = value  # type: ignore[assignment]
+            instance.params[key] = value
 
 
-def _template_axes(project: Project, axes_id: str, key: str, value: object) -> None:
+def _template_axes(project: Project, axes_id: str, key: str, value: JsonValue) -> None:
     for instance in project.scene.template_instances:
         if instance.template_id != "axes_function" or not instance.object_ids:
             continue
         if instance.object_ids[0] == axes_id:
-            instance.params[key] = value  # type: ignore[assignment]
+            instance.params[key] = value
 
 
 def _object(project: Project, raw: dict[str, object]) -> SceneObject:
@@ -697,3 +691,34 @@ def _shift_value(value: object) -> list[JsonValue]:
     if not isinstance(value, list) or len(value) != 2:
         raise DocumentError("shift must be two numbers", field="shift")
     return [_finite(value[0], "shift"), _finite(value[1], "shift")]
+
+
+# The edit of each op (contract C4.1).
+_EDITS: dict[str, Edit] = {
+    "set_project_name": _set_project_name,
+    "set_object_name": _set_object_name,
+    "set_object_color": _set_object_color,
+    "set_expression": _set_expression,
+    "set_latex": _set_latex,
+    "set_text": _set_text,
+    "set_anchor": _set_anchor,
+    "set_object_shift": _set_object_shift,
+    "set_axes_range": _set_axes_range,
+    "set_length": _set_length,
+    "set_show_labels": _set_show_labels,
+    "set_domain": _set_domain,
+    "set_beat_duration": _set_beat_duration,
+    "set_beat_color": _set_beat_color,
+    "set_beat_shift": _set_beat_shift,
+    "add_axes_function": _insertion(add_axes_function),
+    "add_formula_transform": _insertion(add_formula_transform),
+    "add_three_d_axes": _insertion(add_three_d_axes),
+    "add_formula": _add_formula,
+    "add_text": _add_text,
+    "delete_object": _delete_object,
+    "set_three_d_mode": _set_three_d_mode,
+    "set_camera": _set_camera,
+    "set_resolution": _set_resolution,
+    "set_curve_component": _set_curve_component,
+    "set_export_profile": _set_export_profile,
+}

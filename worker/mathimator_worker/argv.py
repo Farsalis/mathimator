@@ -16,6 +16,17 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from mathimator_worker.document import (
+    DEFAULT_EXPORT_FPS,
+    DEFAULT_EXPORT_HEIGHT,
+    DEFAULT_EXPORT_WIDTH,
+    FORMATS,
+    PREVIEW_FPS,
+    PREVIEW_HEIGHT,
+    PREVIEW_WIDTH,
+    ProfileName,
+)
+
 SCENE_CLASS = "MainScene"
 SEED = "1"
 # Relative to the folder Manim runs in, .mathimator/codegen.
@@ -25,14 +36,6 @@ MEDIA_DIR = "../cache/media"
 CONFIG_FILE = Path(__file__).with_name("manim.cfg")
 # Runs Manim's command line with FFmpeg's quoting fixed (D61).
 LAUNCHER = "mathimator_worker.manim_main"
-
-PREVIEW_WIDTH = 854
-PREVIEW_HEIGHT = 480
-PREVIEW_FPS = 15
-
-EXPORT_WIDTH = 1920
-EXPORT_HEIGHT = 1080
-EXPORT_FPS = 30
 
 FORBIDDEN_TOKENS = (
     "--preview",
@@ -44,13 +47,6 @@ FORBIDDEN_TOKENS = (
 
 # kpathsea's settings for the LaTeX child (D18).
 _TEX_SETTINGS = {"shell_escape": "f", "openin_any": "p", "openout_any": "p"}
-
-_FORMAT_FLAGS = {
-    "mp4": "mp4",
-    "gif": "gif",
-    "webm": "webm",
-    "png_sequence": "png-sequence",
-}
 
 
 def manim_interpreter(python: str) -> tuple[str, str | None]:
@@ -75,17 +71,16 @@ def manim_interpreter(python: str) -> tuple[str, str | None]:
     return (base, sys.executable) if launcher else (python, None)
 
 
-def profile_size(profile: str) -> tuple[int, int, int]:
+def profile_size(profile: ProfileName) -> tuple[int, int, int]:
+    """The width, height and frame rate a render of ``profile`` has without a document, in hand-written mode."""
     if profile == "preview":
         return PREVIEW_WIDTH, PREVIEW_HEIGHT, PREVIEW_FPS
-    if profile == "export":
-        return EXPORT_WIDTH, EXPORT_HEIGHT, EXPORT_FPS
-    raise ValueError(f"unknown profile {profile}")
+    return DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT, DEFAULT_EXPORT_FPS
 
 
 def build_manim_argv(
     python: str,
-    profile: str,
+    profile: ProfileName,
     seed: str = SEED,
     *,
     width: int | None = None,
@@ -110,9 +105,10 @@ def build_manim_argv(
         height = default_height
     if fps is None:
         fps = default_fps
-    if fmt not in _FORMAT_FLAGS:
+    spec = FORMATS.get(fmt)
+    if spec is None:
         raise ValueError(f"unknown format {fmt}")
-    if transparent and fmt in {"mp4", "gif"}:
+    if transparent and spec.opaque_reason is not None:
         raise ValueError(f"{fmt} cannot be transparent")
     if profile == "preview" and (fmt != "mp4" or transparent):
         raise ValueError("preview stays an opaque mp4")
@@ -138,7 +134,7 @@ def build_manim_argv(
         "--fps",
         str(fps),
         "--format",
-        _FORMAT_FLAGS[fmt],
+        spec.cli_flag,
     ]
     if transparent:
         argv.append("--transparent")

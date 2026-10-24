@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 
 from mathimator_worker.jsonio import loads
-from mathimator_worker.supervisor import partial_movie_dir
+from mathimator_worker.layout import ProjectLayout
 
 REPO = Path(__file__).resolve().parents[1]
 WORKER = REPO / "worker"
@@ -236,9 +236,9 @@ class FakeManim:
         (self.package / f"go-{number}.txt").write_text("", encoding="utf-8")
 
 
-def video_render(media: Path, quality: str, clips: list[bytes], suffix: str = ".mp4") -> dict[Path, bytes]:
+def video_render(layout: ProjectLayout, quality: str, clips: list[bytes], suffix: str = ".mp4") -> dict[Path, bytes]:
     """The files of one finished video render: a partial per beat, the segment list and the movie."""
-    folder = partial_movie_dir(media, "scene", quality)
+    folder = layout.partial_movie_dir(quality)
     files = {folder / f"{index:064x}{suffix}": data for index, data in enumerate(clips)}
     listing = "".join(f"file 'file:{path.as_posix()}'\n" for path in files)
     files[folder / "partial_movie_file_list.txt"] = listing.encode("utf-8")
@@ -367,11 +367,11 @@ class SupervisorClient:
 
 
 def scene_path(project: Path) -> Path:
-    return project / ".mathimator" / "codegen" / "scene.py"
+    return ProjectLayout(project).scene_path
 
 
 def media_dir(project: Path) -> Path:
-    return project / ".mathimator" / "cache" / "media"
+    return ProjectLayout(project).media_dir
 
 
 def handwritten_project(root: Path, scene_file: Path) -> Path:

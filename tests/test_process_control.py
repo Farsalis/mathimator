@@ -218,7 +218,7 @@ def test_a_cancelled_job_terminates_its_job_object_then_closes_it_once(
     monkeypatch.setattr(supervisor_module, "terminate_job", terminated.append)
     monkeypatch.setattr(supervisor_module, "close_job", closed.append)
     supervisor = _supervisor(tmp_path)
-    fake_manim.plan({}, later=[video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)])
+    fake_manim.plan({}, later=[video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4)])
     _send(supervisor, cmd="render_preview", id="preview-1")
     job = _current(supervisor)
     fake_manim.wait_until_held()
@@ -241,7 +241,7 @@ def test_a_job_object_is_closed_once_when_manim_exits(
     fake_manim: FakeManim,
 ) -> None:
     supervisor = _supervisor(tmp_path)
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
     _send(supervisor, cmd="render_preview", id="preview-1")
     _join(_current(supervisor))
     assert stdout.of("preview-1")[-1]["event"] == "done"
@@ -260,7 +260,7 @@ def test_a_cancelled_job_object_is_terminated_then_closed_once(
     fake_manim: FakeManim,
 ) -> None:
     supervisor = _supervisor(tmp_path)
-    fake_manim.plan({}, later=[video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)])
+    fake_manim.plan({}, later=[video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4)])
     _send(supervisor, cmd="render_preview", id="preview-1")
     job = _current(supervisor)
     fake_manim.wait_until_held()
@@ -284,7 +284,7 @@ def test_a_superseded_job_object_is_terminated_then_closed_once(
     fake_manim: FakeManim,
 ) -> None:
     supervisor = _supervisor(tmp_path)
-    fake_manim.plan({}, later=[video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)])
+    fake_manim.plan({}, later=[video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4)])
     _send(supervisor, cmd="render_preview", id="preview-1")
     first = _current(supervisor)
     fake_manim.wait_until_held()
@@ -311,7 +311,7 @@ def test_a_job_object_that_will_not_close_is_logged(
 ) -> None:
     kernel32.failing = {"CloseHandle"}
     supervisor = _supervisor(tmp_path)
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
     _send(supervisor, cmd="render_preview", id="preview-1")
     _join(_current(supervisor))
     assert stdout.of("preview-1")[-1]["event"] == "done"

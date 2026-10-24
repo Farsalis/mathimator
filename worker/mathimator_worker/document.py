@@ -1,4 +1,6 @@
-"""project.json model, validation, and cache identity.
+"""project.json model, validation, and the limits and presets every module shares.
+
+The cache identity of a document lives in ``identity.py``.
 
 ``schemaVersion`` 1 is the only version this phase reads. A ``start`` field,
 an unknown key, or any other schema version is refused. Beat start times are
@@ -16,17 +18,17 @@ written.
 from __future__ import annotations
 
 import codecs
-import hashlib
 import json
 import keyword
 import math
 import re
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
-from typing import TypeIs
+from typing import Literal, TypeIs
 
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import assert_supported
-from mathimator_worker.jsonio import JsonValue, canonical_dumps, dumps_document, loads
+from mathimator_worker.jsonio import JsonValue, dumps_document, loads
 from mathimator_worker.latex import check_latex
 
 MANIM_VERSION = "0.22.0"
@@ -46,8 +48,36 @@ NOT_UTF8 = "project.json must be saved as UTF-8 text."
 PREVIEW_WIDTH = 854
 PREVIEW_HEIGHT = 480
 PREVIEW_FPS = 15
+# The export preset of a new project, which hand-written mode renders too.
+DEFAULT_EXPORT_WIDTH = 1920
+DEFAULT_EXPORT_HEIGHT = 1080
+DEFAULT_EXPORT_FPS = 30
 
-EXPORT_FORMATS = frozenset({"mp4", "gif", "webm", "png_sequence"})
+# The two renders of a document: the preview, and the export in its export profile.
+ProfileName = Literal["preview", "export"]
+
+
+@dataclass(frozen=True)
+class FormatSpec:
+    """What one export format means to Manim's command line, to Manim's output and to ``exports/``."""
+
+    # Manim's ``--format`` value.
+    cli_flag: str
+    # The suffix of the movie Manim writes, or of each frame of a PNG sequence.
+    suffix: str
+    # The file or folder name in ``.mathimator/exports/<exportKey>/``.
+    artifact_name: str
+    # Why the format cannot store transparency, or None when it can.
+    opaque_reason: str | None = None
+
+
+FORMATS = {
+    "mp4": FormatSpec("mp4", ".mp4", "scene.mp4", "MP4 cannot store transparency."),
+    "gif": FormatSpec("gif", ".gif", "scene.gif", "GIF cannot store an alpha channel."),
+    "webm": FormatSpec("webm", ".webm", "scene.webm"),
+    "png_sequence": FormatSpec("png-sequence", ".png", "frames"),
+}
+EXPORT_FORMATS = frozenset(FORMATS)
 EXPORT_SIZES = frozenset({(854, 480), (1280, 720), (1920, 1080)})
 EXPORT_FPS = frozenset({15, 30, 60})
 
@@ -55,6 +85,8 @@ ANCHORS = frozenset({"origin", "edge_up", "edge_down", "edge_left", "edge_right"
 PHASE_2_OBJECT_TYPES = frozenset({"axes", "function_plot", "math_formula", "text"})
 THREE_D_OBJECT_TYPES = frozenset({"three_d_axes", "surface", "parametric_curve"})
 OBJECT_TYPES = PHASE_2_OBJECT_TYPES | THREE_D_OBJECT_TYPES
+# The objects drawn on axes, which name them in ``axesId`` and enter after them.
+AXES_CHILD_TYPES = frozenset({"function_plot", "surface", "parametric_curve"})
 ACTIONS = frozenset({"create", "fade_in", "write", "wait", "transform_formula", "set_color", "move"})
 ENTRANCES = frozenset({"create", "fade_in", "write", "transform_formula"})
 CREATE_TYPES = frozenset({"axes", "function_plot", "three_d_axes", "surface", "parametric_curve"})
@@ -90,59 +122,15 @@ _BEAT_KEYS = {"id", "duration", "action", "targets", "params"}
 _TEMPLATE_KEYS = {"id", "templateId", "params", "objectIds", "beatIds"}
 _PREVIEW_KEYS = {"width", "height", "fps", "transparent"}
 _EXPORT_KEYS = {"format", "width", "height", "fps", "transparent"}
-_AXES_KEYS = {"xRange", "yRange", "xLength", "yLength", "color", "showLabels"}
-_PLOT_KEYS = {"axesId", "expression", "xMin", "xMax", "color"}
-_FORMULA_KEYS = {"latex", "color", "anchor", "shift"}
-_TEXT_KEYS = {"text", "color", "anchor", "shift"}
-_AXES_TEMPLATE_KEYS = {"expression", "xRange", "yRange", "color"}
-_FORMULA_TEMPLATE_KEYS = {
-    "sourceLatex",
-    "destinationLatex",
-    "sourceColor",
-    "destinationColor",
-    "anchor",
-    "shift",
-    "sourceAnchor",
-    "destinationAnchor",
-    "sourceShift",
-    "destinationShift",
-}
-_FORMULA_TEMPLATE_REQUIRED = {
-    "sourceLatex",
-    "destinationLatex",
-    "sourceColor",
-    "destinationColor",
-    "anchor",
-    "shift",
-}
+_SET_COLOR_KEYS = {"color"}
+_MOVE_KEYS = {"shift"}
 # Lower-case names the generated module uses. An id starts with a lower-case
 # letter, so neither Manim's capitalised names nor ``_beat_time`` can be one.
 _GENERATED_NAMES = frozenset({"np", "self", "config"})
 # The parameters of the lambda that refers to the axes of a surface or a curve.
 _LAMBDA_PARAMETERS = {"surface": ("u", "v"), "parametric_curve": ("t",)}
-_THREE_D_TEMPLATE_KEYS = {
-    "mode",
-    "xRange",
-    "yRange",
-    "zRange",
-    "phi",
-    "theta",
-    "zoom",
-    "expression",
-    "uRange",
-    "vRange",
-    "resolution",
-    "surfaceColor",
-    "components",
-    "tRange",
-    "curveColor",
-}
-_THREE_D_AXES_KEYS = {"xRange", "yRange", "zRange", "xLength", "yLength", "zLength"}
-_SURFACE_KEYS = {"axesId", "expression", "uRange", "vRange", "resolution", "color"}
-_CURVE_KEYS = {"axesId", "components", "tRange", "color"}
-_SET_COLOR_KEYS = {"color"}
-_MOVE_KEYS = {"shift"}
 
+# The order params are saved in. Each type's keys are the keys of its order.
 _AXES_ORDER = ("xRange", "yRange", "xLength", "yLength", "color", "showLabels")
 _PLOT_ORDER = ("axesId", "expression", "xMin", "xMax", "color")
 _FORMULA_ORDER = ("latex", "color", "anchor", "shift")
@@ -191,6 +179,22 @@ _PARAM_ORDER = {
     "surface": _SURFACE_ORDER,
     "parametric_curve": _CURVE_ORDER,
 }
+_AXES_KEYS = frozenset(_AXES_ORDER)
+_PLOT_KEYS = frozenset(_PLOT_ORDER)
+_FORMULA_KEYS = frozenset(_FORMULA_ORDER)
+_TEXT_KEYS = frozenset(_TEXT_ORDER)
+_THREE_D_AXES_KEYS = frozenset(_THREE_D_AXES_ORDER)
+_SURFACE_KEYS = frozenset(_SURFACE_ORDER)
+_CURVE_KEYS = frozenset(_CURVE_ORDER)
+_AXES_TEMPLATE_KEYS = frozenset(_TEMPLATE_ORDERS["axes_function"])
+_FORMULA_TEMPLATE_KEYS = frozenset(_TEMPLATE_ORDERS["formula_transform"])
+_FORMULA_TEMPLATE_REQUIRED = _FORMULA_TEMPLATE_KEYS - {
+    "sourceAnchor",
+    "destinationAnchor",
+    "sourceShift",
+    "destinationShift",
+}
+_THREE_D_TEMPLATE_KEYS = frozenset(_TEMPLATE_ORDERS["three_d_axes"])
 
 
 @dataclass
@@ -282,7 +286,7 @@ def empty_project(name: str = "Untitled") -> Project:
             background="#000000",
         ),
         preview_profile=Profile(PREVIEW_WIDTH, PREVIEW_HEIGHT, PREVIEW_FPS, False),
-        export_profile=ExportProfile("mp4", 1920, 1080, 30, False),
+        export_profile=ExportProfile("mp4", DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT, DEFAULT_EXPORT_FPS, False),
     )
 
 
@@ -350,7 +354,7 @@ def project_dict(project: Project) -> dict[str, JsonValue]:
             "theta": scene.camera.theta,
             "zoom": scene.camera.zoom,
         }
-    scene_payload["objects"] = [_object_dict(item) for item in scene.objects]
+    scene_payload["objects"] = [object_dict(item) for item in scene.objects]
     scene_payload["beats"] = [_beat_dict(item) for item in scene.beats]
     scene_payload["templateInstances"] = [_template_dict(item) for item in scene.template_instances]
     return {
@@ -440,97 +444,6 @@ def fresh_id(prefix: str, used: set[str]) -> str:
             return candidate
         number += 1
     raise DocumentError("could not allocate an id")
-
-
-def scene_stamp(project: Project) -> str:
-    """Identity of the fields that dirty every beat, excluding display names.
-
-    The camera is part of this stamp. Changing phi, theta, or zoom dirties
-    every beat because the orientation call sits before the first ``play``.
-    """
-    camera = project.scene.camera
-    camera_payload: dict[str, JsonValue] | None = None
-    if camera is not None:
-        camera_payload = {"phi": camera.phi, "theta": camera.theta, "zoom": camera.zoom}
-    payload = {
-        "background": project.scene.background,
-        "camera": camera_payload,
-        "generatorVersion": project.generator_version,
-        "kind": project.scene.kind,
-        "schemaVersion": project.schema_version,
-        "seed": project.seed,
-    }
-    return _sha256(canonical_dumps(payload))
-
-
-def beat_cache_keys(project: Project, profile: str) -> list[str]:
-    return [
-        _sha256(canonical_dumps(_beat_cache_payload(project, index, profile)))
-        for index in range(len(project.scene.beats))
-    ]
-
-
-def beat_chain_keys(project: Project, profile: str) -> list[str]:
-    """Each beat's identity together with everything before it: the scene stamp and the keys of beats 0 to i.
-
-    A partial movie shows the scene as every earlier beat left it, so it
-    belongs to a document only while this key is unchanged (F135).
-    """
-    chain = scene_stamp(project)
-    keys: list[str] = []
-    for key in beat_cache_keys(project, profile):
-        chain = _sha256(chain + key)
-        keys.append(chain)
-    return keys
-
-
-def scene_hash(project: Project) -> str:
-    """Hash of schema, generator, seed, and scene. Display names are omitted.
-
-    Names are not used in codegen and must not dirty a preview. Leaving them
-    in this hash would change ``exportKey`` on a rename and throw away a
-    finished export of the same movie.
-    """
-    payload = {
-        "generatorVersion": project.generator_version,
-        "schemaVersion": project.schema_version,
-        "scene": _scene_without_names(project),
-        "seed": project.seed,
-    }
-    return _sha256(canonical_dumps(payload))
-
-
-def export_key(project: Project) -> str:
-    profile = project.export_profile
-    payload = {
-        "exportProfile": {
-            "format": profile.format,
-            "fps": profile.fps,
-            "height": profile.height,
-            "transparent": profile.transparent,
-            "width": profile.width,
-        },
-        "manimVersion": MANIM_VERSION,
-        "sceneHash": scene_hash(project),
-    }
-    return _sha256(canonical_dumps(payload))
-
-
-def export_folder_name(project: Project) -> str:
-    return export_key(project)[:16]
-
-
-def export_artifact_name(fmt: str) -> str:
-    """File or directory name copied into ``.mathimator/exports/<exportKey>/``."""
-    if fmt == "png_sequence":
-        return "frames"
-    if fmt == "mp4":
-        return "scene.mp4"
-    if fmt == "gif":
-        return "scene.gif"
-    if fmt == "webm":
-        return "scene.webm"
-    raise ValueError(f"unknown format {fmt}")
 
 
 def parse_text(value: object, path: str, limit: int | None = None) -> str:
@@ -922,8 +835,8 @@ def _parse_export(raw: object) -> ExportProfile:
         raise DocumentError(f"exportProfile {width}×{height} is not an export size", field="exportProfile.width")
     if fps not in EXPORT_FPS:
         raise DocumentError(f"exportProfile.fps {fps} is not an export frame rate", field="exportProfile.fps")
-    if fmt in {"mp4", "gif"} and transparent:
-        reason = "MP4 cannot store transparency." if fmt == "mp4" else "GIF cannot store an alpha channel."
+    reason = FORMATS[fmt].opaque_reason
+    if transparent and reason is not None:
         raise DocumentError(reason, field="exportProfile.transparent")
     return ExportProfile(fmt, width, height, fps, transparent)
 
@@ -942,7 +855,7 @@ def _rewrite_templates(project: Project) -> None:
             _sync_formula_transform(project, instance, path)
         elif instance.template_id == "three_d_axes":
             _check_three_d_axes(project, instance, path)
-            _sync_three_d(project, instance)
+            sync_three_d(project, instance)
         else:
             raise DocumentError(f'unknown template "{instance.template_id}"')
 
@@ -1045,7 +958,7 @@ def _check_timeline(project: Project) -> None:
             if beat.action == "create" and target.type not in CREATE_TYPES:
                 raise DocumentError(f"{path} creates {target_id}, but create is not its entrance", field=targets)
             axes_id = target.params.get("axesId")
-            if target.type in {"function_plot", "surface", "parametric_curve"} and axes_id not in entered:
+            if target.type in AXES_CHILD_TYPES and axes_id not in entered:
                 raise DocumentError(f"{path} brings {target_id} on screen before its axes {axes_id}", field=targets)
             entered[target_id] = index
             continue
@@ -1250,7 +1163,7 @@ def _check_three_d_axes(project: Project, instance: TemplateInstance, path: str)
         raise DocumentError(f"{field} names {axes_id}, which is not 3D axes", field=field)
 
 
-def _sync_three_d(project: Project, instance: TemplateInstance) -> None:
+def sync_three_d(project: Project, instance: TemplateInstance) -> None:
     """Rewrite the 3D axes, the surface or curve, and the camera from the template.
 
     Load checks the axes link first (``_check_three_d_axes``), so an edit finds it in place.
@@ -1345,7 +1258,7 @@ def _require_axes(objects: dict[str, SceneObject], item: SceneObject, axes_type:
     return axes
 
 
-def _object_dict(item: SceneObject) -> dict[str, JsonValue]:
+def object_dict(item: SceneObject) -> dict[str, JsonValue]:
     order = _PARAM_ORDER[item.type]
     params = {key: item.params[key] for key in order if key in item.params}
     return {"id": item.id, "name": item.name, "type": item.type, "params": params}
@@ -1378,89 +1291,6 @@ def _template_dict(item: TemplateInstance) -> dict[str, JsonValue]:
     }
 
 
-def _scene_without_names(project: Project) -> dict[str, JsonValue]:
-    scene = project_dict(project)["scene"]
-    if not isinstance(scene, dict):
-        raise TypeError("scene dict missing")
-    scene.pop("name", None)
-    objects = scene.get("objects")
-    if isinstance(objects, list):
-        for item in objects:
-            if isinstance(item, dict):
-                item.pop("name", None)
-    return scene
-
-
-def _beat_cache_payload(project: Project, index: int, profile: str) -> dict[str, JsonValue]:
-    beat = project.scene.beats[index]
-    profile_payload: dict[str, JsonValue]
-    if profile == "preview":
-        chosen = project.preview_profile
-        profile_payload = {
-            "fps": chosen.fps,
-            "height": chosen.height,
-            "transparent": chosen.transparent,
-            "width": chosen.width,
-        }
-    elif profile == "export":
-        chosen_export = project.export_profile
-        profile_payload = {
-            "format": chosen_export.format,
-            "fps": chosen_export.fps,
-            "height": chosen_export.height,
-            "transparent": chosen_export.transparent,
-            "width": chosen_export.width,
-        }
-    else:
-        raise DocumentError(f"unknown profile {profile}")
-    beat_payload: dict[str, JsonValue] = {
-        "action": beat.action,
-        "duration": beat.duration,
-        "id": beat.id,
-        "targets": list(beat.targets),
-    }
-    if beat.params is not None:
-        beat_payload["params"] = dict(beat.params)
-    return {
-        "beat": beat_payload,
-        "beatIndex": index,
-        "generatorVersion": project.generator_version,
-        "manimVersion": MANIM_VERSION,
-        "objects": _objects_for_beat(project, beat),
-        "profile": profile_payload,
-        "seed": project.seed,
-    }
-
-
-def _objects_for_beat(project: Project, beat: Beat) -> list[JsonValue]:
-    if beat.action == "wait":
-        return []
-    objects = {item.id: item for item in project.scene.objects}
-    ordered: list[JsonValue] = []
-    seen: set[str] = set()
-
-    def add(object_id: str) -> None:
-        if object_id in seen:
-            return
-        item = objects[object_id]
-        if item.type in {"function_plot", "surface", "parametric_curve"}:
-            axes_id = item.params.get("axesId")
-            if isinstance(axes_id, str):
-                add(axes_id)
-        seen.add(object_id)
-        ordered.append(_object_without_name(item))
-
-    for target in beat.targets:
-        add(target)
-    return ordered
-
-
-def _object_without_name(item: SceneObject) -> dict[str, JsonValue]:
-    payload = _object_dict(item)
-    payload.pop("name", None)
-    return payload
-
-
 def _invalid_json(detail: str) -> DocumentError:
     return DocumentError(f"project.json is not valid JSON: {detail}.", code="invalid_json")
 
@@ -1474,7 +1304,7 @@ def _shown(value: object) -> str:
     return json.dumps(value)
 
 
-def _check_keys(raw: dict[str, object], allowed: set[str], path: str) -> None:
+def _check_keys(raw: dict[str, object], allowed: AbstractSet[str], path: str) -> None:
     """Refuse unknown keys. ``path`` is "" for the document root.
 
     Every object the parser accepts passes through here, so this is also the
@@ -1488,7 +1318,7 @@ def _check_keys(raw: dict[str, object], allowed: set[str], path: str) -> None:
             raise DocumentError(f"{field} is not a known key", field=field)
 
 
-def _require(raw: dict[str, object], keys: set[str], path: str) -> None:
+def _require(raw: dict[str, object], keys: AbstractSet[str], path: str) -> None:
     for key in sorted(keys):
         if key not in raw:
             field = f"{path}.{key}" if path else key
@@ -1643,7 +1473,3 @@ def _as_number(value: JsonValue, path: str) -> Number:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise DocumentError(f"{path} must be a number")
     return value
-
-
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()

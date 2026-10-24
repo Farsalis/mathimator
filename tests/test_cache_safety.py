@@ -23,23 +23,13 @@ import pytest
 from mathimator_worker import clip_check
 from mathimator_worker.clip_check import ClipChecker, clip_is_complete
 from mathimator_worker.codegen import generate
-from mathimator_worker.document import (
-    beat_chain_keys,
-    dumps_project,
-    export_artifact_name,
-    export_folder_name,
-    load_text,
-)
+from mathimator_worker.document import dumps_project, load_text
+from mathimator_worker.exports import _export_problem
+from mathimator_worker.identity import beat_chain_keys, export_folder_name
+from mathimator_worker.layout import ProjectLayout
 from mathimator_worker.manim_paths import short_path
 from mathimator_worker.session import Session
-from mathimator_worker.supervisor import (
-    Supervisor,
-    _export_problem,
-    _Job,
-    _remove_tree,
-    partial_movie_dir,
-    png_frames_dir,
-)
+from mathimator_worker.supervisor import Supervisor, _Job, _remove_tree
 from tests.support import REPO, FakeManim, complete_clip, ebml_element, iso_box, video_render, write_clip
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
@@ -136,7 +126,7 @@ def test_an_incomplete_partial_never_makes_its_beat_fresh(tmp_path: Path, monkey
     session = Session(load_text((project / "project.json").read_text(encoding="utf-8")))
     session.mark_rendered("preview")
     cache = project / ".mathimator" / "cache"
-    folder = partial_movie_dir(cache / "media", "scene", "480p15")
+    folder = ProjectLayout(project).partial_movie_dir("480p15")
     folder.mkdir(parents=True)
     complete = write_clip(folder / ("a" * 64 + ".mp4"))
     cut_off = folder / ("b" * 64 + ".mp4")
@@ -168,18 +158,18 @@ def test_a_cut_off_cached_clip_is_removed_before_manim_starts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
 ) -> None:
     supervisor, events = _supervisor(_project(tmp_path / "cached"), monkeypatch)
-    folder = partial_movie_dir(supervisor.media_dir, "scene", "480p15")
+    folder = supervisor.layout.partial_movie_dir("480p15")
     folder.mkdir(parents=True)
     kept = _aged(write_clip(folder / ("c" * 64 + ".mp4")), time.time() - 600)
     cut_off = folder / ("d" * 64 + ".mp4")
     cut_off.write_bytes(_cut_off_clip(".mp4"))
     _aged(cut_off, time.time() - 600)
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
     _run(supervisor, "render_preview", "preview-1")
     assert _terminal(events, "preview-1")["event"] == "done"
     seen = fake_manim.seen()["files"]
-    assert kept.relative_to(supervisor.media_dir).as_posix() in seen
-    assert cut_off.relative_to(supervisor.media_dir).as_posix() not in seen
+    assert kept.relative_to(supervisor.layout.media_dir).as_posix() in seen
+    assert cut_off.relative_to(supervisor.layout.media_dir).as_posix() not in seen
     assert kept.is_file()
     assert not cut_off.exists()
 
@@ -190,7 +180,7 @@ def test_an_export_that_used_an_incomplete_clip_is_not_published(
     project = _project(tmp_path / "webm", export=_WEBM_PROFILE)
     supervisor, events = _supervisor(project, monkeypatch)
     clips = [complete_clip(".webm"), _cut_off_clip(".webm"), complete_clip(".webm"), complete_clip(".webm")]
-    files = video_render(supervisor.media_dir, "1080p30", clips, suffix=".webm")
+    files = video_render(supervisor.layout, "1080p30", clips, suffix=".webm")
     fake_manim.plan(files)
     _run(supervisor, "export", "export-1")
     failed = _terminal(events, "export-1")
@@ -206,12 +196,12 @@ def test_png_export_ignores_the_segment_list_of_another_render(
 ) -> None:
     project = _project(tmp_path / "frames", export=_PNG_PROFILE)
     supervisor, events = _supervisor(project, monkeypatch)
-    folder = partial_movie_dir(supervisor.media_dir, "scene", "480p15")
+    folder = supervisor.layout.partial_movie_dir("480p15")
     folder.mkdir(parents=True)
     cut_off = folder / ("a" * 64 + ".mp4")
     cut_off.write_bytes(_cut_off_clip(".mp4"))
     (folder / "partial_movie_file_list.txt").write_text(f"file 'file:{cut_off.as_posix()}'\n", encoding="utf-8")
-    frames = png_frames_dir(supervisor.media_dir, "scene")
+    frames = supervisor.layout.png_frames_dir
     fake_manim.plan(_png_render(frames, 3), _wrapped_images_ready(3, frames))
     _run(supervisor, "export", "export-1")
     assert _terminal(events, "export-1")["event"] == "done"
@@ -225,7 +215,7 @@ def test_png_export_ignores_the_segment_list_of_another_render(
 
 def test_a_render_replaces_a_planted_codegen_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     supervisor, _events = _supervisor(_project(tmp_path / "shared"), monkeypatch)
-    scene = supervisor.scene_path
+    scene = supervisor.layout.scene_path
     scene.parent.mkdir(parents=True)
     scene.write_text("REAL = True\n", encoding="utf-8")
     planted = tmp_path / "planted.py"
@@ -312,7 +302,7 @@ def test_open_project_leaves_a_running_export_alone(
 ) -> None:
     project = _project(tmp_path / "busy")
     supervisor, events = _supervisor(project, monkeypatch)
-    files = video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4)
+    files = video_render(supervisor.layout, "1080p30", [complete_clip(".mp4")] * 4)
     fake_manim.plan(files, hold=True)
     supervisor.handle_line(json.dumps({"cmd": "export", "id": "export-1"}))
     job = supervisor._current
@@ -322,14 +312,14 @@ def test_open_project_leaves_a_running_export_alone(
         supervisor.handle_line(json.dumps({"cmd": "open_project", "id": "open", "path": str(project)}))
         # The open is refused before it can sweep the export's media (D22).
         assert (events[-1]["event"], events[-1]["code"]) == ("rejected", "export_running")
-        assert supervisor.run_marker.is_file()
+        assert supervisor.layout.run_marker.is_file()
         assert all(path.is_file() for path in files)
     finally:
         fake_manim.release()
         job.thread.join(timeout=60)
     assert not job.thread.is_alive()
     assert _terminal(events, "export-1")["event"] == "done"
-    assert not supervisor.run_marker.exists()
+    assert not supervisor.layout.run_marker.exists()
 
 
 def test_reopening_a_folder_leaves_a_preview_that_outlived_its_stop_alone(
@@ -339,7 +329,7 @@ def test_reopening_a_folder_leaves_a_preview_that_outlived_its_stop_alone(
     supervisor, events = _supervisor(project, monkeypatch)
     # A Manim that is still alive when the 1 s the switch waits for it is over (C8.3).
     monkeypatch.setattr(supervisor, "_kill_process", lambda job: None)
-    files = video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)
+    files = video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4)
     fake_manim.plan(files, hold=True)
     supervisor.handle_line(json.dumps({"cmd": "render_preview", "id": "preview-1"}))
     job = supervisor._current
@@ -349,7 +339,7 @@ def test_reopening_a_folder_leaves_a_preview_that_outlived_its_stop_alone(
         supervisor.handle_line(json.dumps({"cmd": "open_project", "id": "open", "path": str(project)}))
         # The bind does not sweep the media of a run that is still writing it.
         assert [event["event"] for event in events if event.get("jobId") == "open"] == ["state"]
-        assert supervisor.run_marker.is_file()
+        assert supervisor.layout.run_marker.is_file()
         assert all(path.is_file() for path in files)
     finally:
         fake_manim.release()
@@ -362,11 +352,11 @@ def test_the_run_marker_exists_only_while_manim_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
 ) -> None:
     supervisor, events = _supervisor(_project(tmp_path / "preview"), monkeypatch)
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
     _run(supervisor, "render_preview", "preview-1")
     assert _terminal(events, "preview-1")["event"] == "done"
     assert fake_manim.seen()["marker"] is True
-    assert not supervisor.run_marker.exists()
+    assert not supervisor.layout.run_marker.exists()
     assert supervisor._index is not None
     assert [beat.fresh for beat in supervisor._index.beats] == [True] * 4
 
@@ -380,7 +370,7 @@ def test_a_failed_run_discards_its_cut_off_partial(
 ) -> None:
     project = _project(tmp_path / "failed", export=_WEBM_PROFILE if suffix == ".webm" else None)
     supervisor, events = _supervisor(project, monkeypatch)
-    folder = partial_movie_dir(supervisor.media_dir, "scene", quality)
+    folder = supervisor.layout.partial_movie_dir(quality)
     finished = folder / ("e" * 64 + suffix)
     cut_off = folder / ("f" * 64 + suffix)
     listing = folder / "partial_movie_file_list.txt"
@@ -396,7 +386,7 @@ def test_a_failed_run_discards_its_cut_off_partial(
     assert finished.is_file()
     assert not cut_off.exists()
     assert not listing.exists()
-    assert not supervisor.run_marker.exists()
+    assert not supervisor.layout.run_marker.exists()
 
 
 # PNG sequence (F021) and the 480p15 guard (G4.9)
@@ -408,7 +398,7 @@ def test_png_export_publishes_only_the_frames_of_this_run(
     # A folder named 480p15 above the project must not look like the preview.
     project = _project(tmp_path / "480p15" / "lesson", export=_PNG_PROFILE)
     supervisor, events = _supervisor(project, monkeypatch)
-    frames = png_frames_dir(supervisor.media_dir, "scene")
+    frames = supervisor.layout.png_frames_dir
     frames.mkdir(parents=True)
     for index in range(6):
         (frames / f"{index:04d}.png").write_bytes(b"stale")
@@ -420,9 +410,7 @@ def test_png_export_publishes_only_the_frames_of_this_run(
     assert not [name for name in seen if name.startswith("images/")]
     assert supervisor.session is not None
     captured = supervisor.session.project
-    published = (
-        project / ".mathimator" / "exports" / export_folder_name(captured) / export_artifact_name("png_sequence")
-    )
+    published = project / ".mathimator" / "exports" / export_folder_name(captured) / "frames"
     assert done["path"] == str(published)
     assert sorted(path.name for path in published.iterdir()) == ["0000.png", "0001.png", "0002.png"]
 
@@ -432,7 +420,7 @@ def test_png_export_with_a_frame_count_mismatch_is_not_published(
 ) -> None:
     project = _project(tmp_path / "mismatch", export=_PNG_PROFILE)
     supervisor, events = _supervisor(project, monkeypatch)
-    frames = png_frames_dir(supervisor.media_dir, "scene")
+    frames = supervisor.layout.png_frames_dir
     fake_manim.plan(_png_render(frames, 3), _wrapped_images_ready(4, frames))
     _run(supervisor, "export", "export-1")
     failed = _terminal(events, "export-1")
@@ -446,7 +434,7 @@ def test_png_export_without_a_frame_count_is_not_published(
 ) -> None:
     project = _project(tmp_path / "uncounted", export=_PNG_PROFILE)
     supervisor, events = _supervisor(project, monkeypatch)
-    frames = png_frames_dir(supervisor.media_dir, "scene")
+    frames = supervisor.layout.png_frames_dir
     fake_manim.plan(_png_render(frames, 3))
     _run(supervisor, "export", "export-1")
     failed = _terminal(events, "export-1")
@@ -459,7 +447,7 @@ def test_png_export_stops_when_the_old_frames_cannot_be_removed(
 ) -> None:
     project = _project(tmp_path / "in-use", export=_PNG_PROFILE)
     supervisor, events = _supervisor(project, monkeypatch)
-    frames = png_frames_dir(supervisor.media_dir, "scene")
+    frames = supervisor.layout.png_frames_dir
     frames.mkdir(parents=True)
     stale = frames / "0000.png"
     stale.write_bytes(b"stale")
@@ -476,7 +464,7 @@ def test_png_export_stops_when_the_old_frames_cannot_be_removed(
     assert failed["event"] == "error"
     assert str(failed["message"]).startswith(f"could not remove the old PNG frames in {frames}: ")
     assert not fake_manim.ran()
-    assert not supervisor.run_marker.exists()
+    assert not supervisor.layout.run_marker.exists()
     assert stale.read_bytes() == b"stale"
     assert not (project / ".mathimator" / "exports").exists()
 
@@ -486,23 +474,19 @@ def test_mp4_export_publishes_from_a_project_under_a_480p15_folder(
 ) -> None:
     project = _project(tmp_path / "480p15" / "lesson")
     supervisor, events = _supervisor(project, monkeypatch)
-    fake_manim.plan(video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.layout, "1080p30", [complete_clip(".mp4")] * 4))
     _run(supervisor, "export", "export-1")
     done = _terminal(events, "export-1")
     assert done["event"] == "done", done
     assert supervisor.session is not None
     folder = project / ".mathimator" / "exports" / export_folder_name(supervisor.session.project)
-    assert done["path"] == str(folder / export_artifact_name("mp4"))
+    assert done["path"] == str(folder / "scene.mp4")
     # The preview movie is still refused for a 1080p30 export.
-    preview = supervisor.media_dir / "videos" / "scene" / "480p15" / "MainScene.mp4"
+    preview = supervisor.layout.media_dir / "videos" / "scene" / "480p15" / "MainScene.mp4"
     preview.parent.mkdir(parents=True)
     write_clip(preview)
-    job = _job("export")
-    job.project_dir = supervisor.project
-    job.media_dir = supervisor.media_dir
-    job.quality = "1080p30"
-    job.captured = supervisor.session.project
-    assert _export_problem(job, preview, Path(done["path"])) == "the render is the preview"
+    problem = _export_problem(preview, Path(done["path"]), "mp4", supervisor.layout.media_dir, "1080p30")
+    assert problem == "the render is the preview"
 
 
 def _cut_off_clip(suffix: str) -> bytes:
@@ -582,7 +566,7 @@ def _write_marker(project: Path, text: str) -> Path:
 
 def _interrupted_media(media: Path, started: float) -> tuple[Path, list[Path]]:
     """An older finished partial, plus what a run that started at ``started`` left."""
-    folder = partial_movie_dir(media, "scene", "1080p30")
+    folder = media / "videos" / "scene" / "1080p30" / "partial_movie_files" / "MainScene"
     folder.mkdir(parents=True)
     kept = _aged(write_clip(folder / ("a" * 64 + ".mp4")), started - 60)
     cut_off = folder / ("b" * 64 + ".mp4")

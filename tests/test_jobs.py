@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from mathimator_worker import exports as exports_module
 from mathimator_worker import progress as progress_module
 from mathimator_worker import project_folder
 from mathimator_worker import supervisor as supervisor_module
@@ -29,7 +30,7 @@ from mathimator_worker.preview_index import PreviewIndex
 from mathimator_worker.progress import MANIFEST, ManimProgress
 from mathimator_worker.project_folder import copy_atomically, remove_file
 from mathimator_worker.session import Session
-from mathimator_worker.supervisor import Supervisor, _Job, partial_movie_dir
+from mathimator_worker.supervisor import Supervisor, _Job
 from mathimator_worker.tex_failure import format_render_failure, tex_error_lines
 from tests.support import REPO, FakeManim, Stdout, complete_clip, iso_box, video_render, write_clip
 
@@ -54,7 +55,7 @@ def test_a_preview_that_will_not_stop_holds_the_next_one(
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
     _unkillable(supervisor, monkeypatch)
-    fake_manim.plan({}, later=[video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)])
+    fake_manim.plan({}, later=[video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4)])
     _send(supervisor, cmd="render_preview", id="preview-1")
     first = _current(supervisor)
     stdout.wait_for("preview-1", "started")
@@ -79,9 +80,13 @@ def test_an_export_waits_for_a_preview_that_will_not_stop(
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
     _unkillable(supervisor, monkeypatch)
-    media = supervisor.media_dir
     clips = [complete_clip(".mp4")] * 4
-    fake_manim.plan({}, later=[{**video_render(media, "480p15", clips), **video_render(media, "1080p30", clips)}])
+    fake_manim.plan(
+        {},
+        later=[
+            {**video_render(supervisor.layout, "480p15", clips), **video_render(supervisor.layout, "1080p30", clips)}
+        ],
+    )
     _send(supervisor, cmd="render_preview", id="preview-1")
     first = _current(supervisor)
     stdout.wait_for("preview-1", "started")
@@ -111,7 +116,7 @@ def test_a_held_export_is_cancelled_at_once(
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
     _unkillable(supervisor, monkeypatch)
-    fake_manim.plan({}, later=[video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)])
+    fake_manim.plan({}, later=[video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4)])
     _send(supervisor, cmd="render_preview", id="preview-1")
     first = _current(supervisor)
     fake_manim.wait_until_held()
@@ -132,9 +137,13 @@ def test_a_render_that_outlived_its_stop_is_not_waited_for_again(
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
     _unkillable(supervisor, monkeypatch)
-    media = supervisor.media_dir
     clips = [complete_clip(".mp4")] * 4
-    fake_manim.plan({}, later=[{**video_render(media, "480p15", clips), **video_render(media, "1080p30", clips)}])
+    fake_manim.plan(
+        {},
+        later=[
+            {**video_render(supervisor.layout, "480p15", clips), **video_render(supervisor.layout, "1080p30", clips)}
+        ],
+    )
     _send(supervisor, cmd="render_preview", id="preview-1")
     first = _current(supervisor)
     fake_manim.wait_until_held()
@@ -302,7 +311,7 @@ def test_a_discard_removes_only_what_this_run_wrote_that_may_be_cut_off(tmp_path
     before = [_clip(folder / "earlier.mp4", 0, at=-1), _clip(video / "MainScene.mp4", 0, at=-1)]
     (folder / MANIFEST).write_text("file 'file:earlier.mp4'\n", encoding="utf-8")
     # Another quality folder, which another window may be rendering into right now (G5.7).
-    other = partial_movie_dir(media, "scene", "1080p30")
+    other = media / "videos" / "scene" / "1080p30" / "partial_movie_files" / "MainScene"
     other.mkdir(parents=True)
     progress = ManimProgress(video, ClipChecker(), {}, [0, 1, 2])
     elsewhere = [_clip(other / "busy.mp4", 1, at=1, complete=False), _clip(other / "done.mp4", 1, at=1)]
@@ -363,7 +372,7 @@ def test_a_cancelled_preview_keeps_the_partials_it_finished(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
-    folder = partial_movie_dir(supervisor.media_dir, "scene", "480p15")
+    folder = supervisor.layout.partial_movie_dir("480p15")
     folder.mkdir(parents=True)
     earlier = _clip(folder / ("e" * 64 + ".mp4"), 9, at=-1)
     partials = [folder / f"{index:064x}.mp4" for index in range(3)]
@@ -396,7 +405,7 @@ def test_beat_ready_stops_once_the_document_changes(
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
     if change == "undo":
         _send(supervisor, cmd="edit", id="before", edit=_color("#FF0000"))
-    files = video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4)
+    files = video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4)
     partials = [path for path in files if path.suffix == ".mp4" and "partial_movie_files" in path.parts]
     # Beat 0 is finished once beat 1's partial exists; then the fake waits.
     first = {path: files.pop(path) for path in partials[:2]}
@@ -418,7 +427,7 @@ def test_beat_ready_stops_once_the_document_changes(
     assert [line["event"] for line in after if line["jobId"] == "preview-1"] == ["done"]
     # No state line closes a preview (C5).
     assert [line["event"] for line in stdout.of("preview-1")] == ["started", "beat_ready", "done"]
-    beats = json.loads(supervisor.index_path.read_text(encoding="utf-8"))["beats"]
+    beats = json.loads(supervisor.layout.index_path.read_text(encoding="utf-8"))["beats"]
     assert [beat["fresh"] for beat in beats] == [True, False, False, False]
 
 
@@ -426,7 +435,7 @@ def test_an_export_sends_no_beat_ready(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
-    fake_manim.plan(video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.layout, "1080p30", [complete_clip(".mp4")] * 4))
     _run(supervisor, cmd="export", id="export-1")
     assert [line["event"] for line in stdout.of("export-1")] == ["started", "done"]
     assert all(beat.partial is None for beat in _index(supervisor).beats)
@@ -453,7 +462,7 @@ def test_undoing_an_appended_beat_drops_the_full_movie(
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
     _send(supervisor, cmd="edit", id="append", edit={"op": "add_text", "afterBeatId": "beat_4"})
-    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 5))
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 5))
     _run(supervisor, cmd="render_preview", id="preview-1")
     _send(supervisor, cmd="get_state", id="rendered")
     assert stdout.last()["index"]["output"] is not None
@@ -467,7 +476,7 @@ def test_a_beat_shows_its_newest_render_and_undo_brings_it_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
-    folder = partial_movie_dir(supervisor.media_dir, "scene", "480p15")
+    folder = supervisor.layout.partial_movie_dir("480p15")
     folder.mkdir(parents=True)
     supervisor._report_beats(_prepared(supervisor), [(index, _clip(folder / f"a{index}.mp4", 0)) for index in range(4)])
     _send(supervisor, cmd="edit", id="red", edit=_color("#FF0000"))
@@ -477,7 +486,7 @@ def test_a_beat_shows_its_newest_render_and_undo_brings_it_back(
     _send(supervisor, cmd="edit", id="green", edit=_color("#00FF00"))
     _prepared(supervisor)
     # The last good copy is the render just before the edit, not one two edits old (F034).
-    last_good = supervisor.last_good_dir / "beat_2.mp4"
+    last_good = supervisor.layout.last_good_dir / "beat_2.mp4"
     assert last_good.read_bytes() == _bytes(1)
     _send(supervisor, cmd="undo", id="undo-red")
     beat = stdout.last()["index"]["beats"][1]
@@ -495,7 +504,7 @@ def test_a_job_of_an_earlier_binding_records_nothing(
     earlier = _prepared(supervisor)
     # The second project's bytes are the same, so only the binding generation tells the jobs apart.
     _send(supervisor, cmd="open_project", id="open", path=str(_journey(tmp_path / "second")))
-    clip = write_clip(_made(partial_movie_dir(supervisor.media_dir, "scene", "480p15") / f"{'a' * 64}.mp4"))
+    clip = write_clip(_made(supervisor.layout.partial_movie_dir("480p15") / f"{'a' * 64}.mp4"))
     supervisor._report_beats(earlier, [(0, clip)])
     assert _index(supervisor).beats[0].partial is None
     supervisor._report_beats(_prepared(supervisor), [(0, clip)])
@@ -510,7 +519,7 @@ def test_re_export_skips_the_export_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
-    fake_manim.plan(video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.layout, "1080p30", [complete_clip(".mp4")] * 4))
     _run(supervisor, cmd="export", id="export-1")
     _run(supervisor, cmd="export", id="export-2")
     _run(supervisor, cmd="export", id="export-3", force=True)
@@ -525,12 +534,12 @@ def test_a_re_export_that_cannot_replace_the_file_keeps_the_older_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
-    files = video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4)
+    files = video_render(supervisor.layout, "1080p30", [complete_clip(".mp4")] * 4)
     fake_manim.plan(files)
     _run(supervisor, cmd="export", id="export-1")
     published = Path(stdout.of("export-1")[-1]["path"])
     kept = {path: path.read_bytes() for path in (published, published.parent / "export.json")}
-    movie = supervisor.media_dir / "videos" / "scene" / "1080p30" / "MainScene.mp4"
+    movie = supervisor.layout.media_dir / "videos" / "scene" / "1080p30" / "MainScene.mp4"
     fake_manim.plan({**files, movie: _bytes(7)})
     real_replace = os.replace
 
@@ -559,7 +568,7 @@ def test_an_edit_does_not_wait_for_an_export_to_be_copied(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
-    fake_manim.plan(video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.layout, "1080p30", [complete_clip(".mp4")] * 4))
     copying, copied = threading.Event(), threading.Event()
 
     def slow_copy(source: Path, target: Path) -> None:
@@ -567,7 +576,7 @@ def test_an_edit_does_not_wait_for_an_export_to_be_copied(
         assert copied.wait(30)
         copy_atomically(source, target)
 
-    monkeypatch.setattr(supervisor_module, "copy_atomically", slow_copy)
+    monkeypatch.setattr(exports_module, "copy_atomically", slow_copy)
     _send(supervisor, cmd="export", id="export-1")
     job = _current(supervisor)
     assert copying.wait(30)
@@ -652,7 +661,7 @@ def test_a_failed_render_reads_the_tex_log_it_wrote(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
-    tex = supervisor.media_dir / "Tex"
+    tex = supervisor.layout.media_dir / "Tex"
     tex.mkdir(parents=True)
     # A log from an earlier compile is not this run's.
     (tex / "earlier.log").write_bytes((CAPTURES / "missing-package.log").read_bytes())

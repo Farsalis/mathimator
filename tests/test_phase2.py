@@ -20,18 +20,10 @@ import pytest
 
 from mathimator_worker.argv import LAUNCHER
 from mathimator_worker.codegen import generate
-from mathimator_worker.document import (
-    Project,
-    derived_starts,
-    dumps_project,
-    export_folder_name,
-    export_key,
-    load_text,
-    scene_hash,
-    total_duration,
-)
+from mathimator_worker.document import Project, derived_starts, dumps_project, load_text, total_duration
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import expression_to_python
+from mathimator_worker.identity import export_folder_name, export_key, scene_hash
 from mathimator_worker.process_group import process_alive
 from mathimator_worker.session import Session
 from tests.support import (
