@@ -1,8 +1,8 @@
 # The release (D73). After the release merge request (.bumpversion.toml), a
 # maintainer pushes the protected tag vX.Y.Z on the default branch. Its
-# pipeline runs every lane in full: lint:versions checks the tag against the
-# app version (D72), the Linux and Windows suites and the render lane run
-# (D68), and package:windows builds the installer. Once all of them pass, the
+# pipeline runs every job: lint:repo checks the tag against the app version
+# (D72), the Linux and Windows suites and the render lane run (D68, O2), and
+# package:windows builds the installer. Once all of them pass, the
 # jobs below upload the installer, its notices and SHA256SUMS to the generic
 # package registry and create a GitLab Release that links them, with notes
 # git-cliff writes from the commits since the previous tag.
@@ -23,6 +23,8 @@ release:notes:
     GIT_DEPTH: "0"
     GIT_FETCH_EXTRA_FLAGS: --tags
   script:
+    # git-cliff does not create the folder it writes to.
+    - mkdir -p reports
     - uv run git-cliff --latest --strip header --output reports/release-notes.md
   artifacts:
     paths: [reports/release-notes.md]
@@ -44,9 +46,12 @@ release:upload:
     reports:
       dotenv: release.env
 
+# GitLab carries out the release: keyword with glab, which replaces the
+# deprecated release-cli. GitLab.com writes the glab command line itself, so
+# the image is the latest one its documentation names, not a pinned release.
 release:publish:
   extends: .release
-  image: registry.gitlab.com/gitlab-org/release-cli:v0.18.0
+  image: registry.gitlab.com/gitlab-org/cli:latest
   needs: [release:notes, release:upload]
   script:
     - echo "Creating the GitLab Release for $CI_COMMIT_TAG"

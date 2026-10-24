@@ -22,6 +22,23 @@ desktop/dist/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
 
+# What CI keeps in the checkout: the tools ci/windows-tools.ps1 installs, the
+# caches and the reports. pytest --cov and `npm run test:ci` leave coverage
+# data and reports behind locally too.
+/.tools/
+/.cargo/
+/.uv-cache/
+/.uv-python/
+/.npm/
+/.pre-commit-cache/
+/.typst/
+/.renovate/
+/reports/
+.coverage
+.coverage.*
+desktop/coverage/
+desktop/reports/
+
 # Media, caches, and logs wherever they appear
 *.mp4
 *.webm

@@ -8,11 +8,23 @@
 #   ci/release.yml   the protected-tag release (D73, D74)
 #   ci/renovate.yml  dependency updates (D76)
 #
-# Pipelines run for merge requests, the default branch, tags and schedules. A
-# branch gets no pipeline of its own, so an open merge request never runs
-# twice. Two pipeline schedules on the default branch drive the rest: a nightly
-# one runs every lane, the slow render suites and the installer included (D68,
-# D73), and one with the variable SCHEDULE_KIND=renovate runs only Renovate.
+# The Free tier gives the namespace about 400 compute minutes a month, so
+# pipelines spend them only where a change needs them (O2):
+#
+# - Pipelines run for merge requests, the default branch and tags. A branch
+#   gets no pipeline of its own, so an open merge request never runs twice.
+# - The one pipeline schedule, with the variable SCHEDULE_KIND=renovate, runs
+#   Renovate alone. Any other schedule gets no pipeline: there is no nightly.
+# - A merge request pipeline runs lint:repo, SAST and Secret Detection, and the
+#   jobs of each lane whose files the change touches: the Python, Typst, UI
+#   and Rust lanes, the dependency audits and the Windows fast lane.
+# - A default-branch pipeline runs lint:repo, SAST and Secret Detection alone.
+#   Merges are semi-linear (D69), so main gets the tree that the merge request
+#   pipeline passed, and running the lanes again would spend the minutes twice.
+# - The Windows Rust build, the render, export and offline suites and the
+#   installer run on tags, and on demand as manual jobs that never block a
+#   pipeline.
+# - A tag pipeline runs every job.
 
 include:
   - local: ci/linux.yml
@@ -21,7 +33,8 @@ include:
   - local: ci/release.yml
   - local: ci/renovate.yml
 
-# build comes first because every cargo job embeds desktop/dist from build:ui.
+# build comes first because the Linux cargo job embeds desktop/dist from
+# build:ui.
 stages:
   - build
   - lint
@@ -38,8 +51,9 @@ workflow:
       variables:
         SAST_DISABLED: "true"
         SECRET_DETECTION_DISABLED: "true"
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_TAG
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
@@ -61,8 +75,9 @@ default:
     max: 1
     when: [runner_system_failure, scheduler_failure]
 
-# The rules of a job that runs in every pipeline but the Renovate one. Jobs
-# with narrower rules start with the same first rule.
+# The rules of a job that runs in every pipeline but the Renovate one. The job
+# templates start from them; a lane job replaces them with its lane's rules,
+# which start with the same first rule.
 .every-pipeline:
   rules:
     - if: $SCHEDULE_KIND == "renovate"
