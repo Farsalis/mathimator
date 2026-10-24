@@ -23,7 +23,7 @@ const LIMIT: Duration = Duration::from_secs(10);
 /// How often a running Typst is checked for its exit, a newer compile and the limit.
 const POLL: Duration = Duration::from_millis(5);
 /// The Typst the preview is written for (spec §1).
-const VERSION: &str = "typst 0.15.0";
+pub const VERSION: &str = "typst 0.15.0";
 /// Generations stay below 2^53, so they are exact JavaScript numbers (C9.9).
 const GENERATION_LIMIT: u64 = 1 << 53;
 /// `\frac` and `\sqrt` groups nested deeper than this are unsupported. A stored formula has at most
@@ -91,7 +91,7 @@ pub struct GlyphPreview {
     gate: Mutex<Gate>,
     /// The Typst the runtime resolved, or why there is none (C9.6).
     typst: Result<PathBuf, String>,
-    /// Set once `typst --version` has reported 0.15.0. A failed check runs again on the next
+    /// Set once `typst --version` has reported [`VERSION`]. A failed check runs again on the next
     /// compile, so a Typst fixed meanwhile is picked up (F052).
     checked: AtomicBool,
 }
@@ -389,7 +389,7 @@ fn typst_command(typst: &Path, folder: &Path, name: &str) -> Command {
     command
 }
 
-/// Checks that `typst` runs, without a console window, and is 0.15.0 (F052).
+/// Checks that `typst` runs, without a console window, and is [`VERSION`] (F052).
 fn check_version(typst: &Path) -> Result<(), String> {
     let mut command = hidden_command(typst);
     command.arg("--version");
@@ -409,7 +409,7 @@ fn check_version(typst: &Path) -> Result<(), String> {
     if line.starts_with(VERSION) {
         Ok(())
     } else {
-        Err(format!("Typst 0.15.0 is required, found {line:?}"))
+        Err(format!("{VERSION} is required, found {line:?}"))
     }
 }
 
@@ -1012,7 +1012,7 @@ mod tests {
             assert_eq!(
                 old,
                 GlyphResult::error(
-                    "Typst is unavailable: Typst 0.15.0 is required, found \"typst 0.14.2\""
+                    "Typst is unavailable: typst 0.15.0 is required, found \"typst 0.14.2\""
                 )
             );
         }

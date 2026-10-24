@@ -104,9 +104,15 @@ struct Link {
 
 /// The process of one generation, shared with its stdout router.
 struct Process {
-    child: Mutex<Box<dyn WorkerProcess>>,
+    child: Mutex<Child>,
     /// Set when the shell ends the process, so that its exit is not reported as a crash.
     stopping: AtomicBool,
+}
+
+/// A worker process, and whether an end has seen it exit.
+struct Child {
+    process: Box<dyn WorkerProcess>,
+    exited: bool,
 }
 
 /// Where a worker starts (C8.5 launch step 2, C8.6 step 5).
@@ -213,6 +219,33 @@ impl Gate {
             Status::Stopped | Status::Running(_) => None,
         };
         result
+    }
+}
+
+impl Process {
+    fn new(process: Box<dyn WorkerProcess>) -> Self {
+        Self {
+            child: Mutex::new(Child {
+                process,
+                exited: false,
+            }),
+            stopping: AtomicBool::new(false),
+        }
+    }
+
+    /// Ends the process for good, and returns whether it exited within 5 s (C8.6 step 4). A
+    /// process that exited is not ended again, so a crashed worker that both the router and the
+    /// next command end is ended once.
+    fn end(&self) -> bool {
+        let mut child = lock(&self.child);
+        if !child.exited {
+            child.exited = child.process.end(STOP_WAIT);
+        }
+        child.exited
+    }
+
+    fn exit_code(&self, limit: Duration) -> Option<i32> {
+        lock(&self.child).process.exit_code(limit)
     }
 }
 
@@ -521,19 +554,23 @@ impl Session<'_> {
     /// exit (C8.6 step 4). A worker still alive after 5 s is kept as stuck.
     fn stop(&mut self) -> Result<(), String> {
         let process = match mem::replace(self.status, Status::Stopped) {
-            // Its stdin closes as the link drops.
-            Status::Running(link) => link.process,
+            Status::Running(Link { stdin, process, .. }) => {
+                // Set before its stdin closes, so that the router never takes the exit that
+                // follows for a crash and ends the process too.
+                process.stopping.store(true, Ordering::SeqCst);
+                drop(stdin);
+                process
+            }
             Status::Stopped | Status::Unavailable(_) => match self.stuck.take() {
                 Some(process) => process,
                 None => return Ok(()),
             },
         };
-        process.stopping.store(true, Ordering::SeqCst);
-        if !lock(&process.child).end(STOP_WAIT) {
+        if !process.end() {
             *self.stuck = Some(process);
             return Err(STUCK.to_owned());
         }
-        let exit_code = lock(&process.child).exit_code(Duration::ZERO);
+        let exit_code = process.exit_code(Duration::ZERO);
         self.shared
             .host
             .log(&format!("Stopped the worker{}.", exit_code_text(exit_code)));
@@ -600,7 +637,7 @@ impl Session<'_> {
 
     fn exit_code(&self) -> Option<i32> {
         match &*self.status {
-            Status::Running(link) => lock(&link.process.child).exit_code(EXIT_CODE_WAIT),
+            Status::Running(link) => link.process.exit_code(EXIT_CODE_WAIT),
             _ => None,
         }
     }
@@ -741,10 +778,7 @@ impl Shared {
     fn connect(self: &Arc<Self>, spawned: Spawned) -> Link {
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         lock(&self.routes).open = Some(generation);
-        let process = Arc::new(Process {
-            child: Mutex::new(spawned.process),
-            stopping: AtomicBool::new(false),
-        });
+        let process = Arc::new(Process::new(spawned.process));
         let shared = Arc::clone(self);
         let routed = Arc::clone(&process);
         let stdout = spawned.stdout;
@@ -791,15 +825,16 @@ impl Shared {
         }
         let crashed = !process.stopping.load(Ordering::SeqCst);
         let exit_code = if crashed {
-            lock(&process.child).exit_code(EXIT_CODE_WAIT)
+            process.exit_code(EXIT_CODE_WAIT)
         } else {
             None
         };
         self.close(generation, exit_code, crashed);
         if crashed {
             // Ending it for good also stops a Manim grandchild that outlived it. The next command
-            // checks again that it has exited before it starts another worker.
-            lock(&process.child).end(STOP_WAIT);
+            // starts another worker only once it has exited, and ends it again only if it is
+            // still alive after this end.
+            process.end();
         }
     }
 
@@ -1518,6 +1553,44 @@ mod tests {
         );
     }
 
+    /// A worker's stdin that closes at once, but whose drop returns only 50 ms later. The router
+    /// sees the exit that follows well before the shell goes on.
+    struct SlowClose(Option<Box<dyn Write + Send>>);
+
+    impl Write for SlowClose {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.as_mut().unwrap().write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.0.as_mut().unwrap().flush()
+        }
+    }
+
+    impl Drop for SlowClose {
+        fn drop(&mut self) {
+            drop(self.0.take());
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn a_stopped_worker_is_not_taken_for_a_crash_while_its_stdin_closes() {
+        let test = Test::launch(Exit::WithStdout, out_of_date_first, |fake| {
+            Ok(Box::new(move |folder: &Path, init: bool| {
+                let mut spawned = fake.spawn(folder, init)?;
+                spawned.stdin = Box::new(SlowClose(Some(spawned.stdin)));
+                Ok(spawned)
+            }))
+        });
+        assert!(block_on(test.worker.unavailable()).is_some());
+        assert!(test.events().is_empty(), "{:?}", test.events());
+        assert_eq!(
+            test.history(),
+            ["spawn", "in status", "out status-1", "exited", "end"]
+        );
+    }
+
     #[test]
     fn handshake_refuses_protocol_3() {
         let (test, error) =
@@ -1555,6 +1628,8 @@ mod tests {
             "{}",
             error.message
         );
+        // The router and the failed handshake both end it, but only the first end reaches it.
+        assert_eq!(test.history(), ["spawn", "in status", "exited", "end"]);
     }
 
     #[test]
@@ -2070,7 +2145,24 @@ mod tests {
             history[..respawn].contains(&"exited".to_owned()),
             "the new worker started before the old one exited: {history:?}"
         );
+        let ends = history.iter().filter(|entry| *entry == "end").count();
+        assert_eq!(ends, 1, "{history:?}");
         assert_eq!(test.request(3), json!({"cmd": "status", "id": "status-4"}));
+    }
+
+    #[test]
+    fn a_process_is_ended_again_only_if_it_outlived_its_last_end() {
+        let history = Arc::default();
+        let process = Process::new(Box::new(FakeProcess {
+            exit: Exit::Late,
+            exited: Arc::default(),
+            ended: false,
+            history: Arc::clone(&history),
+        }));
+        assert!(!process.end(), "the first end waited for the late exit");
+        assert!(process.end());
+        assert!(process.end());
+        assert_eq!(lock(&history).as_slice(), ["end", "exited", "end"]);
     }
 
     #[test]

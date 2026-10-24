@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
-use crate::tex;
+use crate::{equation, tex};
 
 const PYTHON_OVERRIDE: &str = "MATHIMATOR_PYTHON";
 const TYPST_OVERRIDE: &str = "MATHIMATOR_TYPST";
@@ -184,7 +184,7 @@ fn development(repo: &Path, overrides: &Overrides) -> Runtime {
         )),
         None => file_in(&bundle, manifest.typst.as_deref())
             .or_else(|| on_path("typst"))
-            .ok_or_else(|| "typst 0.15.0 was not found on PATH".to_owned()),
+            .ok_or_else(|| format!("{} was not found on PATH", equation::VERSION)),
     };
     let (tinytex_bin, tex_error) = match &overrides.tinytex_bin {
         Some(path) if path.is_dir() => (Some(path.clone()), None),
