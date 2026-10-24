@@ -38,9 +38,11 @@ and the CI and release pipeline.
 Mathimator treats a project as data. Opening, previewing or exporting a
 project must never run code or TeX commands of its author's choosing, or read
 or write files outside the project folder. Formula LaTeX is limited to an
-allowlist of commands and runs with shell escape off. An installed Mathimator
-runs only the Python, TeX and Typst of its own runtime. A way around any of
-this is a vulnerability.
+allowlist of commands and runs with shell escape off. Mathimator refuses a
+project whose working folders are symbolic links or junctions, and no delete
+follows a link. An installed Mathimator runs only the Python, TeX and Typst of
+its own runtime, and passes none of the inherited `MATHIMATOR_*` development
+variables to its worker. A way around any of this is a vulnerability.
 
 A problem in a bundled component, such as Manim, PyAV and its FFmpeg, TinyTeX,
 Typst, Tauri or WebView2, belongs with that project. If the version Mathimator

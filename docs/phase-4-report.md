@@ -1,5 +1,7 @@
 # Phase 4 report — template library and Cairo 3D
 
+> Historical record. Where it differs from the current branch, [design-spec.md](design-spec.md) describes the current behaviour, and section 8 of [architecture-audit-report.md](architecture-audit-report.md) the remediation status.
+
 Date: 21 October 2026.
 
 Phase 4 only. Phase 5 was not started. No pull request was opened. `docs/design-spec.md` was not revised.

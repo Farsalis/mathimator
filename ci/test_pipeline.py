@@ -6,7 +6,9 @@ reports: a job defined twice, a pre-commit SKIP or a pytest marker that names
 nothing, a CI pin that disagrees with its source, a download the scripts check
 against no SHA-256, rules that start a job in pipelines the decisions keep it
 out of or leave out a job that another needs, a lane that misses a file its
-tests or linters read, and a folder CI writes that git would pick up.
+tests or linters read, a folder CI writes that git would pick up, and a job
+that README.md's pipeline table leaves out, repeats or puts in the wrong
+stage or on the wrong runner.
 """
 
 from __future__ import annotations
@@ -326,6 +328,24 @@ def test_jobs_run_in_declared_stages() -> None:
     stages = {*_files()[".gitlab-ci.yml"]["stages"], ".pre", ".post"}
     for name in _visible_jobs():
         assert _resolve(name).get("stage", "test") in stages, f"{name} runs in an undeclared stage"
+
+
+def test_the_readme_lists_each_job_once_in_its_stage_and_on_its_runner() -> None:
+    # The table in README.md's "Continuous integration" section: after the
+    # header and its separator, a row per stage with the jobs of the hosted
+    # Linux runners and those of the hosted Windows runner.
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    section = readme.split("\n## Continuous integration\n", 1)[1].split("\n## ", 1)[0]
+    rows = [[cell.strip() for cell in line.strip("|").split("|")] for line in section.splitlines() if line[:1] == "|"]
+    listed = [
+        (job, stage, runner)
+        for stage, *cells in rows[2:]
+        for runner, cell in zip(("linux", "windows"), cells, strict=True)
+        for job in re.findall(r"`([^`]+)`", cell)
+    ]
+    jobs = [(name, _resolve(name)) for name in _visible_jobs()]
+    expected = [(name, job.get("stage", "test"), "windows" if job.get("tags") else "linux") for name, job in jobs]
+    assert sorted(listed) == sorted(expected)
 
 
 def test_marker_expressions_name_registered_markers() -> None:

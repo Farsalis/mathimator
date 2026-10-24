@@ -114,11 +114,16 @@ pytest markers sort the Python tests into tiers:
 | `export` | Like `render`: the 1920×1080, 30 fps export of the reference scene | `test:render:windows` |
 | `offline` | A built bundle, with the network blocked | `test:render:windows` |
 
-The fast lane, as CI runs it on Linux:
+The fast lane, which `test:python` runs on Linux, with the `ci/` tests that
+`lint:repo` runs:
 
 ```powershell
 uv run pytest tests scripts ci -m "not render and not export and not offline and not typst and not process_table"
 ```
+
+On Linux, `bash ci/install-typst.sh DIR` installs the pinned Typst into `DIR`
+for the `typst` tests, as `test:typst` does; the
+[Linux notes](CONTRIBUTING.md#linux) show how.
 
 `uv run pytest` on its own runs every test in `tests/`, the slow tiers
 included. The render and export tests need LaTeX on PATH, and the offline tests
@@ -133,8 +138,7 @@ uv run pytest tests -m "render or export or offline"
 ```
 
 The Job Object tests create real Job Objects, so they run only when
-`MATHIMATOR_WIN32_TESTS=1` is set, as `test:windows` and `test:rust:windows`
-set it.
+`MATHIMATOR_WIN32_TESTS=1` is set, as the Windows CI jobs set it.
 
 The UI, from `desktop/`:
 
@@ -145,6 +149,9 @@ npm run typecheck
 npm run format:check
 ```
 
+`npm run test:ci` runs the tests with coverage, as `test:ui` does in CI, and
+writes `desktop/coverage/` and `desktop/reports/junit-vitest.xml`.
+
 The shell, from `desktop/src-tauri/`, after `npm run build`:
 
 ```powershell
@@ -153,8 +160,10 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-On Windows, `cargo test --locked -- --include-ignored` with
-`MATHIMATOR_WIN32_TESTS=1` also runs the shell's Job Object test.
+On Windows, `cargo test --locked -- --include-ignored` also runs the shell's
+ignored tests, as `test:rust:windows` does: `MATHIMATOR_WIN32_TESTS=1` lets
+the Job Object test run, and `MATHIMATOR_REAL_WORKER_TESTS=1` the tests that
+start the repository's `.venv` Python, the worker among them.
 
 The Python lint, type and version checks, from the repository root:
 
@@ -187,45 +196,71 @@ It runs these steps, which can also be run one at a time:
 
 1. `packaging/build-bundle.ps1` builds `packaging/bundle`. It downloads uv,
    CPython, TinyTeX and Typst into `packaging/.cache`, checks each download
-   against its SHA-256 in `packaging/versions.env`, and logs to
-   `out/bundle.log`. Run it in Windows PowerShell:
+   against its SHA-256 in `packaging/versions.env`, compiles the bundled
+   Python and the worker to checked-hash bytecode, which an install under
+   Program Files cannot write for itself, and logs to `out/bundle.log`. Run it
+   in Windows PowerShell:
    `powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build-bundle.ps1`.
 2. `npm ci` in `desktop/`, and `cargo fetch --locked` in `desktop/src-tauri/`.
 3. The bundled interpreter runs `scripts/generate_notices.py`, which writes
    `THIRD_PARTY_NOTICES.txt` into the bundle, and then
    `scripts/check_bundle.py`, which fails on a bundle that is stale,
    incomplete or built for another platform.
-4. `npm run tauri build` in `desktop/` makes the installer.
+4. `npm run tauri build` in `desktop/` makes the installer. After its cargo
+   build it runs both scripts of step 3 itself, as its `beforeBundleCommand`,
+   so it fails on a missing or stale bundle even when you run it on its own.
 5. `out/package` receives the installer, `THIRD_PARTY_NOTICES.txt`, and
    `SHA256SUMS` for both.
 
 `packaging/build-bundle.sh` runs the PowerShell script from Git Bash, MSYS2 or
-Cygwin. On Linux it builds a linux-x86_64 runtime for the tests; there is no
-Linux installer.
+Cygwin. On Linux it builds a linux-x86_64 runtime for the tests. There is no
+Linux installer, and `scripts/generate_notices.py` refuses a Linux bundle,
+because it lists only the libraries that the Windows CPython links in.
 
 ## Continuous integration
 
 The pipeline in `.gitlab-ci.yml` and `ci/` runs on gitlab.com's hosted runners
-and needs only the Free tier. It runs for merge requests, the default branch,
-tags and pipeline schedules.
+and needs only the Free tier. That tier gives the namespace about 400 compute
+minutes a month, so the pipeline runs a job only where a change needs it. It
+runs for merge requests, the default branch, tags and the Renovate schedule;
+there is no nightly pipeline.
 
 | Stage | Hosted Linux runners | Hosted Windows runner |
 | --- | --- | --- |
-| build | `build:ui`, `build:worker` | |
-| lint | `lint:python`, `lint:versions`, `lint:ui`, `lint:rust`, `lint:pre-commit` | |
+| build | `build:ui` | |
+| lint | `lint:repo`, `lint:python`, `lint:ui` | |
 | test | `test:python`, `test:typst`, `test:ui`, `test:rust`, `audit:python`, `audit:npm`, `audit:rust` | `test:windows`, `test:rust:windows`, `test:render:windows` |
 | package | | `package:windows` |
 | release | `release:notes`, `release:upload`, `release:publish` | |
 | maintain | `renovate` | |
 
-GitLab SAST and Secret Detection run as well. The Linux lint, build and test
-jobs run in every pipeline but the Renovate one. The Windows test lanes run
-when a change touches the worker, the shell, the tests or the Python
-dependencies, and on tags and schedules. The render lane runs nightly,
-on tags, and as a manual job in merge requests. The installer is built nightly,
-on tags, and on demand. Test coverage of the worker is reported, never
-enforced. A protected `vX.Y.Z` tag publishes a release, as
-[CONTRIBUTING.md](CONTRIBUTING.md) describes.
+Every merge request runs `lint:repo` (the version and pin check, Ruff, the
+`ci/` tests and the remaining pre-commit hooks), GitLab SAST and Secret
+Detection. The other jobs run in a merge request only when it changes what
+they check, or the CI files that define them:
+
+- `lint:python` and `test:python`: the worker, the tests, the scenes, the
+  spec, the scripts, the packaging files and the Python dependencies and
+  pins;
+- `test:typst`: the worker, the tests, the Python dependencies and pins, and
+  the Typst pin;
+- `build:ui`, `lint:ui` and `test:ui`: the UI and the shared fixtures and
+  worker messages its tests read;
+- `build:ui` and `test:rust`: the shell and the fixtures its tests embed. The
+  shell's JSON configuration also runs `lint:ui`;
+- each audit: its lockfile and manifest, and `ci/deny.toml` for
+  `audit:rust`;
+- `test:windows`: the worker, the tests, the scenes, the scripts, the `ci/`
+  tests and the Python dependencies and pins.
+
+Merges are semi-linear, so the default branch runs only `lint:repo`, SAST and
+Secret Detection. The Windows Rust build (`test:rust:windows`), the render,
+export and offline suites (`test:render:windows`) and the installer
+(`package:windows`) run on tags, and otherwise only when someone starts them
+as manual jobs. A tag runs every job, and a protected `vX.Y.Z` tag publishes a
+release, as [CONTRIBUTING.md](CONTRIBUTING.md) describes.
+
+Test coverage of the worker and the UI is reported, never enforced.
 
 ## Licence
 
