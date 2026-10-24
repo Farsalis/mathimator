@@ -2,25 +2,16 @@
 //!
 //! `assign_supervisor` runs on Windows unless a debug build has
 //! `MATHIMATOR_WIN32_JOBS=0`; release builds read no such override (C9.6).
-//! Closing the returned handle kills the supervisor and every process it
-//! created, because the job has `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The test
-//! below is ignored until Craig approves executing it on this machine.
+//! Dropping the returned job kills the supervisor and every process it created,
+//! because the job has `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
 
 use std::io;
 use std::process::Child;
 
+/// The supervisor's Job Object. Dropping it closes the handle, which ends the tree.
 pub struct SupervisorJob {
     #[cfg(windows)]
-    handle: isize,
-}
-
-impl Drop for SupervisorJob {
-    fn drop(&mut self) {
-        #[cfg(windows)]
-        unsafe {
-            CloseHandle(self.handle as *mut std::ffi::c_void);
-        }
-    }
+    _job: std::os::windows::io::OwnedHandle,
 }
 
 /// Puts the supervisor in a kill-on-close Job Object. `Ok(None)` means Job
@@ -40,277 +31,205 @@ fn assign_enabled(_child: &Child) -> io::Result<Option<SupervisorJob>> {
 
 #[cfg(windows)]
 fn assign_enabled(child: &Child) -> io::Result<Option<SupervisorJob>> {
-    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
-    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
-    const PROCESS_TERMINATE: u32 = 0x0001;
-    const PROCESS_SET_QUOTA: u32 = 0x0100;
-    unsafe {
-        let handle = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
-        if handle.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-        // From here on, dropping `job` closes the handle, after the error is read.
-        let job = SupervisorJob {
-            handle: handle as isize,
-        };
-        let mut info: JobObjectExtendedLimitInformation = std::mem::zeroed();
-        info.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let set = SetInformationJobObject(
-            handle,
-            JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
-            &mut info as *mut JobObjectExtendedLimitInformation as *mut std::ffi::c_void,
-            std::mem::size_of::<JobObjectExtendedLimitInformation>() as u32,
+    use std::os::windows::io::{AsRawHandle, HandleOrNull, OwnedHandle};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    // SAFETY: CreateJobObjectW returns a new handle that nothing else owns, or null.
+    let job = unsafe {
+        HandleOrNull::from_raw_handle(CreateJobObjectW(std::ptr::null(), std::ptr::null()))
+    };
+    let job = OwnedHandle::try_from(job).map_err(|_| os_error("CreateJobObjectW"))?;
+    // From here on, each error is read before `job` drops and closes the handle.
+    let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // SAFETY: `info` is the structure this class takes, and the length is its size.
+    let set = unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle(),
+            JobObjectExtendedLimitInformation,
+            (&raw const info).cast(),
+            std::mem::size_of_val(&info) as u32,
+        )
+    };
+    if set == 0 {
+        return Err(os_error("SetInformationJobObject"));
+    }
+    // SAFETY: both handles stay open for the call; `child` owns the process handle.
+    if unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle()) } == 0 {
+        return Err(os_error("AssignProcessToJobObject"));
+    }
+    Ok(Some(SupervisorJob { _job: job }))
+}
+
+/// The last OS error, tagged with the Win32 call that failed (F101).
+#[cfg(windows)]
+fn os_error(api: &str) -> io::Error {
+    let err = io::Error::last_os_error();
+    io::Error::new(err.kind(), format!("{api} failed: {err}"))
+}
+
+/// The reap test creates a Job Object and real processes, so it runs only with
+/// `--include-ignored` and `MATHIMATOR_WIN32_TESTS=1`.
+#[cfg(all(test, windows))]
+mod tests {
+    use std::os::windows::io::{AsRawHandle, HandleOrNull, OwnedHandle};
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::{fs, thread};
+
+    use windows_sys::Win32::Foundation::{SetLastError, ERROR_ACCESS_DENIED, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    use super::*;
+
+    /// The C# stand-ins the Python reap tests compile too (D53).
+    const JOB_TREE: &str = include_str!("../../../tests/fixtures/win32/job_tree.cs");
+    const SLEEPER: &str = include_str!("../../../tests/fixtures/win32/sleeper.cs");
+
+    #[test]
+    fn a_failed_call_names_the_api_and_keeps_the_os_reason() {
+        // SAFETY: SetLastError only sets this thread's last-error code.
+        unsafe { SetLastError(ERROR_ACCESS_DENIED) };
+        let err = os_error("AssignProcessToJobObject");
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        let message = err.to_string();
+        assert!(
+            message.starts_with("AssignProcessToJobObject failed: ")
+                && message.ends_with("(os error 5)"),
+            "{message}"
         );
-        if set == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, child.id());
-        if process.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-        let assigned = AssignProcessToJobObject(handle, process);
-        let error = io::Error::last_os_error();
-        CloseHandle(process);
-        if assigned == 0 {
-            return Err(error);
-        }
-        Ok(Some(job))
     }
-}
 
-#[cfg(windows)]
-#[repr(C)]
-struct BasicLimitInformation {
-    per_process_user_time: i64,
-    per_job_user_time: i64,
-    limit_flags: u32,
-    _pad0: u32,
-    minimum_working_set_size: usize,
-    maximum_working_set_size: usize,
-    active_process_limit: u32,
-    _pad1: u32,
-    affinity: usize,
-    priority_class: u32,
-    scheduling_class: u32,
-}
-
-#[cfg(windows)]
-#[repr(C)]
-struct IoCounters {
-    read_operation_count: u64,
-    write_operation_count: u64,
-    other_operation_count: u64,
-    read_transfer_count: u64,
-    write_transfer_count: u64,
-    other_transfer_count: u64,
-}
-
-#[cfg(windows)]
-#[repr(C)]
-struct JobObjectExtendedLimitInformation {
-    basic: BasicLimitInformation,
-    io: IoCounters,
-    process_memory_limit: usize,
-    job_memory_limit: usize,
-    peak_process_memory_used: usize,
-    peak_job_memory_used: usize,
-}
-
-#[cfg(windows)]
-#[link(name = "kernel32")]
-extern "system" {
-    fn CreateJobObjectW(attrs: *mut std::ffi::c_void, name: *const u16) -> *mut std::ffi::c_void;
-    fn SetInformationJobObject(
-        job: *mut std::ffi::c_void,
-        class: i32,
-        info: *mut std::ffi::c_void,
-        length: u32,
-    ) -> i32;
-    fn AssignProcessToJobObject(job: *mut std::ffi::c_void, process: *mut std::ffi::c_void) -> i32;
-    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
-    fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
-}
-
-#[cfg(all(windows, test))]
-#[link(name = "kernel32")]
-extern "system" {
-    fn GetExitCodeProcess(process: *mut std::ffi::c_void, code: *mut u32) -> i32;
-}
-
-#[test]
-#[ignore = "Win32 job-object test is not executed until Craig approves running it on this machine"]
-fn supervisor_job_reaps_manim_latex_and_dvisvgm_within_one_second() {
-    assert_eq!(
-        std::env::var("MATHIMATOR_WIN32_TESTS").ok().as_deref(),
-        Some("1"),
-        "refusing to create a Job Object without MATHIMATOR_WIN32_TESTS=1",
-    );
-    #[cfg(windows)]
-    reap_assigned_tree_within_one_second();
-    #[cfg(not(windows))]
-    panic!("the supervisor job is a Windows test");
-}
-
-#[cfg(all(windows, test))]
-fn reap_assigned_tree_within_one_second() {
-    // SAFETY: this ignored test is the only writer, and cargo test does not
-    // run it unless --ignored is passed together with MATHIMATOR_WIN32_TESTS=1.
-    unsafe {
-        std::env::set_var("MATHIMATOR_WIN32_JOBS", "1");
-    }
-    let root = std::env::temp_dir().join(format!(
-        "mathimator-job-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|value| value.as_millis())
-            .unwrap_or(0)
-    ));
-    std::fs::create_dir_all(&root).expect("temp dir");
-    let manim = compile_sleeper(&root, "manim.exe", tree_parent_source());
-    let latex = compile_sleeper(&root, "latex.exe", sleeper_source());
-    let dvisvgm = compile_sleeper(&root, "dvisvgm.exe", sleeper_source());
-    let go = root.join("go");
-    let pids = root.join("pids.txt");
-    let mut child = std::process::Command::new(&manim)
-        .env("MATHIMATOR_TEST_GO", &go)
-        .env("MATHIMATOR_TEST_PIDS", &pids)
-        .env("MATHIMATOR_TEST_LATEX", &latex)
-        .env("MATHIMATOR_TEST_DVISVGM", &dvisvgm)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn manim stand-in");
-    let job = assign_supervisor(&child)
-        .expect("the Job Object could not be set up")
-        .expect("Job Objects are off");
-    std::fs::write(&go, b"go").expect("go file");
-    let (latex_pid, dvisvgm_pid) = wait_child_pids(&pids);
-    assert!(
-        process_alive(child.id()),
-        "manim stand-in exited before the job closed"
-    );
-    assert!(process_alive(latex_pid), "latex was not alive");
-    assert!(process_alive(dvisvgm_pid), "dvisvgm was not alive");
-    let started = std::time::Instant::now();
-    drop(job);
-    let limit = std::time::Duration::from_secs(1);
-    loop {
-        let parent_done = child.try_wait().expect("wait").is_some();
-        let children_done = !process_alive(latex_pid) && !process_alive(dvisvgm_pid);
-        if parent_done && children_done {
-            assert!(
-                started.elapsed() <= limit,
-                "reap took {:?}",
-                started.elapsed()
-            );
-            let _ = child.wait();
-            return;
-        }
-        if started.elapsed() > limit {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("manim, latex, or dvisvgm still alive after 1s");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-}
-
-#[cfg(all(windows, test))]
-fn process_alive(pid: u32) -> bool {
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-    const STILL_ACTIVE: u32 = 259;
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return false;
-        }
-        let mut code = 0u32;
-        let ok = GetExitCodeProcess(handle, &mut code);
-        CloseHandle(handle);
-        ok != 0 && code == STILL_ACTIVE
-    }
-}
-
-#[cfg(all(windows, test))]
-fn wait_child_pids(path: &std::path::Path) -> (u32, u32) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
-            if lines.len() >= 2 {
-                let latex = lines[0].trim().parse().expect("latex pid");
-                let dvisvgm = lines[1].trim().parse().expect("dvisvgm pid");
-                return (latex, dvisvgm);
+    #[test]
+    #[ignore = "creates a Job Object and processes; needs MATHIMATOR_WIN32_TESTS=1"]
+    fn supervisor_job_reaps_manim_latex_and_dvisvgm_within_one_second() {
+        assert_eq!(
+            std::env::var("MATHIMATOR_WIN32_TESTS").ok().as_deref(),
+            Some("1"),
+            "refusing to create a Job Object without MATHIMATOR_WIN32_TESTS=1",
+        );
+        let root = std::env::temp_dir().join(format!(
+            "mathimator-job-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|value| value.as_millis())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&root).expect("temp dir");
+        let manim = compile_stand_in(&root, "manim", JOB_TREE);
+        let latex = compile_stand_in(&root, "latex", SLEEPER);
+        let dvisvgm = compile_stand_in(&root, "dvisvgm", SLEEPER);
+        let go = root.join("go");
+        let pids = root.join("pids.txt");
+        let mut child = Command::new(&manim)
+            .env("MATHIMATOR_TEST_GO", &go)
+            .env("MATHIMATOR_TEST_PIDS", &pids)
+            .env("MATHIMATOR_TEST_LATEX", &latex)
+            .env("MATHIMATOR_TEST_DVISVGM", &dvisvgm)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn manim stand-in");
+        // Called directly, so a MATHIMATOR_WIN32_JOBS=0 in the environment cannot skip it.
+        let job = assign_enabled(&child)
+            .expect("the Job Object could not be set up")
+            .expect("Job Objects are off");
+        fs::write(&go, b"go").expect("go file");
+        let (latex_pid, dvisvgm_pid) = wait_child_pids(&pids);
+        assert!(
+            process_alive(child.id()),
+            "manim stand-in exited before the job closed"
+        );
+        assert!(process_alive(latex_pid), "latex was not alive");
+        assert!(process_alive(dvisvgm_pid), "dvisvgm was not alive");
+        let started = Instant::now();
+        drop(job);
+        let limit = Duration::from_secs(1);
+        loop {
+            let parent_done = child.try_wait().expect("wait").is_some();
+            let children_done = !process_alive(latex_pid) && !process_alive(dvisvgm_pid);
+            if parent_done && children_done {
+                assert!(
+                    started.elapsed() <= limit,
+                    "reap took {:?}",
+                    started.elapsed()
+                );
+                let _ = fs::remove_dir_all(&root);
+                return;
             }
+            if started.elapsed() > limit {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("manim, latex, or dvisvgm still alive after 1s");
+            }
+            thread::sleep(Duration::from_millis(20));
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    panic!("child pids were not written");
-}
 
-#[cfg(all(windows, test))]
-fn compile_sleeper(root: &std::path::Path, name: &str, source: &str) -> std::path::PathBuf {
-    let stem = name.trim_end_matches(".exe");
-    let source_path = root.join(format!("{stem}.cs"));
-    let exe = root.join(name);
-    std::fs::write(&source_path, source).expect("source");
-    let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
-    let compiler = std::path::PathBuf::from(windir)
-        .join("Microsoft.NET")
-        .join("Framework64")
-        .join("v4.0.30319")
-        .join("csc.exe");
-    let completed = std::process::Command::new(compiler)
-        .arg("/nologo")
-        .arg("/t:exe")
-        .arg(format!("/out:{}", exe.display()))
-        .arg(&source_path)
-        .output()
-        .expect("csc");
-    if !completed.status.success() || !exe.is_file() {
-        panic!("csc failed: {}", String::from_utf8_lossy(&completed.stderr));
+    fn process_alive(pid: u32) -> bool {
+        // SAFETY: OpenProcess returns a new handle that nothing else owns, or null.
+        let process = unsafe {
+            HandleOrNull::from_raw_handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid))
+        };
+        let Ok(process) = OwnedHandle::try_from(process) else {
+            return false;
+        };
+        let mut code = 0;
+        // SAFETY: `process` stays open for the call, and `code` is a u32 to write.
+        let read = unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut code) };
+        read != 0 && code == STILL_ACTIVE as u32
     }
-    exe
-}
 
-#[cfg(all(windows, test))]
-fn sleeper_source() -> &'static str {
-    "class Sleeper { static void Main() { System.Threading.Thread.Sleep(30000); } }\n"
-}
-
-#[cfg(all(windows, test))]
-fn tree_parent_source() -> &'static str {
-    r#"using System;
-using System.Diagnostics;
-using System.IO;
-using System.Threading;
-class JobTree {
-    static int Main() {
-        string go = Environment.GetEnvironmentVariable("MATHIMATOR_TEST_GO");
-        string pids = Environment.GetEnvironmentVariable("MATHIMATOR_TEST_PIDS");
-        string latex = Environment.GetEnvironmentVariable("MATHIMATOR_TEST_LATEX");
-        string dvi = Environment.GetEnvironmentVariable("MATHIMATOR_TEST_DVISVGM");
-        if (go == null || pids == null || latex == null || dvi == null) return 2;
-        var deadline = DateTime.UtcNow.AddSeconds(20);
-        while (!File.Exists(go)) {
-            if (DateTime.UtcNow > deadline) return 3;
-            Thread.Sleep(20);
+    fn wait_child_pids(path: &Path) -> (u32, u32) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Ok(text) = fs::read_to_string(path) {
+                let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
+                if lines.len() >= 2 {
+                    let latex = lines[0].trim().parse().expect("latex pid");
+                    let dvisvgm = lines[1].trim().parse().expect("dvisvgm pid");
+                    return (latex, dvisvgm);
+                }
+            }
+            thread::sleep(Duration::from_millis(20));
         }
-        var latexProc = StartHidden(latex);
-        var dviProc = StartHidden(dvi);
-        File.WriteAllText(pids, latexProc.Id + "\n" + dviProc.Id + "\n");
-        Thread.Sleep(30000);
-        return 0;
+        panic!("child pids were not written");
     }
-    static Process StartHidden(string path) {
-        var info = new ProcessStartInfo();
-        info.FileName = path;
-        info.UseShellExecute = false;
-        info.CreateNoWindow = true;
-        return Process.Start(info);
+
+    /// Compiles `source` to `<root>/<name>.exe` with the .NET Framework's csc.
+    fn compile_stand_in(root: &Path, name: &str, source: &str) -> PathBuf {
+        let source_path = root.join(format!("{name}.cs"));
+        let exe = root.join(format!("{name}.exe"));
+        fs::write(&source_path, source).expect("source");
+        let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let compiler = PathBuf::from(windir)
+            .join("Microsoft.NET")
+            .join("Framework64")
+            .join("v4.0.30319")
+            .join("csc.exe");
+        let completed = Command::new(compiler)
+            .arg("/nologo")
+            .arg("/t:exe")
+            .arg(format!("/out:{}", exe.display()))
+            .arg(&source_path)
+            .output()
+            .expect("csc");
+        if !completed.status.success() || !exe.is_file() {
+            panic!(
+                "csc failed: {}{}",
+                String::from_utf8_lossy(&completed.stdout),
+                String::from_utf8_lossy(&completed.stderr)
+            );
+        }
+        exe
     }
-}
-"#
 }

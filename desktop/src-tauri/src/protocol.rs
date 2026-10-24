@@ -59,6 +59,26 @@ impl Request {
     }
 }
 
+/// What a dialog command returns (C9.1): the worker's reply, passed through (D46), or what the
+/// shell did itself.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum DialogReply {
+    Worker(Value),
+    /// `{cancelled: true}`: no folder or file was picked, or the user stayed.
+    Cancelled {
+        cancelled: bool,
+    },
+    /// `{path}`: where Export code wrote the scene.
+    Written {
+        path: String,
+    },
+}
+
+impl DialogReply {
+    pub const CANCELLED: Self = Self::Cancelled { cancelled: true };
+}
+
 /// A failure of the shell itself, rejected to the UI as `{code, message}` (C9.1, D45). Worker
 /// replies, refusals included, are not `ShellError`s: they pass through as `Ok` (D46).
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -118,6 +138,27 @@ mod tests {
         assert_eq!(
             parsed(&cancel.line("cancel-6").unwrap()),
             json!({"cmd": "cancel", "id": "cancel-6", "jobId": "preview-2"})
+        );
+    }
+
+    #[test]
+    fn dialog_replies_serialize_as_the_contract_shapes() {
+        let refused = json!({"event": "rejected", "jobId": "rpc-3", "code": "lock_failed"});
+        let replies = [
+            DialogReply::Worker(refused.clone()),
+            DialogReply::CANCELLED,
+            DialogReply::Written {
+                path: "C:\\Lessons\\scene.py".to_owned(),
+            },
+        ]
+        .map(|reply| serde_json::to_value(reply).unwrap());
+        assert_eq!(
+            replies,
+            [
+                refused,
+                json!({"cancelled": true}),
+                json!({"path": "C:\\Lessons\\scene.py"}),
+            ]
         );
     }
 

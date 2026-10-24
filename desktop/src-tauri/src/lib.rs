@@ -27,7 +27,7 @@ mod win32_job;
 mod worker;
 
 use equation::{GlyphPreview, GlyphResult};
-use protocol::{ErrorCode, ShellError};
+use protocol::{DialogReply, ErrorCode, ShellError};
 use runtime::{Runtime, WorkerFiles};
 use worker::{event_of, message_of, Host, Spawned, Spawner, Worker, WorkerProcess};
 
@@ -84,6 +84,8 @@ fn allow_project(app: &AppHandle, path: &Path) -> Result<(), String> {
     scope
         .allow_directory(path, true)
         .map_err(|err| err.to_string())?;
+    // The grant above already covers .mathimator while requireLiteralLeadingDot is false. This one
+    // keeps the previews there readable should that setting change (F134).
     scope
         .allow_directory(path.join(".mathimator"), true)
         .map_err(|err| err.to_string())?;
@@ -538,10 +540,6 @@ fn picked_path(picked: FilePath) -> Result<PathBuf, ShellError> {
         .map_err(|err| ShellError::new(ErrorCode::Io, err.to_string()))
 }
 
-fn cancelled() -> Value {
-    json!({"cancelled": true})
-}
-
 /// The first line of the warning before a touched temp project is left (C8.5).
 const TEMP_WARNING: &str = "This project is in a temporary folder that Windows may delete.";
 const SAVE_AS: &str = "Save As\u{2026}";
@@ -588,7 +586,7 @@ enum Left {
     /// Save As moved the project; its `state` reply.
     Saved(Value),
     /// The user stayed. The reply to return instead: `{cancelled: true}`, or a Save As refusal.
-    Stayed(Value),
+    Stayed(DialogReply),
 }
 
 /// Asks before leaving a touched temp project, with Save As (C8.5, C14 Q2, Q8). An untouched
@@ -616,28 +614,31 @@ async fn leave(
         .blocking_show_with_result();
     Ok(match leaving.choice(&result) {
         Choice::Leave => Left::Unsaved,
-        Choice::Stay => Left::Stayed(cancelled()),
-        Choice::SaveAs => {
-            let reply = save_as(app, window, worker).await?;
-            if event_of(&reply) == Some("state") {
-                Left::Saved(reply)
-            } else {
-                Left::Stayed(reply)
-            }
-        }
+        Choice::Stay => Left::Stayed(DialogReply::CANCELLED),
+        Choice::SaveAs => match save_as(app, window, worker).await? {
+            DialogReply::Worker(reply) if event_of(&reply) == Some("state") => Left::Saved(reply),
+            reply => Left::Stayed(reply),
+        },
     })
 }
 
 /// Save As (C8.5): a parented folder picker, then `save_as`. Returns the reply, or
 /// `{cancelled: true}` when no folder was picked.
-async fn save_as(app: &AppHandle, window: &Window, worker: &Worker) -> Result<Value, ShellError> {
+async fn save_as(
+    app: &AppHandle,
+    window: &Window,
+    worker: &Worker,
+) -> Result<DialogReply, ShellError> {
     let picked = parented(app.dialog().file(), window)
         .set_title("Save project as")
         .blocking_pick_folder();
     let Some(folder) = picked else {
-        return Ok(cancelled());
+        return Ok(DialogReply::CANCELLED);
     };
-    worker.save_project_as(&picked_path(folder)?).await
+    worker
+        .save_project_as(&picked_path(folder)?)
+        .await
+        .map(DialogReply::Worker)
 }
 
 /// Open, Sample and New (C14 Q2): asks before a touched temp project is left, then awaits `open`,
@@ -649,10 +650,12 @@ async fn switch_project(
     worker: &Worker,
     host: &dyn Host,
     open: impl Future<Output = Result<Option<Value>, ShellError>>,
-) -> Result<Value, ShellError> {
+) -> Result<DialogReply, ShellError> {
     match leave(app, window, worker, Leaving::Switch).await? {
-        Left::Unsaved => Ok(open.await?.unwrap_or_else(cancelled)),
-        Left::Saved(state) => Ok(after_save_as(host, state, open.await)),
+        Left::Unsaved => Ok(open
+            .await?
+            .map_or(DialogReply::CANCELLED, DialogReply::Worker)),
+        Left::Saved(state) => Ok(DialogReply::Worker(after_save_as(host, state, open.await))),
         Left::Stayed(reply) => Ok(reply),
     }
 }
@@ -692,10 +695,8 @@ async fn confirm_quit(window: Window) {
             let _ = window.destroy();
             return;
         }
-        Ok(Left::Stayed(reply)) => match reply.get("message").and_then(Value::as_str) {
-            Some(message) => message.to_owned(),
-            None => return,
-        },
+        Ok(Left::Stayed(DialogReply::Worker(reply))) => message_of(&reply),
+        Ok(Left::Stayed(_)) => return,
         Err(err) => err.message,
     };
     app.dialog()
@@ -728,13 +729,7 @@ fn dismiss_notice(shell: State<'_, Arc<Shell>>, id: u64) {
 
 #[tauri::command]
 fn reserve_job_id(worker: State<'_, Worker>, prefix: String) -> Result<String, ShellError> {
-    match prefix.as_str() {
-        "preview" | "export" => Ok(worker.next_id(&prefix)),
-        _ => Err(ShellError::new(
-            ErrorCode::BadArgument,
-            format!("Job ids are for previews and exports, not {prefix:?}."),
-        )),
-    }
+    worker.reserve_job_id(&prefix)
 }
 
 #[tauri::command]
@@ -779,9 +774,9 @@ async fn new_project(
     worker: State<'_, Worker>,
     shell: State<'_, Arc<Shell>>,
     dialogs: State<'_, Dialogs>,
-) -> Result<Value, ShellError> {
+) -> Result<DialogReply, ShellError> {
     let Some(_turn) = dialogs.begin() else {
-        return Ok(cancelled());
+        return Ok(DialogReply::CANCELLED);
     };
     let open = async { worker.new_project().await.map(Some) };
     switch_project(&app, &window, &worker, &**shell, open).await
@@ -795,13 +790,13 @@ async fn open_sample(
     runtime: State<'_, Runtime>,
     shell: State<'_, Arc<Shell>>,
     dialogs: State<'_, Dialogs>,
-) -> Result<Value, ShellError> {
+) -> Result<DialogReply, ShellError> {
     let sample = match &runtime.worker {
         Ok(files) => files.sample.clone(),
         Err(reason) => return Err(ShellError::new(ErrorCode::WorkerUnavailable, reason)),
     };
     let Some(_turn) = dialogs.begin() else {
-        return Ok(cancelled());
+        return Ok(DialogReply::CANCELLED);
     };
     let open = async { worker.open_sample(sample).await.map(Some) };
     switch_project(&app, &window, &worker, &**shell, open).await
@@ -814,9 +809,9 @@ async fn open_project_dialog(
     worker: State<'_, Worker>,
     shell: State<'_, Arc<Shell>>,
     dialogs: State<'_, Dialogs>,
-) -> Result<Value, ShellError> {
+) -> Result<DialogReply, ShellError> {
     let Some(_turn) = dialogs.begin() else {
-        return Ok(cancelled());
+        return Ok(DialogReply::CANCELLED);
     };
     let open = async {
         let picked = parented(app.dialog().file(), &window)
@@ -836,9 +831,9 @@ async fn save_project_as_dialog(
     window: Window,
     worker: State<'_, Worker>,
     dialogs: State<'_, Dialogs>,
-) -> Result<Value, ShellError> {
+) -> Result<DialogReply, ShellError> {
     let Some(_turn) = dialogs.begin() else {
-        return Ok(cancelled());
+        return Ok(DialogReply::CANCELLED);
     };
     save_as(&app, &window, &worker).await
 }
@@ -849,13 +844,13 @@ async fn export_code_dialog(
     window: Window,
     worker: State<'_, Worker>,
     dialogs: State<'_, Dialogs>,
-) -> Result<Value, ShellError> {
+) -> Result<DialogReply, ShellError> {
     let Some(_turn) = dialogs.begin() else {
-        return Ok(cancelled());
+        return Ok(DialogReply::CANCELLED);
     };
     let reply = worker.generated_code().await?;
-    if reply.get("event").and_then(Value::as_str) != Some("code") {
-        return Ok(reply);
+    if event_of(&reply) != Some("code") {
+        return Ok(DialogReply::Worker(reply));
     }
     let Some(source) = reply.get("source").and_then(Value::as_str) else {
         return Err(ShellError::new(
@@ -869,7 +864,7 @@ async fn export_code_dialog(
         .add_filter("Python", &["py"])
         .blocking_save_file();
     let Some(file) = picked else {
-        return Ok(cancelled());
+        return Ok(DialogReply::CANCELLED);
     };
     let path = picked_path(file)?;
     fs::write(&path, source).map_err(|err| {
@@ -878,7 +873,9 @@ async fn export_code_dialog(
             format!("Could not write {}: {err}.", path.display()),
         )
     })?;
-    Ok(json!({"path": path.display().to_string()}))
+    Ok(DialogReply::Written {
+        path: path.display().to_string(),
+    })
 }
 
 #[tauri::command]
@@ -900,6 +897,9 @@ async fn cancel_render(worker: State<'_, Worker>, job_id: String) -> Result<(), 
     worker.cancel_render(job_id).await
 }
 
+/// Opens a project without a dialog, for the journey tests. Release builds have it only with the
+/// `test-hooks` feature (D27).
+#[cfg(any(debug_assertions, feature = "test-hooks"))]
 #[tauri::command]
 async fn open_project_path(worker: State<'_, Worker>, path: String) -> Result<Value, ShellError> {
     worker.open_project(Path::new(&path)).await
@@ -941,13 +941,14 @@ async fn compile_equation_preview(
 /// Writes the shell-ready marker, only when MATHIMATOR_SHELL_READY_FILE names a file (D32).
 #[tauri::command]
 fn note_shell_ready() -> Result<(), ShellError> {
-    let Some(file) =
-        std::env::var_os("MATHIMATOR_SHELL_READY_FILE").filter(|file| !file.is_empty())
-    else {
-        return Ok(());
-    };
-    let file = PathBuf::from(file);
-    fs::write(&file, format!("ready {}\n", unix_millis())).map_err(|err| {
+    match std::env::var_os("MATHIMATOR_SHELL_READY_FILE").filter(|file| !file.is_empty()) {
+        Some(file) => write_ready_marker(Path::new(&file)),
+        None => Ok(()),
+    }
+}
+
+fn write_ready_marker(file: &Path) -> Result<(), ShellError> {
+    fs::write(file, format!("ready {}\n", unix_millis())).map_err(|err| {
         ShellError::new(
             ErrorCode::Io,
             format!("Could not write {}: {err}.", file.display()),
@@ -969,14 +970,16 @@ async fn check_tex(app: AppHandle) {
     tex_checked(&worker, &shell.tex, &**shell, result).await;
 }
 
-/// Registers the Tauri commands, and keeps their names for the `commands.json` check (C9.1).
+/// Registers the Tauri commands, and keeps each name with the text of its `cfg` attribute ("" when
+/// it has none) for the `commands.json` check (C9.1), so every build checks the release surface.
 macro_rules! commands {
-    ($($command:ident),* $(,)?) => {
+    ($($(#[$cfg:meta])* $command:ident),* $(,)?) => {
         #[cfg(test)]
-        const COMMANDS: &[&str] = &[$(stringify!($command)),*];
+        const COMMANDS: &[(&str, &str)] =
+            &[$((stringify!($command), concat!($(stringify!($cfg)),*))),*];
 
         fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
-            tauri::generate_handler![$($command),*]
+            tauri::generate_handler![$($(#[$cfg])* $command),*]
         }
     };
 }
@@ -1001,13 +1004,13 @@ commands![
     render_preview,
     export_movie,
     cancel_render,
+    #[cfg(any(debug_assertions, feature = "test-hooks"))]
     open_project_path,
     cancel_equation_preview,
     compile_equation_preview,
     note_shell_ready,
 ];
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1079,25 +1082,148 @@ mod tests {
             "../../../tests/fixtures/protocol/commands.json"
         ))
         .unwrap();
-        let listed: Vec<&str> = fixture["tauriCommands"]
+        // Release builds register a debugOnly command only with the test-hooks feature (D27).
+        let debug_only = r#"cfg(any(debug_assertions, feature = "test-hooks"))"#;
+        let listed: Vec<(&str, &str)> = fixture["tauriCommands"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|entry| cfg!(debug_assertions) || entry["debugOnly"] != true)
-            .map(|entry| entry["name"].as_str().unwrap())
+            .map(|entry| {
+                let gate = if entry["debugOnly"] == true {
+                    debug_only
+                } else {
+                    ""
+                };
+                (entry["name"].as_str().unwrap(), gate)
+            })
             .collect();
-        let missing: Vec<&str> = listed
+        let missing: Vec<_> = listed
             .iter()
-            .copied()
-            .filter(|name| !COMMANDS.contains(name))
+            .filter(|command| !COMMANDS.contains(command))
             .collect();
-        let unlisted: Vec<&str> = COMMANDS
+        let unlisted: Vec<_> = COMMANDS
             .iter()
-            .copied()
-            .filter(|name| !listed.contains(name))
+            .filter(|command| !listed.contains(command))
             .collect();
-        assert!(missing.is_empty(), "not registered: {missing:?}");
-        assert!(unlisted.is_empty(), "not in commands.json: {unlisted:?}");
+        assert!(
+            missing.is_empty(),
+            "not registered with this gate: {missing:?}"
+        );
+        assert!(
+            unlisted.is_empty(),
+            "not in commands.json with this gate: {unlisted:?}"
+        );
+    }
+
+    #[test]
+    fn the_app_keeps_its_identifier_and_the_webview_gets_core_default_only() {
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let capability: Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        assert_eq!(config["identifier"], "com.mathimator.desktop");
+        assert_eq!(capability["permissions"], json!(["core:default"]));
+    }
+
+    #[test]
+    fn the_csp_admits_the_ipc_and_the_previews_but_no_remote_or_inline_script() {
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let csp = config["app"]["security"]["csp"].as_object().unwrap();
+        let sources = |directive: &str| -> Vec<&str> {
+            csp[directive]
+                .as_str()
+                .unwrap()
+                .split_whitespace()
+                .collect()
+        };
+        assert_eq!(sources("default-src"), ["'self'"]);
+        assert!(
+            !csp.contains_key("script-src"),
+            "scripts follow default-src"
+        );
+        assert!(sources("connect-src").contains(&"http://ipc.localhost"));
+        // The previews are fetched over the asset protocol and shown from blob: URLs.
+        for directive in ["connect-src", "img-src", "media-src"] {
+            assert!(
+                sources(directive).contains(&"http://asset.localhost"),
+                "{directive}"
+            );
+        }
+        for directive in ["img-src", "media-src"] {
+            assert!(sources(directive).contains(&"blob:"), "{directive}");
+        }
+        let remote: Vec<&str> = csp
+            .keys()
+            .flat_map(|directive| sources(directive))
+            .filter(|source| source.starts_with("http") && !source.ends_with(".localhost"))
+            .collect();
+        assert!(remote.is_empty(), "{remote:?}");
+    }
+
+    #[test]
+    fn the_ready_marker_holds_ready_and_the_time() {
+        let folder = scratch("ready");
+        let file = folder.join("shell-ready.txt");
+        write_ready_marker(&file).unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        let failed = write_ready_marker(&folder.join("missing").join("shell-ready.txt"));
+        let _ = fs::remove_dir_all(&folder);
+        let millis = text
+            .strip_prefix("ready ")
+            .and_then(|rest| rest.strip_suffix('\n'));
+        assert!(
+            millis.is_some_and(|millis| millis.parse::<u64>().is_ok()),
+            "{text:?}"
+        );
+        assert_eq!(failed.unwrap_err().code, ErrorCode::Io);
+    }
+
+    #[test]
+    fn shell_log_lines_are_appended_after_a_timestamp() {
+        let folder = scratch("shell-log");
+        let logs = folder.join("logs");
+        log_line(&logs, "Started a worker on C:\\p.");
+        log_line(&logs, "Stopped the worker.");
+        let text = fs::read_to_string(logs.join("shell.log")).unwrap();
+        let _ = fs::remove_dir_all(&folder);
+        let lines: Vec<(&str, &str)> = text
+            .lines()
+            .map(|line| line.split_once(' ').unwrap())
+            .collect();
+        assert!(
+            lines
+                .iter()
+                .all(|(millis, _)| millis.parse::<u64>().is_ok()),
+            "{text}"
+        );
+        let messages: Vec<&str> = lines.iter().map(|(_, message)| *message).collect();
+        assert_eq!(
+            messages,
+            ["Started a worker on C:\\p.", "Stopped the worker."]
+        );
+    }
+
+    #[test]
+    fn a_failed_atomic_write_leaves_no_temp_file() {
+        let folder = scratch("atomic");
+        let file = folder.join("state.json");
+        // A folder that is not empty cannot be replaced by the rename.
+        fs::create_dir_all(file.join("kept")).unwrap();
+        let written = write_atomically(&file, b"{}");
+        let left: Vec<_> = fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        let _ = fs::remove_dir_all(&folder);
+        assert!(written.is_err());
+        assert_eq!(left, ["state.json"]);
+    }
+
+    #[test]
+    fn a_picked_path_must_be_a_file_path() {
+        let folder = PathBuf::from("C:\\Lessons\\waves");
+        assert_eq!(picked_path(FilePath::Path(folder.clone())).unwrap(), folder);
+        let url = FilePath::Url("https://example.invalid/waves".parse().unwrap());
+        assert_eq!(picked_path(url).unwrap_err().code, ErrorCode::Io);
     }
 
     #[test]

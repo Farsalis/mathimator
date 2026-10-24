@@ -348,10 +348,7 @@ pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut command = Command::new(program);
     #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
     command
 }
 
@@ -666,10 +663,13 @@ mod tests {
     }
 
     #[test]
-    fn the_debug_repository_root_holds_the_worker_source() {
-        let repo = repo_root().unwrap();
-        assert!(repo.join("worker").join("mathimator_worker").is_dir());
-        assert!(!repo.to_string_lossy().starts_with(r"\\?\"));
+    fn only_debug_builds_have_a_repository_root_and_it_holds_the_worker_source() {
+        let repo = repo_root();
+        assert_eq!(repo.is_some(), cfg!(debug_assertions));
+        if let Some(repo) = repo {
+            assert!(repo.join("worker").join("mathimator_worker").is_dir());
+            assert!(!repo.to_string_lossy().starts_with(r"\\?\"));
+        }
     }
 
     #[test]

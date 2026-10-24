@@ -258,9 +258,16 @@ impl Worker {
         }
     }
 
-    /// The next id from the one id counter, for example `preview-7`.
-    pub fn next_id(&self, prefix: &str) -> String {
-        self.shared.next_id(prefix)
+    /// `reserve_job_id` (C9.1): the next id from the one id counter, for example `preview-7`. Only
+    /// previews and exports reserve ids.
+    pub fn reserve_job_id(&self, prefix: &str) -> Result<String, ShellError> {
+        match prefix {
+            "preview" | "export" => Ok(self.shared.next_id(prefix)),
+            _ => Err(ShellError::new(
+                ErrorCode::BadArgument,
+                format!("Job ids are for previews and exports, not {prefix:?}."),
+            )),
+        }
     }
 
     /// The bound project folder (C9.4), once a worker has been started.
@@ -2289,6 +2296,34 @@ mod tests {
             test.request(1),
             json!({"cmd": "cancel", "id": "cancel-2", "jobId": "preview-2"})
         );
+    }
+
+    #[test]
+    fn only_previews_and_exports_reserve_ids_from_the_one_counter() {
+        let test = Test::start(answer);
+        block_on(test.worker.get_state()).unwrap();
+        assert_eq!(test.worker.reserve_job_id("preview").unwrap(), "preview-3");
+        assert_eq!(test.worker.reserve_job_id("export").unwrap(), "export-4");
+        let refused = test.worker.reserve_job_id("rpc").unwrap_err();
+        assert_eq!(refused.code, ErrorCode::BadArgument);
+        assert_eq!(test.worker.reserve_job_id("preview").unwrap(), "preview-5");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_that_is_not_unicode_is_a_bad_argument_and_sends_nothing() {
+        use std::os::windows::ffi::OsStringExt;
+
+        let test = Test::start(answer);
+        let folder = test.root.join(std::ffi::OsString::from_wide(&[0xD800]));
+        let opened = block_on(test.worker.open_project(&folder)).unwrap_err();
+        let saved = block_on(test.worker.save_project_as(&folder)).unwrap_err();
+        assert_eq!(
+            [opened.code, saved.code],
+            [ErrorCode::BadArgument, ErrorCode::BadArgument]
+        );
+        block_on(test.worker.get_state()).unwrap();
+        assert_eq!(test.request(1)["cmd"], "get_state");
     }
 
     #[test]
