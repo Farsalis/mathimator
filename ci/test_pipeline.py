@@ -3,8 +3,9 @@
 No GitLab project exists yet to lint the pipeline (D65). These checks catch
 what GitLab reports only when it creates a pipeline, and what it never
 reports: a job defined twice, a pre-commit SKIP or a pytest marker that names
-nothing, a CI pin that disagrees with its source, and rules that start a job
-in pipelines the decisions keep it out of.
+nothing, a CI pin that disagrees with its source, a download the scripts check
+against no SHA-256, and rules that start a job in pipelines the decisions keep
+it out of.
 """
 
 from __future__ import annotations
@@ -223,6 +224,20 @@ def test_python_lane_runs_the_bundle_interpreters() -> None:
     matrix = _resolve("test:python")["parallel"]["matrix"]
     versions = {version for entry in matrix for version in entry["UV_PYTHON"]}
     assert versions == {_pins()["PYTHON_VERSION"], _pins()["PYTHON_FALLBACK_VERSION"]}
+
+
+def test_every_download_the_scripts_check_has_a_pinned_sha256() -> None:
+    # A script stops at a download whose pin is empty, so an empty pin fails
+    # test:typst and every bundle build, wherever they run.
+    scripts = "\n".join(
+        path.read_text(encoding="utf-8")
+        for pattern in ("ci/*.sh", "ci/*.ps1", "packaging/*.sh", "packaging/*.ps1")
+        for path in REPO.glob(pattern)
+    )
+    names = set(re.findall(r"\b[A-Z]+_(?:WINDOWS|LINUX)_SHA256\b", scripts))
+    assert names
+    for name in sorted(names):
+        assert re.fullmatch(r"[0-9a-f]{64}", _pins().get(name, "")), f"packaging/versions.env pins no SHA-256 {name}"
 
 
 def test_pipelines_run_for_merge_requests_the_default_branch_tags_and_schedules() -> None:
