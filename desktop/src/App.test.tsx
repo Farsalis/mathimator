@@ -14,6 +14,7 @@ const invokeMock = vi.mocked(invoke);
 const READY = { worker: "ready", reason: null, tex: { state: "ok", message: null }, notices: [] };
 const REASON = "The installed runtime is incomplete (python). Reinstall Mathimator.";
 const CHANGED_TEXT = "project.json was changed outside Mathimator.";
+const CLIP_REMOVED = "manim used an incomplete clip 2.mp4; it was removed, so render again";
 /** The controls that edit the project or switch it, which the unavailable view disables (C9.5). */
 const EDITING = [
   "project-name",
@@ -159,6 +160,46 @@ describe("App", () => {
     fireEvent.click(within(shown[0] as HTMLElement).getByRole("button", { name: "Dismiss" }));
     expect(screen.queryAllByTestId("notice")).toHaveLength(0);
     expect(invokeMock).toHaveBeenCalledWith("dismiss_notice", { id: 7 });
+  });
+
+  it("shows the shell's notices for a missing last project and for a close ignored during a dialog (C9.5)", async () => {
+    const missing = { id: 1, message: "Could not reopen C:/Users/Ana/Old: it is gone. A new project was started." };
+    const ignored = { id: 2, message: "Mathimator stays open while a dialog is open. Close the dialog first." };
+    script({
+      app_status: [{ ...READY, notices: [missing] }],
+      get_state: [stateReply()],
+      save_project_as_dialog: [new Promise(() => undefined)],
+    });
+    await renderReady();
+    fireEvent.click(control("save-as-button"));
+    await waitFor(() => expect(commands()).toContain("save_project_as_dialog"));
+    // The dialog's command still waits, and a notice event is shown at once.
+    emit({ event: "notice", jobId: null, ...ignored });
+    const shown = screen.getAllByTestId("notice").map((notice) => within(notice).getByRole("paragraph").textContent);
+    expect(shown).toEqual([missing.message, ignored.message]);
+  });
+
+  it("starts a preview with the banner's Render again after a preview used an incomplete clip", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => undefined)),
+    );
+    script({
+      app_status: [READY],
+      get_state: [textReply()],
+      clear_cache: [textReply()],
+      reserve_job_id: ["preview-1", "preview-2"],
+      render_preview: [null, null],
+    });
+    await renderReady();
+    fireEvent.click(control("clear-cache-button"));
+    await waitFor(() => expect(commands()).toContain("render_preview"));
+    emit({ event: "error", jobId: "preview-1", code: "render_failed", message: CLIP_REMOVED });
+    expect(screen.getByTestId("error").textContent).toBe(CLIP_REMOVED);
+    fireEvent.click(screen.getByRole("button", { name: "Render again" }));
+    expect(screen.queryByTestId("error-banner")).toBeNull();
+    await waitFor(() => expect(invokeMock).toHaveBeenLastCalledWith("render_preview", { jobId: "preview-2" }));
+    expect(screen.getByTestId("status").textContent).toBe("Rendering preview");
   });
 
   it("keeps View code in step with each applied state without asking the worker (D25, C10)", async () => {

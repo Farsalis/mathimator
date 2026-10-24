@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { searchForWorkspaceRoot } from "vite";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -19,6 +20,10 @@ export default defineConfig({
       : undefined,
     watch: {
       ignored: ["**/src-tauri/**"],
+    },
+    fs: {
+      // Vite's default, and the worker's sources, whose messages ErrorBanner.test.tsx reads with `?raw`.
+      allow: [searchForWorkspaceRoot(import.meta.dirname), "../worker/mathimator_worker"],
     },
   },
   envPrefix: ["VITE_", "TAURI_ENV_"],

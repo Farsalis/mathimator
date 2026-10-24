@@ -40,6 +40,8 @@ export interface Failure {
   code: string | null;
   message: string;
   details?: string;
+  /** The preview or export whose terminal line this is (C9.3). A failed task has none. */
+  job?: "preview" | "export";
 }
 
 export function failureOf(reason: unknown): Failure {

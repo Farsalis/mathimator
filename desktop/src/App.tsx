@@ -101,6 +101,8 @@ export function App() {
               failure={editor.error}
               canSaveAs={canSaveAs}
               onSaveAs={() => void editor.onSaveAs()}
+              canRenderAgain={editor.ready}
+              onRenderAgain={editor.onRenderAgain}
               onDismiss={editor.onDismissError}
             />
           ) : null}

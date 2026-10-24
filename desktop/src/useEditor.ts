@@ -8,7 +8,6 @@ import {
   abortExport,
   beginExport,
   beginPreview,
-  clearExportResult,
   createHandshake,
   loaded,
   markStale,
@@ -16,6 +15,7 @@ import {
   receive,
   requestCancel,
   requestExport,
+  savedAs,
   withNote,
   type Handshake,
   type JobFailure,
@@ -233,6 +233,11 @@ export function useEditor() {
     if (applied.current !== null && applied.current.projectPath !== next.projectPath) {
       resetView();
     }
+    adopt(next);
+  }
+
+  /** Makes `next` the applied state, whatever folder it names, and leaves the view as it is. */
+  function adopt(next: EditorState): void {
     applied.current = next;
     setState(next);
   }
@@ -248,14 +253,14 @@ export function useEditor() {
   /** Applies the reply of Open, Sample or New: the Open reset, then a preview (C7.5). */
   function applyOpened(next: EditorState): void {
     resetView();
-    applyState(next);
+    adopt(next);
     setError(null);
     setPanel("inspector");
     schedulePreview();
   }
 
   /**
-   * The Open reset (C9.2). It closes View code. For a state of another folder (Save As, a late reply) the Notices stay
+   * The Open reset (C9.2). It closes View code. For a state of another folder, such as a late reply, the Notices stay
    * open; Open, Sample and New also close them (applyOpened).
    */
   function resetView(): void {
@@ -379,6 +384,12 @@ export function useEditor() {
   function previewNow(): Promise<void> {
     epoch.current += 1;
     return runPreview(epoch.current);
+  }
+
+  /** Render again, after a preview used an incomplete clip the worker removed: a new preview redoes its beat. */
+  function onRenderAgain(): void {
+    setError(null);
+    void queue.enqueue(previewNow);
   }
 
   /** The preview task (C9.2). A later schedulePreview supersedes it until its id is recorded. */
@@ -539,11 +550,11 @@ export function useEditor() {
     });
   }
 
+  /** Clear cache, then a preview (C7.5). It keeps the exports, so the export path and the note stay. */
   function onClearCache(): Promise<void> {
     return queue.enqueue(async () => {
       const next = parseEditorState(await invokeWorker("clear_cache"));
       applyState(next);
-      publish(clearExportResult(jobs.current));
       setError(next.warning ?? null);
       schedulePreview();
     });
@@ -562,12 +573,18 @@ export function useEditor() {
     });
   }
 
-  /** Save As (D29). The reply carries the new folder, so applying it runs the Open reset (C9.2). */
+  /**
+   * Save As (D29, O9). The reply names the new folder but holds the same document, so it runs no Open reset: the
+   * selection, the playhead, the open panel and the note stay, and the export path names the export's copy. The
+   * current preview goes stale all the same, as for any state of another folder (C9.2).
+   */
   function onSaveAs(): Promise<void> {
     return queue.enqueue(async () => {
       const reply = await invokeWorker("save_project_as_dialog");
       if (reply !== null) {
-        applyState(parseEditorState(reply));
+        const next = parseEditorState(reply);
+        publish(savedAs(jobs.current, applied.current?.projectPath ?? next.projectPath, next.projectPath));
+        adopt(next);
         setError(null);
       }
     });
@@ -657,6 +674,7 @@ export function useEditor() {
     onRetry,
     onDismissNotice,
     onDismissError: () => setError(null),
+    onRenderAgain,
     onReload,
     onOverwrite,
     onCancelPrompt,

@@ -83,14 +83,19 @@ export function withNote(session: Handshake, note: string | null): Handshake {
   return { ...session, note };
 }
 
-/** Clears the shown export file and note. */
-export function clearExportResult(session: Handshake): Handshake {
-  return { ...session, exportPath: null, note: null };
+/** The handshake's part of the Open reset (C9.2): a stale preview, and no export path, note or pre-empted preview. */
+export function openReset(session: Handshake): Handshake {
+  return { ...markStale(session), exportPath: null, note: null, preempted: false };
 }
 
-/** The handshake's part of the Open reset (C9.2). */
-export function openReset(session: Handshake): Handshake {
-  return { ...markStale(clearExportResult(session)), preempted: false };
+/**
+ * The handshake's part of Save As from the folder `from` to `to` (D29, O9), which keeps the note. The worker copied the
+ * exports with the project, so a shown export in `from` is shown as its copy in `to`. The state of another folder still
+ * overtakes the current preview (C9.2).
+ */
+export function savedAs(session: Handshake, from: string, to: string): Handshake {
+  const path = session.exportPath;
+  return { ...markStale(session), exportPath: path === null ? null : movedPath(path, from, to) };
 }
 
 /** An applied edit that changed the document, or an undo, redo or reload, overtook the current preview (C9.2). */
@@ -227,6 +232,12 @@ function previewEnded(session: Handshake): Handshake {
 
 function exportEnded(session: Handshake, status: string): Handshake {
   return { ...session, exportJobId: null, exporting: false, cancelRequested: false, preempted: false, status };
+}
+
+/** `path` in the folder `to` when it lies in the folder `from`, otherwise `path` as it is. */
+function movedPath(path: string, from: string, to: string): string {
+  const inside = path.startsWith(from) && /[\\/]/.test(path.charAt(from.length));
+  return inside ? to + path.slice(from.length) : path;
 }
 
 function isCancel(message: { event: "error" | "rejected"; code: string }): boolean {

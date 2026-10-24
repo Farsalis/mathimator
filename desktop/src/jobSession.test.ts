@@ -11,6 +11,7 @@ import {
   receive,
   requestCancel,
   requestExport,
+  savedAs,
   withNote,
   type Handshake,
   type HandshakeStep,
@@ -323,5 +324,28 @@ describe("worker exit and the Open reset", () => {
     const shown = { ...beginPreview(idle, "preview-2"), exportPath: "C:/e/2.mp4", note: "Code exported to C:/s.py" };
     const reset = openReset(exporting(shown, "export-2"));
     expect(reset).toMatchObject({ exportPath: null, note: null, previewStale: true, preempted: false });
+  });
+});
+
+describe("Save As (D29, O9)", () => {
+  const shown = { ...beginPreview(idle, "preview-1"), note: "This file is from an older export." };
+
+  it.each([
+    ["C:\\Temp\\mathimator-1", "C:\\Kept", "\\.mathimator\\exports\\a\\scene.mp4"],
+    ["/tmp/mathimator-1", "/home/ana/Kept", "/.mathimator/exports/a/scene.mp4"],
+  ])("shows the export in %s as its copy in %s, keeps the note and marks the preview stale", (from, to, inside) => {
+    const saved = savedAs({ ...shown, exportPath: from + inside }, from, to);
+    expect(saved).toMatchObject({ exportPath: to + inside, note: shown.note, previewStale: true });
+  });
+
+  it.each([
+    ["outside the old folder", "C:/Out/scene.mp4"],
+    ["in a sibling folder whose name starts with the old one's", "C:/Temp/mathimator-10/scene.mp4"],
+  ])("keeps an export path %s", (_case, path) => {
+    expect(savedAs({ ...idle, exportPath: path }, "C:/Temp/mathimator-1", "C:/Kept").exportPath).toBe(path);
+  });
+
+  it("shows no export path when none was shown", () => {
+    expect(savedAs(idle, "C:/Temp/mathimator-1", "C:/Kept")).toEqual(idle);
   });
 });

@@ -25,6 +25,9 @@ const RENAME = { op: "set_project_name", name: "Renamed" } as const;
 const EXPRESSION = { op: "set_expression", objectId: "plot_1", expression: "x^" } as const;
 const EXIT = { event: "worker_exited", jobId: null, message: "The worker stopped (exit code 1).", exitCode: 1 };
 const EXITED = { code: "worker_exited", message: "The worker stopped (exit code 1)." };
+const EXPORTED = "C:/first/.mathimator/exports/a/scene.mp4";
+const OLDER_EXPORT = "This file is from an older export.";
+const CLIP_REMOVED = "manim used an incomplete clip 2.mp4; it was removed, so render again";
 
 /** A scripted reply that rejects with `reason`. */
 class Rejection {
@@ -370,6 +373,26 @@ describe("useEditor previews", () => {
     },
   );
 
+  it("starts a preview with Render again after a preview used an incomplete clip, and clears the banner", async () => {
+    script({
+      get_state: [stateReply("C:/first")],
+      edit_document: [stateReply("C:/first")],
+      reserve_job_id: ["preview-1", "preview-2"],
+      render_preview: [null, null],
+    });
+    const result = await started();
+    await act(() => result.current.commit(DURATION, true));
+    await waitFor(() => expect(callsOf("render_preview")).toBe(1));
+    emit({ event: "error", jobId: "preview-1", code: "render_failed", message: CLIP_REMOVED });
+    expect(result.current.error).toMatchObject({ job: "preview", code: "render_failed", message: CLIP_REMOVED });
+    expect(result.current.status).toBe("Ready");
+    act(() => result.current.onRenderAgain());
+    expect(result.current.error).toBeNull();
+    await waitFor(() => expect(callsOf("render_preview")).toBe(2));
+    expect(invokeMock).toHaveBeenLastCalledWith("render_preview", { jobId: "preview-2" });
+    expect(result.current.status).toBe("Rendering preview");
+  });
+
   it("starts none after undo, redo, a no-op edit or an edit that leaves no beats", async () => {
     const empty = stateReply("C:/first");
     empty.document.scene = { ...empty.document.scene, objects: [], beats: [] };
@@ -473,21 +496,68 @@ describe("useEditor projects", () => {
     expect(callsOf("render_preview")).toBe(0);
   });
 
-  it("applies Save As with the Open reset and starts no preview (C9.2)", async () => {
-    script({ get_state: [stateReply("C:/temp")], save_project_as_dialog: [stateReply("C:/kept")] });
+  it("keeps the view and the export result through Save As, and starts no preview (D29)", async () => {
+    script({
+      get_state: [stateReply("C:/first")],
+      reserve_job_id: ["export-1"],
+      edit_document: [unchanged("C:/first"), stateReply("C:/kept", "Renamed")],
+      export_movie: [null],
+      save_project_as_dialog: [stateReply("C:/kept")],
+    });
     const result = await started();
+    await exported(result);
+    emit({ event: "done", jobId: "export-1", path: EXPORTED, current: false });
     act(() => {
       result.current.select({ kind: "object", id: "plot_1" });
       result.current.setPlayhead(1);
       result.current.onViewCode();
     });
     await act(() => result.current.onSaveAs());
+    // A later state of the new folder keeps the view as well.
+    await act(() => result.current.commit(RENAME, false));
     expect(result.current.state?.projectPath).toBe("C:/kept");
-    expect(result.current.selection).toEqual({ kind: "none" });
-    expect(result.current.playhead).toBe(0);
-    expect(result.current.panel).toBe("inspector");
+    expect(result.current.state?.document.name).toBe("Renamed");
+    expect(result.current.selection).toEqual({ kind: "object", id: "plot_1" });
+    expect(result.current.playhead).toBe(1);
+    expect(result.current.panel).toBe("code");
+    // The worker copied the exports along, and a temp project's old folder is gone.
+    expect(result.current.exportPath).toBe("C:/kept/.mathimator/exports/a/scene.mp4");
+    expect(result.current.note).toBe(OLDER_EXPORT);
     await afterDebounce();
     expect(callsOf("render_preview")).toBe(0);
+  });
+
+  it("ignores a beat_ready of the preview that Save As overtook (C9.2, F135)", async () => {
+    script({
+      get_state: [indexedReply(null)],
+      edit_document: [indexedReply(null)],
+      reserve_job_id: ["preview-1"],
+      render_preview: [null],
+      save_project_as_dialog: [{ ...indexedReply(null), projectPath: "C:/kept" }],
+    });
+    const result = await started();
+    await act(() => result.current.commit(DURATION, true));
+    await waitFor(() => expect(callsOf("render_preview")).toBe(1));
+    await act(() => result.current.onSaveAs());
+    emit({ event: "beat_ready", jobId: "preview-1", beatIndex: 0, path: "C:/first/new.mp4" });
+    expect(result.current.state?.index?.beats[0]).toMatchObject({ partial: null, fresh: false });
+  });
+
+  it("keeps the export path and note through Clear cache, which keeps the exports", async () => {
+    script({
+      get_state: [stateReply("C:/first")],
+      reserve_job_id: ["export-1"],
+      edit_document: [unchanged("C:/first")],
+      export_movie: [null],
+      clear_cache: [stateReply("C:/first")],
+    });
+    const result = await started();
+    await exported(result);
+    emit({ event: "done", jobId: "export-1", path: EXPORTED, current: false });
+    await act(() => result.current.onClearCache());
+    expect(callsOf("clear_cache")).toBe(1);
+    expect(result.current.exportPath).toBe(EXPORTED);
+    expect(result.current.note).toBe(OLDER_EXPORT);
   });
 
   it("updates the code from each applied state without asking the worker (D25)", async () => {
@@ -850,7 +920,7 @@ describe("useEditor worker exit", () => {
     });
     const result = await started();
     await exported(result);
-    emit({ event: "done", jobId: "export-1", path: "C:/first/.mathimator/exports/a/scene.mp4", current: false });
+    emit({ event: "done", jobId: "export-1", path: EXPORTED, current: false });
     act(() => {
       result.current.select({ kind: "object", id: "plot_1" });
       result.current.setPlayhead(1);
