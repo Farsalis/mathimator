@@ -1,5 +1,7 @@
 # Mathimator audit report
 
+> Audit record of 2026-10-23, written before any fix. [Section 8](#8-remediation-status) gives the remediation status of each finding on this branch.
+
 Repository: `C:/Users/scfre/CursorProjects/Cloud/Mathimator`. Work branch: `audit/cleanup-gitlab-devops` at `8e49fbd`. `main` and `cursor/windows-audit-fa22` point at the same commit, so every file:line in this report holds on all three branches. The only remote is `origin` at `origin.cursor.com`. No GitLab remote is configured yet.
 
 Scope: 209 verified findings. 1 critical, 7 high, 64 medium, 120 low, 17 info. 191 are confirmed and 18 plausible; refuted findings were dropped, and none are disputed or unverified. Nothing has been changed yet. Every behaviour change waits on the decisions in section 7.
@@ -711,3 +713,313 @@ Each decision's full options are in the structured decision list.
 | D78 | Coverage gate | Report only | F063 |
 | D79 | Bringing existing code to the formatters | One bulk commit per language, hidden from blame | F070, F176 |
 | D80 | Security contact and code owners | Confidential issues; per-area CODEOWNERS | F063 |
+
+---
+
+## 8. Remediation status
+
+Status of the 209 findings after the 69 commits in `main..1306cf7` on `audit/cleanup-gitlab-devops`: 188 fixed, 18 partly fixed, 1 deferred by decision and 2 accepted risk. Section 8.2 adds 10 items that have no audit id: 7 fixed, 2 deferred by decision and 1 accepted risk.
+
+| Status | Critical | High | Medium | Low | Info | Total |
+|---|---|---|---|---|---|---|
+| Fixed | 1 | 6 | 62 | 108 | 11 | 188 |
+| Partly fixed | 0 | 1 | 2 | 11 | 4 | 18 |
+| Deferred by decision | 0 | 0 | 0 | 0 | 1 | 1 |
+| Accepted risk | 0 | 0 | 0 | 1 | 1 | 2 |
+| **Total** | **1** | **7** | **64** | **120** | **17** | **209** |
+
+How the table was built: a finding's commits are those whose message cites its id, oldest first. A search of the commit diffs finds no id that the messages miss. The early tooling commits have no message body, so they are named by hand: in the rows of the 15 ids that no message cites, and in 6 rows whose fix they began. A cited id is not always fully fixed: the partly fixed, deferred and accepted rows come from the remediation hand-offs and a check of the code. Dnn are the decisions of section 7. Onn are the owner's later answers, and TRn, PRn, DCn and SPn the items of the follow-up review; the commit messages that cite them explain each one.
+
+Still open:
+- Checks only the owner can run: rebuild `packaging/bundle`, check the CSP and the GUI on WebView2, and run the render tier (G2.5, F142, the PNG-frame count and the fractional-10 checks).
+- Release items under O6 and D75: the missing permissive licence texts, the source-offer URL, a licence text in the worker wheel, a pre-release tag scheme, a hash for the setuptools that builds srt, and the legal review.
+- The GitLab project and its settings (G6.4, O3).
+- The later D41 split of `supervisor.py`, `document.py`, `process_group.py`, `useEditor` and `Inspector.tsx`, with typed shell events (TR29).
+
+### 8.1 Findings
+
+| ID | Severity | Title | Status | Commits | Note |
+|---|---|---|---|---|---|
+| F001 | medium | Unary minus binds tighter than ^, so exp(-x^2) plots e^(x^2) | fixed | `6531279` |  |
+| F002 | medium | Expression grammar edge cases are unpinned; '-x^2' emits (-x) ** 2 | fixed | `6531279` |  |
+| F003 | medium | Expression literals are silently rounded to 3 decimals (x/0.0001 becomes x / 0) | fixed | `6531279` |  |
+| F004 | medium | Opening a crafted project.json crashes the worker via uncaught OverflowError/RecursionError | fixed | `413ac6e`, `2048c7a` |  |
+| F005 | medium | No exception boundary in serve/handle_line: disk, encoding or type errors kill the supervisor mid-export and lose undo history | fixed | `2048c7a`, `21bd75c` |  |
+| F006 | low | Non-finite edit values crash the supervisor; scrub NaN emits invalid JSON | fixed | `413ac6e`, `2048c7a` |  |
+| F007 | low | Lone surrogates and NUL in strings pass validation, then crash the supervisor or break scene.py | fixed | `413ac6e` |  |
+| F008 | medium | Every edit becomes an undo entry: no-op edits and color-picker drags flood and evict history | fixed | `21bd75c` |  |
+| F009 | medium | The color swatch commits a document edit on every input event, flooding undo history and the worker | fixed | `db1b231` |  |
+| F010 | medium | Removing trailing beats keeps the old full preview movie with no out-of-date badge | fixed | `ae98f9a` |  |
+| F011 | low | Validation lets a plot, surface or curve enter before its axes, producing scene.py that raises UnboundLocalError | fixed | `413ac6e` |  |
+| F012 | low | A transform source still counts as on screen, so later beats bring the old formula back | fixed | `6531279` |  |
+| F013 | low | Object ids u, v, t (and helper names <id>_labels/_group) are not reserved, so generated lambdas break | fixed | `6531279` |  |
+| F014 | low | schemaVersion and generatorVersion accept true and 1.0 | fixed | `413ac6e` |  |
+| F015 | medium | Typst translator passes letter runs through verbatim; Typst rejects them as unknown variables | fixed | `cd57399` |  |
+| F016 | medium | TeX log-line extraction does not match Manim 0.22's real output format | fixed | `ae98f9a` |  |
+| F017 | medium | Any Manim failure is reported as 'LaTeX failed.' when the output mentions 'latex' or '.log' anywhere | fixed | `ae98f9a` |  |
+| F018 | low | move and set_color on axes with labels leave the labels behind | fixed | `6531279` |  |
+| F019 | low | requirements-render.txt is out of sync with the spec and bundle, and no transitive dependency is pinned | fixed | `2cdd450`, `e4cdcbd`, `dce6158` |  |
+| F020 | low | Test dependencies are undeclared and unpinned | fixed | `2cdd450` | The root uv workspace declares the `dev` and `render` groups in one hashed `uv.lock` (D34). |
+| F021 | high | PNG-sequence export publishes leftover frames from earlier renders | fixed | `1abc7cf`, `c66ba81`, `b4c8e71` |  |
+| F022 | medium | Partial-movie log regexes never match Manim's wrapped Rich output: no live beat_ready, and every cancel deletes all segments the run finished | fixed | `ae98f9a` |  |
+| F023 | medium | Job handle is closed twice on every Windows cancel or preview supersede | fixed | `5cbc09b` |  |
+| F024 | medium | Windows fallback tree walk trusts stale parent PIDs and can terminate unrelated user processes | fixed | `5cbc09b` |  |
+| F025 | low | Process-table helper failure on the Windows fallback raises out of cancel and kills the supervisor loop | fixed | `2048c7a` |  |
+| F026 | low | Manim is assigned to its Job Object after it starts running; with the venv launcher, latex/dvisvgm can escape the job | fixed | `5cbc09b`, `8037f27` |  |
+| F027 | low | Fallback-only PowerShell process-table helper is started synchronously at every launch and reads every process's PEB | fixed | `5cbc09b` |  |
+| F028 | medium | MATHIMATOR_SKIP_PROCESS_TABLE only gates warmup; 'safe' fast tests still reach the kernel32 helper or orphan the fake | fixed | `5cbc09b` |  |
+| F029 | medium | ManimProgress.feed is quadratic and runs a recursive media-folder scan per cached beat on every log line | fixed | `ae98f9a` |  |
+| F030 | low | Cancel discards media by a 1-second mtime window across all qualities instead of the spec's snapshot | fixed | `ae98f9a`, `b4c8e71` |  |
+| F031 | low | Export publish copies files while holding _doc_lock, blocking edits and the stdin loop | fixed | `ae98f9a` |  |
+| F032 | medium | Export jobs emit beat_ready, and the UI patches them into the preview index; PNG exports flush a stale manifest from another quality | fixed | `ebbaede`, `ae98f9a` |  |
+| F033 | medium | receive() reports ignored events as applied, so export and superseded-preview beat_ready events overwrite the preview index | fixed | `ebbaede` |  |
+| F034 | medium | Preview keeps an older 'last good' file for a beat edited again, showing a frame two edits old | fixed | `ae98f9a` |  |
+| F035 | medium | preview-index.json paths are trusted: a crafted project copies any readable file into its own folder | fixed | `21bd75c` |  |
+| F036 | low | Job thread has unbounded waits, and a stop timeout drops the new preview request | fixed | `ae98f9a` |  |
+| F037 | high | Each FormulaPreview restarts its generation at 1, but the shell keeps a global cancel high-water mark, so later glyph previews are refused or overwrite each other | fixed | `db1b231`, `1cd60f1` |  |
+| F038 | medium | Sync Tauri commands run on the WebView2 UI thread: Typst compiles and 30 s worker RPCs freeze the window, and cancel_equation_preview can never preempt a compile | fixed | `05a0a37`, `21b3990`, `1cd60f1` |  |
+| F039 | medium | Pending RPCs are not failed when the supervisor exits, so every in-flight or next call blocks the UI thread for the full 30 s | fixed | `21b3990` |  |
+| F040 | low | An error with a null jobId ("supervisor exited") leaves the export and preview registered, so Export stays stuck at "Rendering export" | fixed | `21b3990`, `ebbaede` |  |
+| F041 | medium | An export that cancels the in-flight preview switches the status line to "Cancelled" for the whole export (opening a project does the same) | fixed | `ebbaede` |  |
+| F042 | low | publish() overwrites exportNote/exportPath that other handlers set directly, so cleared or one-off values come back or disappear | fixed | `ebbaede` |  |
+| F043 | medium | During playback, every timeupdate seeks the video back to its own reported time | fixed | `db1b231` |  |
+| F044 | medium | A long multi-line worker error grows the auto-height note row until the stage and inspector collapse | fixed | `5a53a2d` |  |
+| F045 | low | CommitNumber commits 0 for an empty field and silently drops comma decimals | fixed | `db1b231` |  |
+| F046 | medium | Code view shows stale code after Add/Undo/Redo/timeline edits while it is open | fixed | `5a53a2d` |  |
+| F047 | low | Sticky pendingCancel: a cancelled-then-failed export makes the next export cancel itself (untested glue) | fixed | `ebbaede` |  |
+| F048 | low | Handshake buffer grows without bound with events from superseded jobs | fixed | `ebbaede` |  |
+| F049 | medium | No preview is ever rendered after Open, Sample, Clear cache or Undo/Redo | fixed | `ebbaede` |  |
+| F051 | info | Least privilege: CSP null, dialog:default in the capability, and no app-command ACL | fixed | `c468eba` |  |
+| F052 | low | typst --version is spawned without CREATE_NO_WINDOW, so a console window flashes in the release GUI app | fixed | `1cd60f1` |  |
+| F053 | medium | Glyph path costs about 300-400 ms on a fast PC, over the 200 ms equation budget: a new Python process per keystroke, and Typst scans system fonts | fixed | `cd57399`, `1cd60f1` |  |
+| F054 | high | New projects live only in %TEMP%; there is no New/Save As, so work is orphaned on next launch | fixed | `5a53a2d`, `49bc598` |  |
+| F055 | medium | Debug builds run the stale bundled snapshot of the worker and venv instead of the repository sources | fixed | `391e242` |  |
+| F056 | medium | setup() errors panic with no message in the GUI build, and optional Typst/TinyTeX env overrides can make the whole app fail to start | fixed | `391e242`, `5a53a2d` |  |
+| F057 | low | Release binary embeds the build machine's CARGO_MANIFEST_DIR, so on the build machine the installed app silently falls back to repo files and hides packaging defects | fixed | `391e242` |  |
+| F059 | info | Every RPC reply, including the full document and generated code, is also broadcast as a worker-event | fixed | `21b3990` |  |
+| F060 | critical | Bundled venv is not relocatable: pyvenv.cfg points at the build account's uv interpreter, so the installed app cannot start the worker on any other machine | fixed | `e4cdcbd` |  |
+| F061 | medium | tauri build ships whatever is in packaging/bundle: no check for an empty, stale or wrong-platform runtime | fixed | `391e242`, `91d8c66`, `dce6158`, `661d276` |  |
+| F062 | medium | Offline bundle is assembled from unverified downloads and an unpinned toolchain (no checksums/signatures/hash-locked installs) | fixed | `e4cdcbd` |  |
+| F063 | medium | No CI pipeline, lint or format gates, or build README, although the spec says CI builds the bundle | fixed | `dce6158`, `d01b4bb` |  |
+| F064 | medium | No .gitattributes: on autocrlf=true clones the fixture becomes CRLF and the save byte-comparison test fails | fixed | `8f9bd8c` | `.gitattributes` keeps text files in LF. |
+| F065 | low | Default and 'fast' pytest selection still runs real Manim, Typst and hour-long waits | fixed | `e550e35` | The `render`, `typst` and `process_table` markers, with `--strict-markers`; CI picks the fast subset (D36). |
+| F066 | low | Toolchains float: Rust 'stable', no Node engines, vitest caret range | fixed | `c458351`, `b673e5b` | Rust 1.93.0 in `rust-toolchain.toml`; Node 24 in `engines` and `.nvmrc`; vitest pinned exactly (D37). |
+| F067 | low | vite.config.ts has type errors that no check covers | fixed | `c458351` | `tsconfig.node.json` and `npm run typecheck` cover `vite.config.ts`. |
+| F068 | low | envPrefix 'TAURI_' would expose every TAURI_* build variable to the client bundle | fixed | `c458351` | `envPrefix` is `TAURI_ENV_`. |
+| F069 | low | .gitignore gaps: agent state untracked, Windows clutter files not ignored, .python-version blocked | fixed | `8f9bd8c` | `.gitignore` covers `.cursor/`, `Thumbs.db` and `desktop.ini`; `.python-version` is committed (D39). |
+| F070 | low | `cargo fmt --check` already fails (11 hunks in 3 files) | fixed | `3117c80` | One rustfmt pass, together with Ruff format and Prettier (D79). |
+| F071 | low | Scrub selection is written in both Python and TypeScript; the worker's scrub command is used only by tests | fixed | `db1b231`, `2048c7a` |  |
+| F072 | low | Template binding logic is split across document.py (forward) and session.py (reverse); an edit the reverse path misses is silently reverted | partly fixed | `48bc3d6`, `e8010d0` | An edit of a template-owned field is refused with `invalid_edit` (O7). Moving template sync out of `document.py` waits for the later D41 split (TR29). |
+| F073 | low | Untyped `params: dict[str, JsonValue]` plus string dispatch forces codegen to re-validate every field | partly fixed | `48bc3d6` | StrEnums and typed per-type params wait for the later D41 split (TR29). |
+| F074 | low | Validators, limits and preset constants duplicated across modules and languages, with diverging semantics | partly fixed | `48bc3d6` | Items 4 and 6 are not done: `document._duration` now has its own 0.1 s minimum, and `codegen._number` uses `document.quantize` because formula literals are written as typed (D02). |
+| F075 | low | The normative protocol table in the spec covers about a third of the implemented contract | fixed | `2048c7a` |  |
+| F076 | medium | Unsanitized LaTeX is compiled by MathTex with TeX file-reads enabled (openin_any=a), allowing arbitrary local file disclosure | fixed | `6531279`, `9354946` |  |
+| F077 | medium | Malformed or non-UTF-8 project.json crashes the supervisor instead of being refused | fixed | `413ac6e` |  |
+| F078 | medium | Axes ranges have no tick-count cap; large range/small step hangs or OOMs Manim | fixed | `413ac6e` |  |
+| F079 | medium | Document save is not durable and an OSError from os.replace kills the worker after the edit was committed in memory | fixed | `21bd75c` |  |
+| F080 | low | project.json saved with a UTF-8 BOM is refused | fixed | `413ac6e` |  |
+| F081 | info | document.py is a 1492-line god module mixing schema, parsing, validation, template sync, hashing and id allocation | partly fixed | `48bc3d6` | Cache identity moved to `identity.py`. Moving the model dataclasses out of `document.py` waits for the later D41 split (TR29). |
+| F082 | low | Dead and redundant code in the model layer | fixed | `413ac6e`, `48bc3d6` |  |
+| F083 | info | Quadratic per-beat object-map rebuild and repeated key hashing on every edit | partly fixed | `48bc3d6` | Item 2, memoizing beat keys per project in `Session`, is not done; the finding marks it optional. |
+| F084 | low | Numeric fields are validated before rounding, so values that pass validation are emitted as 0; seed is not range-checked | fixed | `413ac6e` |  |
+| F085 | low | Dead and redundant code in codegen and templates | fixed | `48bc3d6` |  |
+| F087 | low | A preview cancelled by an Export is never re-queued, so the canvas stays out of date after the export | fixed | `ebbaede` |  |
+| F088 | low | Supervisor is a god class; split it into layout, store, preview index, exports, Manim run, scheduler and protocol | partly fixed | `48bc3d6` | `layout.py`, `preview_index.py` and `exports.py` are extracted. Splitting out the render queue, `ManimRun` and the kill code waits for the later D41 split (TR29). |
+| F089 | low | _Job is filled field by field and a test-only handwritten-scene mode branches the hot path | fixed | `2048c7a` |  |
+| F090 | low | Untyped stdio protocol: cancellation is a magic error string, 16 hand-built error literals, no shared schema | fixed | `2048c7a` |  |
+| F091 | low | Preview index has two sources of truth that are manually re-synced, and its serialization is split across modules | fixed | `ae98f9a` |  |
+| F092 | low | preview-index.json stores absolute paths, so a copied project points at the original folder's media | fixed | `21bd75c` |  |
+| F093 | low | Profiles and export formats are untyped strings with lookup tables duplicated across modules and languages | fixed | `48bc3d6` |  |
+| F094 | low | session.py: 30-branch edit if-chain, duplicated validators (the 'finite' one is not), private cross-module import | partly fixed | `48bc3d6` | `session._shift_value` and `session._id` stay: building them on the document helpers would change edit messages and field paths. |
+| F095 | low | Render errors shown to the user are Rich box-drawn tracebacks with venv paths | fixed | `5a53a2d`, `ae98f9a` |  |
+| F096 | low | Nits: ad-hoc per-line log opening with no rotation, and type-safety holes in the job thread | fixed | `21bd75c` |  |
+| F097 | low | An exception after Popen leaves Manim running unsupervised and leaks its job handle | fixed | `2048c7a` |  |
+| F098 | info | Process-table helper errors are silently turned into an empty table | fixed | `2048c7a`, `5cbc09b` |  |
+| F101 | info | Job setup failures carry no usable diagnostics in Rust or Python | fixed | `c468eba`, `5cbc09b` |  |
+| F102 | low | process_group.py is a god module mixing POSIX kill, /proc parsing, the Windows helper, tree algorithms and a test-only introspection API | partly fixed | `5cbc09b` | Splitting `process_group.py` into modules waits for the later D41 split. |
+| F103 | low | Python reap test passes even if TerminateJobObject fails, because cancel silently falls back to the process-table walk | fixed | `5cbc09b` |  |
+| F104 | low | Rust Job Object binding is hand-rolled, swallows errors, and diverges from the Python binding | partly fixed | `391e242`, `c468eba` | The Rust side is done. `win32_job.py` still declares the `_pad0`/`_pad1` fields of `_BasicLimit` (TR29). |
+| F105 | medium | C# stand-ins, csc invocation and hidden-console spawn flags are copy-pasted across Python and Rust | fixed | `cd57399`, `391e242`, `c468eba` |  |
+| F106 | low | win32_job.py rebuilds the kernel32 binding on every call and gates terminate on the environment | fixed | `5cbc09b` |  |
+| F107 | info | POSIX helpers depend on /proc, so on macOS process_alive always returns False and TeX children outside the group are never found | fixed | `5cbc09b` |  |
+| F109 | medium | A worker error stays in the handshake and is re-shown on every later worker event | fixed | `ebbaede`, `5a53a2d` |  |
+| F110 | low | The timeline duration drag never handles pointercancel or lost capture, so on touch screens the drag gets stuck and later commits a stale duration | fixed | `db1b231` |  |
+| F111 | low | Playback stalls with a disabled "Pause" button at a beat that has no file, or at a boundary where two beats share one partial | fixed | `db1b231` |  |
+| F112 | low | fieldError is one global string shown under unrelated fields, and Undo/Redo/Open never clear it | fixed | `5a53a2d`, `db1b231` |  |
+| F113 | info | If the render_preview invoke fails, the status stays "Rendering preview" with a preview still registered | fixed | `ebbaede` |  |
+| F114 | low | After a duration drag, the cell snaps back to the old duration until the edit round-trip finishes | fixed | `db1b231` |  |
+| F115 | low | Preview file load failures are swallowed and remembered for the rest of the session, then shown as "out of date" | fixed | `5a53a2d` |  |
+| F116 | info | Dead state and duplicated helpers: `rendering` is never read; format.beatAt is unused | fixed | `c42867a` |  |
+| F117 | medium | Selection is not reconciled after delete/undo; Add then fails with "unknown beat" | fixed | `db1b231` |  |
+| F118 | medium | useEditor is a god hook that mirrors the handshake into 7 states and hand-rolls transitions, causing divergence bugs | partly fixed | `c42867a` | Splitting `useEditor` (export flow, preview scheduler, startup and status) waits for the later D41 split (TR29). |
+| F119 | low | Inspector.tsx is a 667-line module with untyped params decoded ad hoc behind silent fallbacks | partly fixed | `603c9e7`, `db1b231`, `c42867a` | `useCommitDraft` is in. The `Inspector.tsx` file split and typed params wait for the later D41 split (TR29). |
+| F120 | medium | UI has no lint, no hook or component tests, and no CI job | fixed | `c458351`, `603c9e7`, `dce6158` |  |
+| F121 | info | Preview and timing rules are duplicated across TypeScript and Python, plus dead helpers | fixed | `c42867a`, `2048c7a` |  |
+| F122 | low | Type-safety holes: strict index access off, three diverging isRecord guards, casts, and an incomplete event union | partly fixed | `05a0a37` | `exactOptionalPropertyTypes` stays off (D50 did not choose it), and `ExportPanel` lists its formats from its own label table, not `EXPORT_FORMATS`. |
+| F123 | low | Effect and pointer hygiene in PreviewStage/Timeline: leaked listener, permanent missing set, stalled play state, unclamped playhead, stuck drafts | fixed | `603c9e7`, `db1b231` |  |
+| F124 | low | Python children inherit the app cwd on sys.path and inherit PYTHONHOME | fixed | `391e242`, `9354946` |  |
+| F125 | low | Asset-protocol scope only ever grows, CSP is null, and unused dialog:default lets JS widen the scope | partly fixed | `c468eba` | Fix 4, a per-project URI scheme, is deferred under D27: the asset scope keeps every project opened in the session. |
+| F127 | info | Glyph files go under .mathimator/equation, not the spec's .mathimator/typst, and one file pair is left per compile | fixed | `1cd60f1` |  |
+| F128 | low | Missing automated tests for the shell's pure logic; the generation bug above is exactly what they would catch | fixed | `1cd60f1`, `c468eba` |  |
+| F129 | low | Release builds include test hooks and log to the repo or a shared %TEMP%\out folder; stderr capture loses crash output | fixed | `391e242` |  |
+| F130 | low | Native dialogs have no parent window, so they are not modal and Open can be triggered twice | fixed | `21b3990` |  |
+| F131 | low | lib.rs mixes six responsibilities, and Worker splits one process across five Mutexes | fixed | `391e242` |  |
+| F132 | low | The bundle layout is defined twice: packaging writes runtime.json, the shell ignores it and probes hard-coded paths | fixed | `391e242` |  |
+| F133 | low | The command surface is untyped serde_json::Value: rejections arrive as Ok, the glyph result shape is duplicated by hand, and json! panics on non-UTF-8 paths | fixed | `05a0a37`, `21b3990`, `1cd60f1`, `c468eba` |  |
+| F134 | info | Smaller idiom and config issues in the shell (grouped) | partly fixed | `b673e5b`, `6eaf2d1`, `c468eba` | The shell's own `notice`, `tex_status` and `worker_exited` events are still built with `json!`; serde types for them wait for the later D41 split (TR29). |
+| F135 | medium | Undo during an in-flight preview leaves the other document's partial marked fresh (untested) | fixed | `ebbaede`, `ae98f9a`, `8b3c2f2` |  |
+| F136 | low | Export cache-key tests only check hits, built with the function under test | fixed | `3bf8536` |  |
+| F137 | low | No test protects codegen string escaping, the barrier against code injection into scene.py | fixed | `413ac6e` |  |
+| F138 | low | Supervisor protocol and render pipeline are untested without real Manim | fixed | `3bf8536` |  |
+| F139 | low | Three phase-3 tests cannot fail; the real 'keep last good SVG' logic is untested | fixed | `db1b231`, `3bf8536` |  |
+| F140 | low | Discard test cannot detect a broken keep-set | fixed | `3bf8536` |  |
+| F141 | low | test_stop_process_joins_for_one_second asserts only an upper bound | fixed | `3bf8536` |  |
+| F142 | low | Cancel-grandchild test can pass without watching any TeX process | partly fixed | `3bf8536` | The fast lane runs the deterministic TeX-child cancel test; the stricter real-Manim test waits for the owner's render-tier run. |
+| F143 | low | Known WebM failure is not xfail and its evidence record is hard-coded | fixed | `3bf8536` | `alpha_check` is computed from the measurement, and the WebM alpha has a test of its own (D54). |
+| F144 | low | Pure Windows process-tree helpers are untested and trust a stale parent PID | fixed | `5cbc09b` |  |
+| F145 | low | SupervisorClient hides tracebacks, can orphan the real interpreter, and needs a Manim venv | fixed | `3bf8536` |  |
+| F146 | low | Helpers and fixtures are duplicated across modules and languages | fixed | `cd57399` |  |
+| F147 | low | Desktop test file mixes modules, one test is misnamed, and scrub logic is duplicated without a parity check | fixed | `c42867a` |  |
+| F148 | low | Render tests ignore edit rejections and assert a machine-specific wall clock | fixed | `3bf8536` |  |
+| F149 | low | Tests are organised by build phase rather than by module | accepted risk | `e550e35` | D53 keeps the phase files, which match the spec's section 7 rows; markers separate the real-Manim tests. |
+| F150 | medium | TinyTeX packages come from live CTAN; the bundle cannot be rebuilt once TeX Live 2027 is released | fixed | `e4cdcbd` |  |
+| F151 | low | TinyTeX, Typst and uv downloads are not checksum-verified; the TinyTeX exe is run and Mark-of-the-Web is removed | fixed | `e4cdcbd` |  |
+| F152 | low | uv bootstrap is unpinned ('latest'), cached forever and unverified; the sh installer also edits shell profiles | fixed | `e4cdcbd` |  |
+| F153 | low | Any failure triggers a Python fallback, and runtime.json records a false reason | fixed | `e4cdcbd` |  |
+| F154 | medium | Bundled Python dependencies are not locked or hash-checked; only manim itself is pinned | fixed | `2cdd450`, `e4cdcbd` |  |
+| F155 | low | build-bundle.sh fails on a second run because the empty offline TeX repository is still configured | fixed | `e4cdcbd` |  |
+| F156 | low | The bundle ships build-host leftovers: the builder's absolute paths and username plus a 20.8 MB cached CTAN database | fixed | `e4cdcbd` |  |
+| F157 | low | Version bumps are unsafe: the Typst cache key has no version, the version check is hard-coded, and tinytexRelease comes from a constant | fixed | `e4cdcbd` |  |
+| F158 | low | build-bundle.sh writes runtime.json by pasting shell values into Python source | fixed | `e4cdcbd` |  |
+| F159 | low | Cygwin branch passes a POSIX path to powershell.exe -File | fixed | `e4cdcbd` |  |
+| F160 | low | build-bundle.ps1 logs no sizes for the bundle directories | fixed | `e4cdcbd` |  |
+| F161 | info | pyproject uses the deprecated table form of `license` with an unpinned setuptools | partly fixed | `2cdd450`, `dce6158` | The CI gate fails on `SetuptoolsDeprecationWarning` in the build log, because `SETUPTOOLS_ENFORCE_DEPRECATION=1` trips on setuptools' own warning. The wheel ships no licence text (open release item, O6). |
+| F162 | info | Bundle identifier ends in `.app` | fixed | `c468eba` |  |
+| F163 | low | Dead no-op block after install_manim in build-bundle.sh | fixed | `e4cdcbd` |  |
+| F164 | low | The RPC timeout is not part of the protocol: a late reply is dropped but its edit is still applied | fixed | `05a0a37`, `21b3990`, `ae98f9a` |  |
+| F165 | low | No version negotiation; unknown commands come back as `error` replies that the TS RPC handlers do not recognise | fixed | `05a0a37`, `21b3990`, `2048c7a` |  |
+| F167 | low | worker.log records every full state and command payload, is never rotated, and Clear cache keeps it | fixed | `21bd75c` |  |
+| F168 | medium | Every Export click records an undo step and clears the redo stack | fixed | `ebbaede`, `21bd75c` |  |
+| F169 | low | Unbounded on-disk growth: one glyph file pair per keystroke, worker.log with full state payloads, a temp project per launch | fixed | `49bc598`, `1cd60f1` |  |
+| F170 | high | Attacker-controlled .mathimator/codegen directory gives arbitrary code execution when a shared project is rendered | fixed | `1abc7cf`, `9354946` |  |
+| F173 | low | _id_value and _anchor discard the path argument, so their errors do not say which field failed | fixed | `413ac6e` |  |
+| F174 | low | Desktop unit tests cover only jobSession/playback; pure rule modules that mirror worker logic are untested | fixed | `c42867a`, `abaf43c` |  |
+| F175 | low | mypy: 50 errors (strict adds none), mostly JsonValue invariance and os.name platform guards; no runtime defects found | fixed | `ec4444c` | `mypy --strict` passes (D43). |
+| F176 | info | ruff lint and format baseline: 23 default and 377 extended hits, 22/34 files unformatted, no configured line length | fixed | `525a75a`, `3117c80`, `da485ea` | Ruff configuration, one format commit and the lint fixes (D43, D79). |
+| F177 | medium | Shipped runtime includes GPL/LGPL codec libraries and 35 Python distributions that the notices do not cover | fixed | `91d8c66`, `3c2f718` | Fix 2 landed with the Notices panel. Open release items (O6, D75): licence texts for several permissive components, the source-offer URL and the legal review. |
+| F178 | medium | Typst LICENSE and NOTICE are dropped when the binary is bundled | fixed | `e4cdcbd` |  |
+| F179 | low | App version and toolchain pins are hand-copied across many files with no check | fixed | `91d8c66` | `tauri.conf.json` keeps its version, which `check_versions.py` checks and `.bumpversion.toml` bumps. |
+| F180 | low | Node.js version is unpinned and npm pin policy is inconsistent | fixed | `c458351`, `dce6158` |  |
+| G1.1 | high | A segment cut off by app quit, supervisor death or a Manim crash stays in the cache and breaks every later render of that beat until Clear cache | partly fixed | `1abc7cf`, `b4c8e71` | Step 3 is not done: a cut-off `Tex/*.svg` is still reused. TeX sources and DVI files are removed before every render (F076). |
+| G1.2 | medium | A truncated WebM segment concatenates without error; the short export is published and then returned as a cache hit forever, even after Clear cache | fixed | `1abc7cf`, `ae98f9a` |  |
+| G1.3 | low | Supervisor respawn is pinned to the last project folder and startup has no exception boundary: if that folder becomes unavailable, every command, including Open and Open Sample, fails until the app restarts | fixed | `49bc598`, `21bd75c` |  |
+| G1.4 | low | The UI never re-syncs after 'supervisor exited': the restarted worker has empty history and possibly a newer document, but Undo stays enabled and the old document stays on screen | fixed | `21b3990`, `ebbaede` |  |
+| G2.1 | medium | Documents with more than 100 beats: Manim deletes the render's own earliest segments, so the preview never becomes current and every preview re-renders them | fixed | `9354946`, `68ac30e` |  |
+| G2.2 | medium | Every successful render makes a network request to pypi.org (timeout 10 s) before Manim exits, delaying preview and export completion | fixed | `9354946` |  |
+| G2.3 | medium | The user-wide (and current-folder) manim.cfg applies to every render, so a Manim user's own settings open extra windows, disable caching or break every render | fixed | `9354946` |  |
+| G2.5 | medium | The known 'transparent WebM is opaque' failure is a measurement artifact: the file has a correct alpha channel, but the test decodes it with FFmpeg's native vp9 decoder, which drops alpha | partly fixed | `3bf8536` | The WebM alpha is decoded with libvpx-vp9 in its own test; the owner's render-tier run has not run it yet (D54). |
+| G2.6 | low | A missing bundled TinyTeX is not detected: the shell silently renders with whatever TeX is on PATH, or with none, and nothing logs which latex was used | fixed | `391e242`, `9354946` |  |
+| G3.1 | medium | Beat lengths are rounded to whole frames in opposite directions (plays up, static waits down), so rendered time drifts from the timeline in preview and every export | fixed | `6531279` |  |
+| G3.2 | medium | Movie mode seeks the full preview to raw timeline time: scrub shows the wrong beat, the last beat can't be reached, and the canvas jumps when the mode switches | fixed | `db1b231` |  |
+| G3.3 | low | Snapping durations to 1/15 s cannot fix the drift: 1/15 multiples are not representable on the 3-decimal grid, and Manim miscounts even frame-exact durations | fixed | `6531279` |  |
+| G3.4 | low | Beat lookup compares against start + duration in floating point, so scrubbing onto a boundary picks the previous beat and disagrees with the timeline highlight | fixed | `db1b231`, `1306cf7` |  |
+| G3.5 | low | The spec has no frame rule for beat timing; its scrub and export acceptance rules only hold because reference-60 uses whole-second beats | fixed | `6531279`, `68ac30e` |  |
+| G3.6 | low | Tests lock in the raw movie-time mapping and only check whole-second durations; the one fractional render test asserts duration > 0 | fixed | `6531279` |  |
+| G4.1 | high | Startup project keeps the 8.3 short TEMP path, and its '~' makes every LaTeX compile fail in the default project | fixed | `1abc7cf` |  |
+| G4.2 | high | Bundled TinyTeX cannot start from a folder with non-ASCII characters, and the default per-user NSIS install puts it under the profile | fixed | `391e242` |  |
+| G4.3 | medium | An apostrophe in the project path breaks every video render because Manim's FFmpeg concat manifest is not escaped | fixed | `9354946` |  |
+| G4.4 | low | '{' or '}' in the project path crashes Manim's directory templating before any rendering | fixed | `9354946` |  |
+| G4.5 | medium | '%', '~' or '^^' in an opened project's path breaks every LaTeX compile, and the error blames the LaTeX install | fixed | `9354946` |  |
+| G4.6 | medium | Path characters outside the system ANSI code page (Greek, Cyrillic, CJK on Western Windows, any emoji) make dvisvgm fail, with a 'dvisvgm too old' message | fixed | `9354946` |  |
+| G4.7 | medium | Deep project paths: dvisvgm fails at 260 characters even with LongPathsEnabled, and Python-side partial checks are likely to fail from 117-character project paths | fixed | `9354946` |  |
+| G4.8 | low | Typst reads the glyph output path as a page template, so '{p}', '{0p}', '{t}' or '{n}' in the project path breaks the live equation preview | fixed | `1cd60f1` |  |
+| G4.9 | low | A folder named '480p15' anywhere in the project path makes exports fail | fixed | `1abc7cf` |  |
+| G4.10 | low | No test uses a project path with special characters, and pytest resolves 8.3 names, so the suite cannot catch any of the path failures above | fixed | `1abc7cf`, `3bf8536` |  |
+| G5.1 | medium | Two app instances on one project silently overwrite each other's project.json (no single-instance plugin, no project lock) | fixed | `21bd75c` |  |
+| G5.2 | medium | Changes made to project.json outside the app are silently overwritten by the next in-app edit, undo, redo or export | fixed | `21bd75c` |  |
+| G5.3 | medium | Moving, renaming or deleting the open project folder: the next edit silently recreates the old path and keeps saving there | fixed | `1cd60f1`, `21bd75c` |  |
+| G5.4 | low | Supervisor respawn re-initialises from disk with --init (an empty project.json for a moved folder) and the UI is never resynced | fixed | `49bc598`, `21bd75c` |  |
+| G5.5 | medium | Respawn is pinned to the last project path: when that path is unreachable, Open and Open sample also fail until the app restarts | fixed | `49bc598`, `21bd75c` |  |
+| G5.6 | low | Two instances share codegen/scene.py and the media tree, so an export can render the other window's scene and be cached under its own key | fixed | `21bd75c` |  |
+| G5.7 | low | Cancel's mtime-window discard deletes another instance's finished segments and movie (new information on F030/F022) | fixed | `21bd75c`, `ae98f9a` |  |
+| G5.8 | low | Clear cache's rmtree raises on any file another process has open, killing the supervisor after deleting part of the other process's cache | fixed | `21bd75c` |  |
+| G5.9 | low | Document save uses one fixed temp name shared by every instance and never retries Windows sharing violations (new information on F079) | fixed | `21bd75c` |  |
+| G5.10 | low | Discard compares file-system mtimes with the local clock and ignores unlink failures, so the half-written partial it exists to remove can survive | fixed | `ae98f9a`, `b4c8e71` |  |
+| G6.1 | low | Stray packaging/bundle/grep.exe.stackdump will ship in the NSIS installer, and rebuilding the bundle does not remove it | fixed | `e4cdcbd` |  |
+| G6.2 | low | Root grep.exe.stackdump is untracked and not ignored, so `git add -A` would commit it to the audit branch | fixed | `8f9bd8c` | `*.stackdump` is ignored; both stray dumps were deleted after the audit. |
+| G6.3 | info | Branch mismatch: the checkout is audit/cleanup-gitlab-devops, not cursor/windows-audit-fa22 (all three branches are the same commit) | accepted risk |  | D69: all work is on `audit/cleanup-gitlab-devops`, branched from `main` at `8e49fbd`; nothing to change. |
+| G6.4 | info | No GitLab remote: origin is a Cursor-hosted URL that has never been fetched | deferred by decision | `67552a3` | D65 and O3: the GitLab project does not exist yet; CONTRIBUTING lists the steps to set it up. |
+
+### 8.2 Post-audit items
+
+| Item | Status | Commits | Note |
+|---|---|---|---|
+| PNG-sequence exports: each static wait wrote a single PNG, and the publish check trusted Manim's own count | fixed | `c66ba81` | Plan A3 (SP1, TR8). One PNG per frame, and the count must equal the document's D63 frame count. The render-tier frame test waits for the owner's run. |
+| Frame rounding: the worker's `_beat_time` rounded in binary floats, the UI from whole milliseconds | fixed | `a74e47b` | Plan A2 (TR2, PR3, SP3, D63). Both read `tests/fixtures/timing/frame-boundaries.json`. |
+| Environment scrub: release shells passed inherited `MATHIMATOR_*` variables to the worker | fixed | `4c8eaa9` | Plan A4 (SP8, TR22, DC7, SP25). `shell.log` names each ignored variable. |
+| tokio 1.54.0 in `Cargo.lock`: RUSTSEC-2026-0384, a use-after-free, and the version is yanked | fixed | `fa58362` | Plan D1 (DC2). Pinned to 1.54.1. |
+| `release:notes` failed because `reports/` did not exist when git-cliff wrote to it | fixed | `a772977` | Plan D2 (DC1, DC16), with the glab release image. |
+| `set_tex_error`: a failed TeX self-test retired the worker, which ended a running export and cleared undo | fixed | `428f736` | Owner answer O8 (PR4). A protocol-2 command applies the TeX error to later job starts. |
+| Link guard: worker-managed folders could be links, and recursive deletes followed them | fixed | `7075dfd`, `b4c8e71`, `2153997`, `661d276` | Owner answer O10 (TR30). A project with a linked folder is refused with `linked_folder`, and no delete follows a link. |
+| `ParseError` always says the reply came from the worker, even for shell replies such as `reserve_job_id` | deferred by decision |  | D41 follow-up (TR29). |
+| `runtime.json` carries no `protocol` field | deferred by decision |  | Optional under contract C9.6; the handshake checks the protocol. |
+| `test_phase3.py` writes its evidence to `out/phase3/` | accepted risk |  | Intentional: `out/` is ignored, and the phase reports cite that evidence. |
+
+### 8.3 Commits cited
+
+| Commit | Subject |
+|---|---|
+| `8f9bd8c` | chore: normalize line endings and add editor, interpreter and ignore rules |
+| `e550e35` | test: mark render, Typst and process-table tests and enforce strict markers |
+| `2cdd450` | build: declare Python dev and render dependencies in a uv workspace lock |
+| `c458351` | build: pin Node 24 and add ESLint, Prettier and a type-checked Vite config |
+| `b673e5b` | build: pin the Rust toolchain to 1.93.0 with rustfmt and clippy |
+| `525a75a` | build: configure Ruff |
+| `3117c80` | style: apply Ruff format, Prettier and rustfmt |
+| `da485ea` | style: fix Ruff lint findings |
+| `ec4444c` | fix: satisfy mypy --strict |
+| `603c9e7` | style: fix ESLint findings in the desktop UI |
+| `6eaf2d1` | style: fix Clippy findings in the shell |
+| `cd57399` | test: share translator, command and C# stand-in fixtures; split atoms |
+| `05a0a37` | feat(ui): add ordered worker queue and field-naming parsers |
+| `21b3990` | feat(shell): protocol 2 transport, handshake and command surface |
+| `e4cdcbd` | build: ship a relocatable CPython and pin every bundle download |
+| `ebbaede` | feat(ui): rework job handshake, export task and automatic previews |
+| `1abc7cf` | fix: harden scene code and the render cache |
+| `391e242` | feat(shell): AppStatus, runtime.json, TeX self-test and log folders |
+| `5a53a2d` | feat(ui): app status, project_changed prompt, error banner, New/Save As |
+| `91d8c66` | build: add bundle check, notices generator and version tooling |
+| `413ac6e` | fix(worker): refusal codes, field paths and document limits |
+| `49bc598` | feat(shell): reopen the last project, mark and prune temp projects |
+| `db1b231` | feat(ui): editor fields, glyph slots, frame-snapped scrub and playback |
+| `6531279` | fix(worker): expression grammar, frame timing and timeline rules |
+| `1cd60f1` | feat(shell): Rust glyph translator, slot gate and async Typst compile |
+| `dce6158` | ci: add the GitLab pipeline, security audits, release and Renovate |
+| `c42867a` | refactor(ui): command table, focused hooks, rule tests and coverage |
+| `d01b4bb` | docs: add README, CONTRIBUTING, SECURITY and GitLab templates |
+| `c468eba` | feat(shell): webview hardening, permanent identifier, windows-sys jobs |
+| `2048c7a` | feat(worker): protocol 2 envelope, dispatch and cancel |
+| `21bd75c` | feat(worker): project lock, fingerprint and lifecycle commands |
+| `ae98f9a` | feat(worker): job queue, file-watch progress and safe publishing |
+| `9354946` | fix(worker): run Manim isolated, path-safe and TeX-checked |
+| `5cbc09b` | fix(worker): one job-handle owner, checked tree kill, real Python |
+| `48bc3d6` | refactor(worker): extract layout, exports and identity; edit table |
+| `3bf8536` | test: cover every protocol refusal and rewrite spec section 6 |
+| `abaf43c` | test: check export choices against a shared protocol fixture |
+| `a74e47b` | fix(worker): round beat frames from whole milliseconds like the UI |
+| `428f736` | feat: set the worker's TeX error without restarting it |
+| `3c2f718` | feat: show the shipped third-party notices in the Notices panel |
+| `e8010d0` | fix: name the bad TeX command, refuse template edits, widen pruning |
+| `4c8eaa9` | fix(shell): pass no inherited MATHIMATOR_* variable to release children |
+| `c66ba81` | fix(worker): write one PNG per frame and check the document's count |
+| `8b3c2f2` | feat(ui): keep the view through Save As and offer Render again |
+| `fa58362` | fix(deps): bump tokio to 1.54.1 for RUSTSEC-2026-0384 |
+| `7075dfd` | build(packaging): precompile the bundled Python and worker bytecode |
+| `b4c8e71` | fix(worker): sweep by marker snapshot, retry read-only, drop cut frames |
+| `a772977` | ci: fit GitLab Free minutes with lane rules and no nightly |
+| `2153997` | fix(worker): refuse linked folders and never delete through links |
+| `68ac30e` | test: count fractional-beat frames and keep 101 beats fresh |
+| `8037f27` | fix(shell): run the real interpreter behind a debug venv launcher |
+| `661d276` | build: check the bundle in tauri build; run real-worker tests in CI |
+| `67552a3` | docs: bring README, CONTRIBUTING, SECURITY and CHANGELOG up to date |
+| `1306cf7` | docs(spec): bring the design spec up to date with the code |
