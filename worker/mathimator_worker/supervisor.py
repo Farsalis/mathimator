@@ -296,7 +296,7 @@ class Supervisor:
             return
         self.log(f"sweeping media from an interrupted run started={started}")
         try:
-            removed = discard_unfinished_partials(self.layout.media_dir, started, set())
+            removed = discard_unfinished_partials(self.layout.media_dir, started)
         except OSError as exc:
             # The marker stays, so the next bind sweeps again.
             self.log(f"could not sweep {self.layout.media_dir}: {exc}")

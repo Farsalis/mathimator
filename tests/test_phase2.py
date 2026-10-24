@@ -28,6 +28,7 @@ from mathimator_worker.process_group import process_alive
 from mathimator_worker.session import Session
 from tests.support import (
     REPO,
+    TERMINAL_EVENTS,
     SupervisorClient,
     manim_pids,
     read_argv,
@@ -432,6 +433,16 @@ def test_a_new_preview_cancels_the_in_flight_preview(tmp_path: Path, monkeypatch
             time.sleep(0.01)
         assert not process_alive(first)
         assert time.perf_counter() - started < 1.0
+        cancelled = client.wait_for_end("preview-1", 10)
+        assert (cancelled["event"], cancelled["code"]) == ("error", "cancelled")
+        # The newer preview runs in its place, which a stop that did not wait for the old one would break (F141).
+        second = client.wait_for(
+            lambda event: event.get("jobId") == "preview-2" and event.get("event") in {"started", *TERMINAL_EVENTS},
+            10,
+        )
+        assert second["event"] == "started"
+        assert manim_pids(log_path)[0] == first
+        assert len(manim_pids(log_path)) == 2
         _end(client, "preview-2")
     finally:
         client.close()
@@ -466,10 +477,7 @@ def test_existing_export_does_not_spawn_manim(tmp_path: Path) -> None:
     try:
         _ready(client)
         client.send({"cmd": "export", "id": "export-hit"})
-        done = client.wait_for(
-            lambda event: event.get("jobId") == "export-hit" and event.get("event") in {"done", "error"},
-            10,
-        )
+        done = client.wait_for_end("export-hit", 10)
         assert done["event"] == "done"
         assert done["path"] == str(movie)
     finally:
@@ -555,4 +563,4 @@ def _wait_manim(log_path: Path) -> int:
 def _end(client: SupervisorClient, job_id: str) -> None:
     """Cancel the job and wait for its last line, so closing the worker leaves no fake Manim behind (F028)."""
     client.send({"cmd": "cancel", "id": f"cancel-{job_id}", "jobId": job_id})
-    client.wait_for(lambda event: event.get("jobId") == job_id and event.get("event") in {"done", "error"}, 10)
+    client.wait_for_end(job_id, 10)

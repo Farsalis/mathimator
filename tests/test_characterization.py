@@ -1,14 +1,16 @@
-"""Pinned cache identities and generated code (F073, F085).
+"""Pinned cache identities, what changes them, and generated code (F073, F085, F136).
 
 A refactor of the document model, the cache identity or codegen must leave
 these values byte for byte as they are. A change here throws away every
 cached partial and export, so it is a behavior change that bumps
-``GENERATOR_VERSION`` or the schema, never a side effect.
+``GENERATOR_VERSION`` or the schema, never a side effect. Each input of an
+export changes its key, and a display name changes none.
 """
 
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 
 import pytest
 
@@ -98,6 +100,23 @@ IDENTITIES = {
 }
 
 
+# One change to each input of an export, made to Journey A. The profile fields
+# change one at a time, whether or not the result is a valid profile, so that
+# a key that lost any one of them fails here (F136).
+EXPORT_INPUTS: dict[str, Callable[[Project], None]] = {
+    "format": lambda project: setattr(project.export_profile, "format", "webm"),
+    "width": lambda project: setattr(project.export_profile, "width", 1280),
+    "height": lambda project: setattr(project.export_profile, "height", 720),
+    "fps": lambda project: setattr(project.export_profile, "fps", 60),
+    "transparent": lambda project: setattr(project.export_profile, "transparent", True),
+    "seed": lambda project: setattr(project, "seed", 2),
+    "beat": lambda project: setattr(project.scene.beats[3], "duration", 2),
+    "object": lambda project: project.scene.objects[1].params.update(color="#E07A5F"),
+}
+# The inputs that are part of the scene, and so of sceneHash, not only of the export profile.
+SCENE_INPUTS = frozenset({"seed", "beat", "object"})
+
+
 @pytest.mark.parametrize("name", sorted(IDENTITIES))
 def test_cache_identities_are_pinned(name: str) -> None:
     project = _project(name)
@@ -105,6 +124,25 @@ def test_cache_identities_are_pinned(name: str) -> None:
     keys.extend(beat_chain_keys(project, "preview"))
     digest = hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
     assert (scene_stamp(project), scene_hash(project), export_key(project), digest) == IDENTITIES[name]
+
+
+@pytest.mark.parametrize("name", sorted(EXPORT_INPUTS))
+def test_every_export_input_changes_the_export_key(name: str) -> None:
+    """A changed input must miss the export cache, or an export of the old document is returned without a render."""
+    project = _project("journey-a")
+    before = (scene_hash(project), export_key(project))
+    EXPORT_INPUTS[name](project)
+    assert export_key(project) != before[1]
+    assert (scene_hash(project) != before[0]) is (name in SCENE_INPUTS)
+
+
+def test_names_keep_the_scene_hash_and_the_export_key() -> None:
+    """A rename keeps the finished export current (spec section 4)."""
+    session = Session(_project("journey-a"))
+    before = (scene_hash(session.project), export_key(session.project))
+    session.edit({"op": "set_project_name", "name": "Renamed"})
+    session.edit({"op": "set_object_name", "objectId": "plot_1", "name": "Wave"})
+    assert (scene_hash(session.project), export_key(session.project)) == before
 
 
 def test_text_fade_in_and_formula_transform_codegen_is_pinned() -> None:

@@ -34,7 +34,7 @@ from mathimator_worker.supervisor import (
     Supervisor,
     _Job,
 )
-from tests.support import REPO, FakeManim, Stdout, complete_clip, video_render, write_clip
+from tests.support import REPO, FakeManim, Stdout, complete_clip, unreadable, video_render, write_clip
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 
@@ -161,7 +161,7 @@ def test_a_failed_init_write_leaves_the_folder_as_it_was(
 def test_an_unreadable_project_json_is_read_failed(tmp_path: Path, start: Start, stdout: Stdout) -> None:
     supervisor = start(_journey(tmp_path / "bound"))
     other = _journey(tmp_path / "other")
-    with _unreadable(other / "project.json"), _unreadable(supervisor.layout.project_file):
+    with unreadable(other / "project.json"), unreadable(supervisor.layout.project_file):
         _send(supervisor, cmd="open_project", id="open", path=str(other))
         _send(supervisor, cmd="reload", id="reload")
         _send(supervisor, cmd="edit", id="edit", edit=_rename("Renamed"))
@@ -504,7 +504,7 @@ def test_save_as_says_why_the_cache_could_not_be_copied(tmp_path: Path, start: S
     write_clip(supervisor.layout.media_dir / "loose.mp4")
     target = tmp_path / "copy-fails"
     target.mkdir()
-    with _unreadable(held):
+    with unreadable(held):
         _send(supervisor, cmd="save_as", id="save", path=str(target))
     in_use = "[WinError 32] The process cannot access the file because it is being used by another process"
     assert stdout.last() == {
@@ -742,25 +742,3 @@ def _color(color: str) -> dict[str, object]:
 def _size(line: dict[str, Any]) -> int:
     """The bytes of ``line`` as the worker wrote it."""
     return len(json.dumps(line, ensure_ascii=False, allow_nan=False).encode("utf-8"))
-
-
-@contextlib.contextmanager
-def _unreadable(path: Path) -> Iterator[None]:
-    """Keep ``path`` unreadable: open with no sharing on Windows, mode 000 elsewhere."""
-    if sys.platform == "win32":
-        import _winapi
-
-        generic_read, open_existing = 0x80000000, 3
-        handle = _winapi.CreateFile(str(path), generic_read, 0, 0, open_existing, 0, 0)
-        try:
-            yield
-        finally:
-            _winapi.CloseHandle(handle)
-        return
-    if os.geteuid() == 0:
-        pytest.skip("root reads files whatever their mode")
-    path.chmod(0)
-    try:
-        yield
-    finally:
-        path.chmod(0o644)

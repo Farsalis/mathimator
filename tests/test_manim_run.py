@@ -390,6 +390,56 @@ def test_manim_runs_through_the_alias_and_events_keep_the_long_path(
     assert all(path.startswith(str(folder) + "\\") for path in paths)
 
 
+# A project in a folder with an unusual name, through every command with the fake Manim (G4.10)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["O'Neil's", "100% a~b", "x^^41 [v2]", "Ελληνικά", "📐 café"],
+    ids=["apostrophe", "percent-tilde", "carets-brackets", "greek", "emoji"],
+)
+def test_a_folder_name_with_unusual_characters(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
+) -> None:
+    """Every path the worker sends is the folder's own, character for character (C5).
+
+    The scene has no formula, so a name outside the ANSI code page renders
+    with or without an 8.3 alias. A "{" is refused before Manim starts.
+    """
+    folder = _plain(tmp_path / name)
+    supervisor = _supervisor(folder, monkeypatch)
+    root = str(folder.resolve())
+    _run(supervisor, cmd="status", id="status")
+    _run(supervisor, cmd="edit", id="rename", edit={"op": "set_project_name", "name": name})
+    clips = [complete_clip(".mp4")] * 3
+    fake_manim.plan(
+        {**video_render(supervisor.layout, "480p15", clips), **video_render(supervisor.layout, "1080p30", clips)}
+    )
+    _run(supervisor, cmd="render_preview", id="preview-1")
+    _run(supervisor, cmd="export", id="export-1")
+    target = tmp_path / f"{name} copy"
+    target.mkdir()
+    _run(supervisor, cmd="save_as", id="save", path=str(target))
+    _run(supervisor, cmd="open_project", id="open", path=str(folder))
+    (status,) = stdout.of("status")
+    (renamed,) = stdout.of("rename")
+    preview, export = stdout.of("preview-1"), stdout.of("export-1")
+    (saved,) = stdout.of("save")
+    (opened,) = stdout.of("open")
+    assert status["startupError"] is None
+    assert (renamed["projectPath"], renamed["document"]["name"]) == (root, name)
+    assert [line["event"] for line in preview] == ["started", "beat_ready", "beat_ready", "beat_ready", "done"]
+    assert [line["event"] for line in export] == ["started", "done"]
+    assert export[-1]["current"] is True
+    for line in [*preview[1:], export[-1]]:
+        assert line["path"].startswith(root + os.sep) and Path(line["path"]).is_file()
+    copy = str(target.resolve())
+    assert saved["projectPath"] == copy
+    partials = [beat["partial"] for beat in saved["index"]["beats"]]
+    assert all(path.startswith(copy + os.sep) and Path(path).is_file() for path in partials)
+    assert (opened["projectPath"], opened["document"]["name"]) == (root, name)
+
+
 # A formula rendered by Manim, LaTeX, dvisvgm and FFmpeg from such a folder (D61, G4.10)
 
 
@@ -407,10 +457,7 @@ def test_a_formula_renders_from_a_folder_with_an_unusual_name(name: str) -> None
     client = start_supervisor(folder, folder.with_name(f"{folder.name}.log"))
     try:
         client.send({"cmd": "render_preview", "id": "preview-1"})
-        finished = client.wait_for(
-            lambda event: event.get("jobId") == "preview-1" and event.get("event") in {"done", "error", "rejected"},
-            600,
-        )
+        finished = client.wait_for_end("preview-1", 600)
         partials = [Path(str(event["path"])) for event in client.events if event.get("event") == "beat_ready"]
     finally:
         client.close()

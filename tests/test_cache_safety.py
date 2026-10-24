@@ -30,7 +30,16 @@ from mathimator_worker.layout import ProjectLayout
 from mathimator_worker.manim_paths import short_path
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import Supervisor, _Job, _remove_tree
-from tests.support import REPO, FakeManim, complete_clip, ebml_element, iso_box, video_render, write_clip
+from tests.support import (
+    REPO,
+    TERMINAL_EVENTS,
+    FakeManim,
+    complete_clip,
+    ebml_element,
+    iso_box,
+    video_render,
+    write_clip,
+)
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 SUFFIXES = (".mp4", ".mov", ".webm")
@@ -535,8 +544,7 @@ def _run(supervisor: Supervisor, command: str, job_id: str) -> None:
 
 
 def _terminal(events: list[dict[str, object]], job_id: str) -> dict[str, object]:
-    terminal = {"done", "error", "rejected"}
-    ends = [event for event in events if event.get("jobId") == job_id and event.get("event") in terminal]
+    ends = [event for event in events if event.get("jobId") == job_id and event.get("event") in TERMINAL_EVENTS]
     assert len(ends) == 1, events
     return ends[0]
 

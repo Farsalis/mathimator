@@ -7,10 +7,13 @@ The Job Object tests live in ``test_win32_job.py`` and stay skipped unless
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 from mathimator_worker.document import dumps_project, empty_project, load_text
 from mathimator_worker.document_error import DocumentError
@@ -18,7 +21,7 @@ from mathimator_worker.progress import discard_unfinished_partials
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import Supervisor, _Job
 from mathimator_worker.win32_job import jobs_enabled
-from tests.support import read_argv, start_supervisor, write_fake_interpreter
+from tests.support import SupervisorClient, read_argv, start_supervisor, write_fake_interpreter
 
 
 def test_delete_object_removes_targeting_beats_as_one_undo() -> None:
@@ -142,27 +145,41 @@ def test_queued_preview_starts_once_after_export(tmp_path: Path, monkeypatch) ->
         client.close()
 
 
-def test_cancelled_render_drops_the_unfinished_partial(tmp_path: Path) -> None:
+def test_a_wait_fails_as_soon_as_the_supervisor_dies_and_shows_its_stderr() -> None:
+    """A supervisor that crashes fails the test at once, with its traceback, not at the timeout (F145)."""
+    crash = "import sys; sys.stderr.write('Traceback (most recent call last):\\nRuntimeError: boom\\n'); sys.exit(3)"
+    pipes = {"stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+    client = SupervisorClient(subprocess.Popen([sys.executable, "-c", crash], **pipes))
+    started = time.monotonic()
+    with pytest.raises(AssertionError, match="the supervisor closed its stdout; exit code 3") as failed:
+        client.wait_for_end("preview-1", 60)
+    assert time.monotonic() - started < 10
+    assert "RuntimeError: boom" in str(failed.value)
+    client.close()
+
+
+@pytest.mark.parametrize(
+    ("relative", "age", "swept"),
+    [
+        pytest.param(f"partial_movie_files/MainScene/{'b' * 64}.mp4", 0, True, id="partial-of-the-run"),
+        pytest.param(f"partial_movie_files/MainScene/{'a' * 64}.mp4", 30, False, id="older-partial"),
+        pytest.param("MainScene.mp4", 0, True, id="movie-of-the-run"),
+        pytest.param("partial_movie_files/MainScene/partial_movie_file_list.txt", 0, True, id="segment-list"),
+        pytest.param("notes.txt", 0, False, id="not-media"),
+    ],
+)
+def test_the_sweep_takes_only_media_written_since_the_run_started(
+    tmp_path: Path, relative: str, age: float, swept: bool
+) -> None:
+    """Each rule of the interrupted-run sweep on its own, so a broken one cannot hide behind another (F140)."""
     media = tmp_path / "media"
-    partial_dir = media / "videos" / "scene" / "480p15" / "partial_movie_files" / "MainScene"
-    partial_dir.mkdir(parents=True)
-    good = partial_dir / ("a" * 64 + ".mp4")
-    good.write_bytes(b"ok" * 100)
-    old = time.time() - 30
-    os.utime(good, (old, old))
-    stub = partial_dir / ("b" * 64 + ".mp4")
-    stub.write_bytes(b"\x00" * 48)
-    movie = media / "videos" / "scene" / "480p15" / "MainScene.mp4"
-    movie.parent.mkdir(parents=True, exist_ok=True)
-    movie.write_bytes(b"\x00" * 48)
-    manifest = media / "videos" / "scene" / "480p15" / "partial_movie_file_list.txt"
-    manifest.write_text("file 'stub'\n", encoding="utf-8")
-    removed = discard_unfinished_partials(media, time.time() - 2, {good})
-    assert good.is_file()
-    assert not stub.exists()
-    assert not movie.exists()
-    assert not manifest.exists()
-    assert {path.name for path in removed} == {stub.name, movie.name, manifest.name}
+    path = media / "videos" / "scene" / "480p15" / relative
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\x00" * 48)
+    written = time.time() - age
+    os.utime(path, (written, written))
+    removed = discard_unfinished_partials(media, time.time() - 2)
+    assert (removed, path.exists()) == (([path], False) if swept else ([], True))
 
 
 def _argv_count(log_path: Path) -> int:

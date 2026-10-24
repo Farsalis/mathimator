@@ -17,7 +17,15 @@ import pytest
 
 from mathimator_worker.codegen import generate
 from mathimator_worker.document import dumps_project, load_text
-from tests.support import REPO, SupervisorClient, media_dir, probe_video, scene_path, start_supervisor
+from tests.support import (
+    REPO,
+    TERMINAL_EVENTS,
+    SupervisorClient,
+    media_dir,
+    probe_video,
+    scene_path,
+    start_supervisor,
+)
 
 pytestmark = pytest.mark.render
 
@@ -40,22 +48,19 @@ def test_phase4_surface_curve_formula_and_png_sequence() -> None:
             shutil.rmtree(videos)
         started = time.perf_counter()
         client.send({"cmd": "edit", "id": "insert", "edit": {"op": "add_three_d_axes"}})
-        client.wait_for(lambda event: event.get("jobId") == "insert" and event.get("event") == "state", 30)
+        inserted = client.wait_for(lambda event: event.get("jobId") == "insert", 30)
+        assert inserted["event"] == "state"
         time.sleep(0.3)
         client.send({"cmd": "render_preview", "id": "surface-preview"})
         client.wait_for(
             lambda event: (
                 event.get("jobId") == "surface-preview"
-                and event.get("event") == "beat_ready"
-                and event.get("beatIndex") == 1
+                and (event.get("beatIndex") == 1 or event.get("event") in TERMINAL_EVENTS)
             ),
             300,
         )
         insert_seconds = time.perf_counter() - started
-        done = client.wait_for(
-            lambda event: event.get("jobId") == "surface-preview" and event.get("event") in {"done", "error"},
-            300,
-        )
+        done = client.wait_for_end("surface-preview", 300)
         if done.get("event") != "done":
             raise AssertionError(json.dumps(done, indent=2))
         preview_path = Path(str(done["path"]))
@@ -80,21 +85,16 @@ def test_phase4_surface_curve_formula_and_png_sequence() -> None:
         profiled = client.wait_for(lambda event: event.get("jobId") == "profile", 30)
         assert profiled["event"] == "state"
         client.send({"cmd": "export", "id": "png"})
-        exported = client.wait_for(
-            lambda event: event.get("jobId") == "png" and event.get("event") in {"done", "error"},
-            600,
-        )
+        exported = client.wait_for_end("png", 600)
         if exported.get("event") != "done":
             raise AssertionError(json.dumps(exported, indent=2))
         frames_dir = Path(str(exported["path"]))
         client.send({"cmd": "edit", "id": "curve", "edit": {"op": "set_three_d_mode", "mode": "curve"}})
-        client.wait_for(lambda event: event.get("jobId") == "curve" and event.get("event") == "state", 30)
+        curved = client.wait_for(lambda event: event.get("jobId") == "curve", 30)
+        assert curved["event"] == "state"
         time.sleep(0.3)
         client.send({"cmd": "render_preview", "id": "curve-preview"})
-        curve_done = client.wait_for(
-            lambda event: event.get("jobId") == "curve-preview" and event.get("event") in {"done", "error"},
-            300,
-        )
+        curve_done = client.wait_for_end("curve-preview", 300)
         if curve_done.get("event") != "done":
             raise AssertionError(json.dumps(curve_done, indent=2))
         curve_path = Path(str(curve_done["path"]))
@@ -142,13 +142,11 @@ def test_phase4_surface_curve_formula_and_png_sequence() -> None:
     try:
         _ready(formula, "formula-warm")
         formula.send({"cmd": "edit", "id": "add-formula", "edit": {"op": "add_formula_transform"}})
-        formula.wait_for(lambda event: event.get("jobId") == "add-formula" and event.get("event") == "state", 30)
+        added = formula.wait_for(lambda event: event.get("jobId") == "add-formula", 30)
+        assert added["event"] == "state"
         time.sleep(0.3)
         formula.send({"cmd": "render_preview", "id": "formula-preview"})
-        formula_done = formula.wait_for(
-            lambda event: event.get("jobId") == "formula-preview" and event.get("event") in {"done", "error"},
-            300,
-        )
+        formula_done = formula.wait_for_end("formula-preview", 300)
         if formula_done.get("event") != "done":
             raise AssertionError(json.dumps(formula_done, indent=2))
         formula_path = Path(str(formula_done["path"]))

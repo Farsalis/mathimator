@@ -11,12 +11,21 @@ import json
 import shutil
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from mathimator_worker.document import load_text
 from mathimator_worker.identity import export_folder_name, export_key
-from tests.support import REPO, SupervisorClient, media_dir, probe_video, sha256_file, start_supervisor
+from tests.support import (
+    REPO,
+    TERMINAL_EVENTS,
+    SupervisorClient,
+    media_dir,
+    probe_video,
+    sha256_file,
+    start_supervisor,
+)
 
 pytestmark = pytest.mark.render
 
@@ -80,6 +89,7 @@ def test_reference_60_codegen_preview_export_and_partial() -> None:
         timed=False,
     )
     assert setup["event"] == "done"
+    assert _beat(setup, 7)["duration"] == 5
     shortened = setup["beats"]
     assert isinstance(shortened, list)
     assert [event["beatIndex"] for event in shortened] == list(range(8))
@@ -95,6 +105,7 @@ def test_reference_60_codegen_preview_export_and_partial() -> None:
     )
     assert colored["event"] == "beat_ready"
     assert colored["beatIndex"] == 7
+    assert _beat(colored, 7)["params"] == {"color": "#81B29A"}
     recolor_beats = colored["beats"]
     assert isinstance(recolor_beats, list)
     assert [event["beatIndex"] for event in recolor_beats[:7]] == list(range(7))
@@ -147,22 +158,18 @@ def test_axes_function_insert_preview() -> None:
             shutil.rmtree(videos)
         started = time.perf_counter()
         client.send({"cmd": "edit", "id": "insert", "edit": {"op": "add_axes_function"}})
-        client.wait_for(lambda event: event.get("jobId") == "insert" and event.get("event") == "state", 30)
+        inserted = client.wait_for(lambda event: event.get("jobId") == "insert", 30)
+        if inserted.get("event") != "state":
+            raise AssertionError(json.dumps(inserted, indent=2))
         time.sleep(0.3)
         client.send({"cmd": "render_preview", "id": "insert-preview"})
-        finished = client.wait_for(
-            lambda event: event.get("jobId") == "insert-preview" and event.get("event") == "done",
-            180,
-        )
+        finished = client.wait_for_end("insert-preview", 180)
+        if finished.get("event") != "done":
+            raise AssertionError(json.dumps(finished, indent=2))
         seconds = time.perf_counter() - started
-        beats = [
-            event
-            for event in client.events
-            if event.get("event") == "beat_ready" and event.get("jobId") == "insert-preview"
-        ]
+        beats = _beats(client, "insert-preview")
     finally:
         client.close()
-    assert finished["event"] == "done"
     assert [event["beatIndex"] for event in beats] == [0, 1]
     for event in beats:
         assert Path(str(event["path"])).is_file()
@@ -204,10 +211,7 @@ def _render(
     try:
         _ready(client, f"status-{job_id}")
         client.send({"cmd": command, "id": job_id})
-        finished = client.wait_for(
-            lambda event: event.get("jobId") == job_id and event.get("event") in {"done", "error"},
-            timeout,
-        )
+        finished = client.wait_for_end(job_id, timeout)
         if finished.get("event") != "done":
             raise AssertionError(json.dumps(finished, indent=2))
         return {"event": "done", "path": finished["path"], "beats": _beats(client, job_id)}
@@ -231,44 +235,46 @@ def _edit_and_render(
         _ready(client, f"status-{job_id}")
         started = time.perf_counter()
         client.send({"cmd": "edit", "id": f"edit-{job_id}", "edit": edit})
-        client.wait_for(lambda event: event.get("jobId") == f"edit-{job_id}", 30)
+        edited = client.wait_for(lambda event: event.get("jobId") == f"edit-{job_id}", 30)
+        if edited.get("event") != "state":
+            raise AssertionError(json.dumps(edited, indent=2))
         if timed:
             time.sleep(0.3)
         else:
             started = time.perf_counter()
         client.send({"cmd": "render_preview", "id": job_id})
         if until_beat is None:
-            finished = client.wait_for(
-                lambda event: event.get("jobId") == job_id and event.get("event") in {"done", "error"},
-                600,
-            )
-            seconds = time.perf_counter() - started
-            trailing = finished
+            finished = client.wait_for_end(job_id, 600)
         else:
             finished = client.wait_for(
                 lambda event: (
                     event.get("jobId") == job_id
-                    and event.get("event") == "beat_ready"
-                    and event.get("beatIndex") == until_beat
+                    and (event.get("beatIndex") == until_beat or event.get("event") in TERMINAL_EVENTS)
                 ),
                 600,
             )
-            seconds = time.perf_counter() - started
-            trailing = client.wait_for(
-                lambda event: event.get("jobId") == job_id and event.get("event") in {"done", "error"},
-                600,
-            )
-        if finished.get("event") == "error" or trailing.get("event") == "error":
-            raise AssertionError(json.dumps(trailing, indent=2))
+        seconds = time.perf_counter() - started
+        ended = client.wait_for_end(job_id, 600)
+        if ended.get("event") != "done":
+            raise AssertionError(json.dumps(ended, indent=2))
         return {
             "event": finished["event"],
             "beatIndex": finished.get("beatIndex"),
             "path": finished.get("path"),
             "seconds": seconds,
+            "document": edited["document"],
             "beats": _beats(client, job_id),
         }
     finally:
         client.close()
+
+
+def _beat(rendered: dict[str, object], index: int) -> dict[str, Any]:
+    """Beat ``index`` of the document the edit before ``rendered`` saved."""
+    document = rendered["document"]
+    assert isinstance(document, dict)
+    beat: dict[str, Any] = document["scene"]["beats"][index]
+    return beat
 
 
 def _beats(client: object, job_id: str) -> list[dict[str, object]]:

@@ -184,11 +184,7 @@ def _unquote(token: str) -> str:
 _VIDEO_SUFFIXES = {".mp4", ".gif", ".webm", ".mov"}
 
 
-def discard_unfinished_partials(
-    media_dir: Path,
-    started: float,
-    finished: set[Path],
-) -> list[Path]:
+def discard_unfinished_partials(media_dir: Path, started: float) -> list[Path]:
     """Delete the media a run that was cut off by a quit, a crash or a kill left behind (G1.1).
 
     Without a running job there is no snapshot to compare with, so this takes
@@ -198,7 +194,6 @@ def discard_unfinished_partials(
     """
     if not media_dir.is_dir():
         return []
-    keep = {path.resolve() for path in finished}
     removed: list[Path] = []
     for path in media_dir.rglob("*"):
         if not path.is_file():
@@ -213,12 +208,9 @@ def discard_unfinished_partials(
             continue
         try:
             modified = path.stat().st_mtime
-            resolved = path.resolve()
         except OSError:
             continue
         if modified < started - 1:
-            continue
-        if resolved in keep:
             continue
         try:
             path.unlink()

@@ -1,34 +1,99 @@
-"""Protocol 2: the request envelope, replies, cancel and hand-written mode (contract C2 to C7).
+"""Protocol 2: the request envelope, replies, every refusal, cancel and hand-written mode (contract C2 to C8).
 
 Every test runs a Supervisor in this process through ``handle_line`` and reads
 its replies from the captured stdout. Each line is parsed the strict way the
 shell parses it, so a line with NaN or any other non-JSON fails the test. Jobs
-run the ``fake_manim`` stand-in.
+run the ``fake_manim`` stand-in. Together with the job, lifecycle and document
+tests, each refusal code of each command in C4 is sent here at least once.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
 import sys
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from mathimator_worker import supervisor as supervisor_module
+from mathimator_worker.codegen import CodegenError
 from mathimator_worker.document import NOT_UTF8
 from mathimator_worker.preview_index import PreviewIndex
 from mathimator_worker.progress import ManimProgress
 from mathimator_worker.protocol import PROTOCOL_VERSION, REQUEST_FIELDS
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import NOT_A_PROJECT, Supervisor, _Job
-from tests.support import REFERENCE, REPO, FakeManim, Stdout, complete_clip, handwritten_project, video_render
+from tests.support import (
+    REFERENCE,
+    REPO,
+    FakeManim,
+    Stdout,
+    complete_clip,
+    handwritten_project,
+    unreadable,
+    video_render,
+)
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 SHARED_COMMANDS = REPO / "tests" / "fixtures" / "protocol" / "commands.json"
 NO_PROJECT = f"No project is open. {NOT_A_PROJECT}"
+_JOURNEY_TEXT = JOURNEY.read_text(encoding="utf-8")
+# For each document code, a project.json made from Journey A that breaks one of its rules, and the field it names.
+DOCUMENT_DEFECTS: dict[str, tuple[bytes, str | None]] = {
+    "not_utf8": (_JOURNEY_TEXT.encode("utf-16"), None),
+    "invalid_json": (_JOURNEY_TEXT.replace('"seed": 1,', '"seed": 1').encode(), None),
+    "invalid_text": (
+        _JOURNEY_TEXT.replace("y = \\\\sin(x)", "y = \\u0000").encode(),
+        "scene.objects[2].params.latex",
+    ),
+    "untrusted_latex": (
+        _JOURNEY_TEXT.replace("y = \\\\sin(x)", "\\\\input{secret}").encode(),
+        "scene.objects[2].params.latex",
+    ),
+    "unsupported_expression": (
+        _JOURNEY_TEXT.replace('"sin(x)"', '"__import__(1)"').encode(),
+        "scene.objects[1].params.expression",
+    ),
+    "limit_exceeded": (
+        _JOURNEY_TEXT.replace("[-6.5, 6.5, 1]", "[-6.5, 6.5, 0.01]").encode(),
+        "scene.objects[0].params.xRange",
+    ),
+    "invalid_document": (
+        _JOURNEY_TEXT.replace('"id": "beat_1",', '"id": "beat_1",\n        "start": 0,').encode(),
+        "scene.beats[0].start",
+    ),
+}
+# What the write and render checks of C8.1 refuse, problem by problem.
+_REFUSALS = {
+    "moved": "project_unavailable",
+    "deleted": "project_unavailable",
+    "unreadable": "read_failed",
+    "changed": "project_changed",
+}
+# Each command that writes or renders, a problem on disk, and its refusal, or None for a state reply.
+DISK_CHECKS: list[tuple[str, str, str | None]] = [
+    *(
+        (command, problem, code)
+        for command in ("edit", "undo", "redo", "render_preview", "export")
+        for problem, code in _REFUSALS.items()
+    ),
+    # Overwrite skips the read and the fingerprint, reload the fingerprint, and clear_cache all but the folder.
+    ("overwrite", "moved", "project_unavailable"),
+    ("overwrite", "deleted", "project_unavailable"),
+    ("overwrite", "changed", None),
+    ("reload", "moved", "project_unavailable"),
+    ("reload", "deleted", "project_unavailable"),
+    ("reload", "unreadable", "read_failed"),
+    ("reload", "changed", None),
+    ("clear_cache", "moved", "project_unavailable"),
+    ("clear_cache", "deleted", None),
+    ("clear_cache", "changed", None),
+]
 
 
 @pytest.fixture
@@ -164,6 +229,13 @@ def test_a_change_that_cannot_be_saved_is_not_applied(
     _send(supervisor, cmd="undo", id="undo-again")
     assert stdout.last()["event"] == "state"
     assert json.loads(supervisor.layout.project_file.read_text(encoding="utf-8"))["name"] == "Sine introduction"
+    undone = supervisor.layout.project_file.read_bytes()
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "replace", locked)
+        _send(supervisor, cmd="redo", id="redo")
+    assert (stdout.last()["jobId"], stdout.last()["code"]) == ("redo", "save_failed")
+    assert (_undo_depth(supervisor), supervisor.session.can_redo()) == (0, True)
+    assert supervisor.layout.project_file.read_bytes() == undone
 
 
 def test_a_reply_json_cannot_hold_becomes_an_internal_error(
@@ -311,6 +383,219 @@ def test_a_switch_that_fails_part_way_keeps_the_old_binding(
     assert json.loads(supervisor.layout.project_file.read_text(encoding="utf-8"))["name"] == "Sine introduction"
     # The failed attempt released the second folder's lock and removed what it created there.
     assert sorted(path.name for path in second.iterdir()) == ["project.json"]
+
+
+# Every refusal of each command (C4, C5.2, C8.1)
+
+
+@pytest.mark.parametrize(
+    ("edit", "code", "field", "message"),
+    [
+        pytest.param(
+            {"op": "set_beat_duration", "beatId": "beat_9", "duration": 1},
+            "invalid_edit",
+            "beatId",
+            "unknown beat beat_9",
+            id="invalid_edit",
+        ),
+        pytest.param(
+            {"op": "set_latex", "objectId": "title_1", "latex": "a\x00b"},
+            "invalid_text",
+            "latex",
+            "latex contains a character Mathimator cannot store.",
+            id="invalid_text",
+        ),
+        pytest.param(
+            {"op": "set_expression", "objectId": "plot_1", "expression": "y"},
+            "unsupported_expression",
+            "expression",
+            "This expression is not supported.",
+            id="unsupported_expression",
+        ),
+        pytest.param(
+            {"op": "set_beat_duration", "beatId": "beat_1", "duration": 0.05},
+            "limit_exceeded",
+            "duration",
+            "duration must be at least 0.1 seconds",
+            id="limit_exceeded",
+        ),
+        pytest.param(
+            {"op": "set_latex", "objectId": "title_1", "latex": "\\input{secret}"},
+            "untrusted_latex",
+            "latex",
+            "latex uses \\input, which formulas cannot use.",
+            id="untrusted_latex",
+        ),
+    ],
+)
+def test_an_edit_refusal_names_its_code_and_field(
+    edit: dict[str, object],
+    code: str,
+    field: str,
+    message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: Stdout,
+) -> None:
+    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
+    _send(supervisor, cmd="edit", id="edit", edit=edit)
+    assert stdout.read() == [{"event": "rejected", "jobId": "edit", "code": code, "message": message, "field": field}]
+    assert supervisor.layout.project_file.read_bytes() == JOURNEY.read_bytes()
+    assert _undo_depth(supervisor) == 0
+
+
+@pytest.mark.parametrize(("command", "code"), [("undo", "nothing_to_undo"), ("redo", "nothing_to_redo")])
+def test_an_empty_history_is_refused(
+    command: str, code: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout
+) -> None:
+    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
+    _send(supervisor, cmd=command, id=command)
+    message = f"Nothing to {command}."
+    assert stdout.read() == [{"event": "rejected", "jobId": command, "code": code, "message": message}]
+
+
+@pytest.mark.parametrize("code", sorted(DOCUMENT_DEFECTS))
+@pytest.mark.parametrize("command", ["open_project", "reload"])
+def test_a_document_refusal_names_its_code_and_field(
+    command: str, code: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout
+) -> None:
+    supervisor = _supervisor(_journey(tmp_path / "bound"), monkeypatch, init=False)
+    _send(supervisor, cmd="edit", id="rename", edit=_rename("Renamed"))
+    data, field = DOCUMENT_DEFECTS[code]
+    if command == "open_project":
+        refused_folder = tmp_path / "refused"
+        refused_folder.mkdir()
+        (refused_folder / "project.json").write_bytes(data)
+        _send(supervisor, cmd="open_project", id="refused", path=str(refused_folder))
+    else:
+        supervisor.layout.project_file.write_bytes(data)
+        _send(supervisor, cmd="reload", id="refused")
+    _send(supervisor, cmd="get_state", id="state")
+    _renamed, refused, state = stdout.read()
+    assert (refused["event"], refused["code"], refused.get("field")) == ("rejected", code, field)
+    assert refused["message"]
+    # The binding, the document and its undo history are as they were (C8.3).
+    assert state["projectPath"] == str(supervisor.project)
+    assert (state["document"]["name"], state["derived"]["canUndo"]) == ("Renamed", True)
+
+
+@pytest.mark.parametrize(("command", "problem", "code"), DISK_CHECKS)
+def test_the_disk_checks_of_each_command_that_writes_or_renders(
+    command: str,
+    problem: str,
+    code: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: Stdout,
+    fake_manim: FakeManim,
+) -> None:
+    """C8.1: each command meets each problem with its refusal, or with a state reply when it skips that check."""
+    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
+    _send(supervisor, cmd="edit", id="first", edit=_rename("First"))
+    _send(supervisor, cmd="edit", id="second", edit=_rename("Second"))
+    # One step to undo and one to redo.
+    _send(supervisor, cmd="undo", id="undo")
+    depth = _undo_depth(supervisor)
+    fields = {"edit": _rename("Third")} if command == "edit" else {}
+    with _disk_problem(supervisor, problem):
+        before = _project_bytes(supervisor)
+        _run(supervisor, cmd=command, id="request", **fields)
+        after = _project_bytes(supervisor)
+    (reply,) = stdout.of("request")
+    if code is None:
+        assert reply["event"] == "state"
+        return
+    assert (reply["event"], reply["code"]) == ("rejected", code)
+    assert (after, _undo_depth(supervisor)) == (before, depth)
+    # A moved folder is never made again (D57).
+    assert supervisor.project.exists() is (problem != "moved")
+    assert not fake_manim.ran()
+
+
+def test_code_refuses_a_scene_that_cannot_be_generated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout
+) -> None:
+    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
+
+    def refused(project: object) -> str:
+        raise CodegenError("eq_1 left the screen when it was transformed into eq_2")
+
+    monkeypatch.setattr(supervisor_module, "generate", refused)
+    _send(supervisor, cmd="code", id="code")
+    assert stdout.read() == [
+        {
+            "event": "rejected",
+            "jobId": "code",
+            "code": "invalid_document",
+            "message": "eq_1 left the screen when it was transformed into eq_2",
+        }
+    ]
+
+
+def test_an_overwrite_that_cannot_be_saved_changes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout
+) -> None:
+    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
+    _send(supervisor, cmd="edit", id="rename", edit=_rename("Renamed"))
+    outside = supervisor.layout.project_file.read_bytes().replace(b"Renamed", b"Elsewhere")
+    supervisor.layout.project_file.write_bytes(outside)
+
+    def full(source: object, target: object) -> None:
+        raise OSError(28, "There is not enough space on the disk")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "replace", full)
+        _send(supervisor, cmd="overwrite", id="overwrite")
+    _send(supervisor, cmd="edit", id="again", edit=_rename("Again"))
+    _renamed, refused, again = stdout.read()
+    assert refused == {
+        "event": "rejected",
+        "jobId": "overwrite",
+        "code": "save_failed",
+        "message": "Could not save project.json: There is not enough space on the disk. The change was undone.",
+    }
+    assert supervisor.layout.project_file.read_bytes() == outside
+    # The fingerprint is the one before the failed overwrite, so the file is still the outside one (D59).
+    assert again["code"] == "project_changed"
+
+
+@pytest.mark.parametrize("command", ["render_preview", "export"])
+def test_a_job_without_a_project_is_refused(
+    command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
+) -> None:
+    project = tmp_path / "utf16"
+    project.mkdir()
+    (project / "project.json").write_bytes(JOURNEY.read_text(encoding="utf-8").encode("utf-16"))
+    supervisor = _supervisor(project, monkeypatch, init=False)
+    _run(supervisor, cmd=command, id="job")
+    assert stdout.read() == [
+        {"event": "rejected", "jobId": "job", "code": "no_project", "message": f"No project is open. {NOT_UTF8}"}
+    ]
+    assert not fake_manim.ran()
+
+
+@pytest.mark.parametrize("command", ["render_preview", "export"])
+def test_a_job_that_fails_unexpectedly_ends_with_an_internal_error(
+    command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
+) -> None:
+    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
+
+    def broken(project: object) -> bool:
+        raise RuntimeError("start bug")
+
+    monkeypatch.setattr(supervisor_module, "needs_latex", broken)
+    _run(supervisor, cmd=command, id="job")
+    _send(supervisor, cmd="status", id="after")
+    failed, ready = stdout.read()
+    assert failed == {
+        "event": "error",
+        "jobId": "job",
+        "code": "internal",
+        "message": "Internal error: RuntimeError: start bug. Details are in worker.log.",
+    }
+    assert ready["event"] == "ready"
+    assert not fake_manim.ran()
+    assert "job job failed\nTraceback (most recent call last):" in supervisor.log_path.read_text(encoding="utf-8")
 
 
 # Cancel (C7.3)
@@ -581,6 +866,39 @@ def _journey(root: Path) -> Path:
     root.mkdir(parents=True)
     (root / "project.json").write_bytes(JOURNEY.read_bytes())
     return root
+
+
+@contextlib.contextmanager
+def _disk_problem(supervisor: Supervisor, problem: str) -> Iterator[None]:
+    """Make ``problem`` happen to the bound project for as long as the block runs."""
+    project_file = supervisor.layout.project_file
+    match problem:
+        case "unreadable":
+            with unreadable(project_file):
+                yield
+            return
+        case "moved":
+            # Windows refuses to rename a folder while a file in it is open, so the lock lets go first.
+            assert supervisor._binding is not None
+            supervisor._binding.lock.release()
+            supervisor.project.rename(supervisor.project.with_name(f"{supervisor.project.name} moved"))
+        case "deleted":
+            project_file.unlink()
+        case "changed":
+            project_file.write_bytes(project_file.read_bytes() + b" ")
+    yield
+
+
+def _project_bytes(supervisor: Supervisor) -> bytes | None:
+    """project.json as it is on disk, or None when it cannot be read."""
+    try:
+        return supervisor.layout.project_file.read_bytes()
+    except OSError:
+        return None
+
+
+def _rename(name: str) -> dict[str, object]:
+    return {"op": "set_project_name", "name": name}
 
 
 def _with_index(project: Path, clip: str) -> Path:

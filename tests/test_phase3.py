@@ -135,14 +135,6 @@ def test_sine_svg_compiles(tmp_path: Path) -> None:
     )
 
 
-def test_integral_does_not_write_an_svg(tmp_path: Path) -> None:
-    result = translate(INTEGRAL)
-    assert result.supported is False
-    assert result.document is None
-    destination = tmp_path / "integral.svg"
-    assert not destination.exists()
-
-
 def test_cli_returns_the_sine_document() -> None:
     completed = subprocess.run(
         [str(venv_python()), "-m", "mathimator_worker.equation"],
@@ -195,26 +187,23 @@ def test_journey_a_codegen_is_still_mathtex() -> None:
 
 
 @pytest.mark.typst
-def test_failed_typst_run_leaves_the_previous_svg(tmp_path: Path) -> None:
-    good = translate(SINE)
-    assert good.document is not None
-    directory = tmp_path / "glyph"
-    directory.mkdir()
-    previous = directory / "formula-1.svg"
-    _compile(good.document, directory / "formula-1.typ", previous)
+def test_typst_refuses_the_empty_root_the_translator_emits(tmp_path: Path) -> None:
+    """An empty root passes the translator as ``sqrt()``, which Typst refuses without writing an SVG.
+
+    Keeping the last good SVG after such a run is the shell's and the UI's job, tested there (F139).
+    """
     broken = translate(r"\sqrt{}")
     assert broken.supported is True
     assert broken.document is not None
     assert "sqrt()" in broken.document
-    failed = directory / "formula-2.svg"
+    svg = tmp_path / "formula.svg"
     completed = subprocess.run(
-        ["typst", "compile", str(_write_typ(directory / "formula-2.typ", broken.document)), str(failed)],
+        ["typst", "compile", str(_write_typ(tmp_path / "formula.typ", broken.document)), str(svg)],
         check=False,
         capture_output=True,
     )
     assert completed.returncode != 0
-    assert previous.is_file()
-    assert previous.stat().st_size > 0
+    assert not svg.exists()
 
 
 @pytest.mark.render
@@ -242,10 +231,7 @@ def test_unsupported_integral_still_renders_through_mathtex() -> None:
             30,
         )
         client.send({"cmd": "render_preview", "id": "integral-preview"})
-        finished = client.wait_for(
-            lambda event: event.get("jobId") == "integral-preview" and event.get("event") in {"done", "error"},
-            180,
-        )
+        finished = client.wait_for_end("integral-preview", 180)
     finally:
         client.close()
     assert finished.get("event") == "done", json.dumps(finished, indent=2)

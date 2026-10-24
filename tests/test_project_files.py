@@ -156,26 +156,40 @@ def test_the_preview_is_never_published(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("relative", "fmt", "problem"),
+    ("relative", "fmt", "quality", "problem"),
     [
-        ("videos/scene/1080p30/MainScene.mp4", "mp4", None),
-        ("videos/scene/1080p30/MainScene.mp4", "webm", "the render is not a WEBM file"),
-        ("videos/scene/720p30/MainScene.mp4", "mp4", "the render is the preview"),
-        ("videos/scene/480p15/MainScene.gif", "gif", "the render is the preview"),
-        ("../outside/MainScene.mp4", "mp4", "the render is not in the project's media folder"),
-        ("images/scene/MainScene", "png_sequence", None),
-        ("images/scene/empty", "png_sequence", "the render holds no PNG frames"),
+        ("videos/scene/1080p30/MainScene.mp4", "mp4", "1080p30", None),
+        ("videos/scene/1080p30/MainScene.mp4", "webm", "1080p30", "the render is not a WEBM file"),
+        ("videos/scene/720p30/MainScene.mp4", "mp4", "1080p30", "the render is the preview"),
+        ("videos/scene/480p15/MainScene.mp4", "mp4", "1080p30", "the render is the preview"),
+        ("videos/scene/480p15/MainScene.gif", "gif", "1080p30", "the render is the preview"),
+        # A GIF at its default 854x480, 15 fps shares the preview's folder, so only the suffix tells them apart.
+        ("videos/scene/480p15/MainScene.gif", "gif", "480p15", None),
+        ("videos/scene/480p15/MainScene.mp4", "gif", "480p15", "the render is not a GIF file"),
+        ("videos/scene/1080p30/folder.mp4", "mp4", "1080p30", "the render is not a MP4 file"),
+        ("../outside/MainScene.mp4", "mp4", "1080p30", "the render is not in the project's media folder"),
+        ("images/scene/MainScene", "png_sequence", "1080p30", None),
+        ("images/scene/empty", "png_sequence", "1080p30", "the render holds no PNG frames"),
+        ("videos/scene/480p15/frames", "png_sequence", "1080p30", "the render is the preview"),
     ],
 )
-def test_the_preview_file_guard(tmp_path: Path, relative: str, fmt: str, problem: str | None) -> None:
+def test_the_preview_file_guard(tmp_path: Path, relative: str, fmt: str, quality: str, problem: str | None) -> None:
     media = ProjectLayout(tmp_path).media_dir
     _file(media / "images" / "scene" / "MainScene" / "0000.png", b"png")
+    _file(media / "videos" / "scene" / "480p15" / "frames" / "0000.png", b"png")
+    _file(media / "videos" / "scene" / "1080p30" / "folder.mp4" / "0000.png", b"png")
     (media / "images" / "scene" / "empty").mkdir()
     movie = media / relative
-    if movie.suffix:
+    if not movie.exists():
         _file(movie, b"movie")
     target = tmp_path / "exports" / FORMATS[fmt].artifact_name
-    assert _export_problem(movie, target, fmt, media, "1080p30") == problem
+    assert _export_problem(movie, target, fmt, media, quality) == problem
+
+
+def test_the_published_file_is_never_its_own_source(tmp_path: Path) -> None:
+    movie = _file(ProjectLayout(tmp_path).video_dir("1080p30") / "MainScene.mp4", b"movie")
+    problem = _export_problem(movie, movie, "mp4", ProjectLayout(tmp_path).media_dir, "1080p30")
+    assert problem == "the render is the published file itself"
 
 
 def _journey() -> Project:

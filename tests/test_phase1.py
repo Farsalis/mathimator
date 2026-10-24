@@ -31,6 +31,7 @@ from tests.support import (
     REFERENCE,
     REPO,
     RUNTIME_ERROR,
+    TERMINAL_EVENTS,
     WORKER,
     SupervisorClient,
     assert_phase1_argv,
@@ -46,6 +47,8 @@ from tests.support import (
 
 PREVIEW_TIMEOUT_S = 60 * 60
 EXPORT_TIMEOUT_S = 3 * 60 * 60
+# What Manim runs for a formula or an axis label.
+TEX_PROGRAMS = frozenset({"latex", "dvisvgm", "pdftex", "xelatex"})
 
 
 def test_worker_source_has_no_manim_av_or_win32() -> None:
@@ -188,10 +191,7 @@ def test_runtime_error_then_status() -> None:
         )
         assert ready["event"] == "ready"
         client.send({"cmd": "render_preview", "id": "job-error"})
-        failed = client.wait_for(
-            lambda event: event.get("jobId") == "job-error" and event.get("event") in {"error", "done"},
-            600,
-        )
+        failed = client.wait_for_end("job-error", 600)
         assert failed["event"] == "error"
         assert "RuntimeError" in str(failed["message"])
         assert client.proc.poll() is None
@@ -214,7 +214,6 @@ def test_cancel_ends_grandchild_within_one_second() -> None:
     if log_path.exists():
         log_path.unlink()
     client = start_supervisor(project, log_path)
-    observed_tex: list[str] = []
     try:
         client.send({"cmd": "status", "id": "status-before"})
         client.wait_for(
@@ -225,9 +224,11 @@ def test_cancel_ends_grandchild_within_one_second() -> None:
         argv = read_argv(log_path, timeout=60)
         assert_phase1_argv(argv, width=854, height=480, fps=15)
 
-        manim_pid = _wait_for_in_flight_manim(log_path, observed_tex)
-        children = descendant_pids(manim_pid)
-        watched = {manim_pid, *children}
+        manim_pid, tex = _wait_for_tex_child(client, log_path, "job-cancel")
+        watched = {manim_pid, *descendant_pids(manim_pid)}
+        # The 1 s rule is about TeX, so a TeX child must still run when the cancel goes out (F142).
+        running_tex = [pid for pid in tex if pid in watched and process_alive(pid)]
+        assert running_tex, f"the TeX children {tex} ended before the cancel"
         started = time.perf_counter()
         client.send({"cmd": "cancel", "id": "cancel-1", "jobId": "job-cancel"})
         deadline = started + 1.0
@@ -249,7 +250,8 @@ def test_cancel_ends_grandchild_within_one_second() -> None:
         assert client.proc.poll() is None
         result = {
             "cancel_seconds": elapsed,
-            "observed_tex": observed_tex,
+            "observed_tex": sorted(set(tex.values())),
+            "running_tex_pids": running_tex,
             "watched_pids": sorted(watched),
             "manim_pid": manim_pid,
         }
@@ -396,10 +398,7 @@ def _render(
         command = "render_preview" if profile == "preview" else "export"
         started = time.perf_counter()
         client.send({"cmd": command, "id": job_id})
-        finished = client.wait_for(
-            lambda event: event.get("jobId") == job_id and event.get("event") in {"done", "error"},
-            timeout,
-        )
+        finished = client.wait_for_end(job_id, timeout)
         elapsed = time.perf_counter() - started
         if finished.get("event") != "done":
             raise AssertionError(json.dumps(finished, indent=2))
@@ -417,31 +416,27 @@ def _render(
         client.close()
 
 
-def _wait_for_in_flight_manim(log_path: Path, observed_tex: list[str]) -> int:
+def _wait_for_tex_child(client: SupervisorClient, log_path: Path, job_id: str) -> tuple[int, dict[int, str]]:
+    """Manim's pid and its running TeX children by name, as soon as one runs.
+
+    Fails when the render ends first: a cancel that meets no TeX child would
+    leave the 1 s rule for TeX untested (F142).
+    """
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
         started = manim_pids(log_path)
-        if not started:
-            time.sleep(0.05)
-            continue
-        manim_pid = started[-1]
-        for pid in descendant_pids(manim_pid):
-            name = _process_comm(pid)
-            if name in {"latex", "dvisvgm", "pdftex", "xelatex"} and name not in observed_tex:
-                observed_tex.append(name)
-        if observed_tex:
-            return manim_pid
-        if log_path.is_file() and "Partial movie file written" in log_path.read_text(
-            encoding="utf-8",
-            errors="replace",
-        ):
-            return manim_pid
+        if started:
+            manim_pid = started[-1]
+            names = {pid: process_name(pid) for pid in descendant_pids(manim_pid)}
+            tex = {pid: name for pid, name in names.items() if name in TEX_PROGRAMS and process_alive(pid)}
+            if tex:
+                return manim_pid, tex
+        ended = [
+            event for event in client.events if event.get("jobId") == job_id and event.get("event") in TERMINAL_EVENTS
+        ]
+        assert not ended, f"no TeX child was seen while the render ran: {ended}"
         time.sleep(0.02)
-    raise AssertionError("manim grandchild did not start")
-
-
-def _process_comm(pid: int) -> str:
-    return process_name(pid)
+    raise AssertionError("no TeX child started within 180 s")
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:

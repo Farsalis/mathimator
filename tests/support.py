@@ -2,20 +2,24 @@
 
 Repo paths, the render interpreter, the supervisor client, the reader of an
 in-process supervisor's stdout, fake interpreters, the fake ``manim`` package,
-minimal complete clips, and video probes. ``OUT`` and the scene paths belong
-to the phase 1 tests.
+minimal complete clips, unreadable files, and video probes. ``OUT`` and the
+scene paths belong to the phase 1 tests.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import shutil
 import struct
 import subprocess
+import sys
 import threading
 import time
+from collections import deque
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +27,7 @@ import pytest
 
 from mathimator_worker.jsonio import loads
 from mathimator_worker.layout import ProjectLayout
+from mathimator_worker.manim_main import concat_manifest_bytes
 
 REPO = Path(__file__).resolve().parents[1]
 WORKER = REPO / "worker"
@@ -32,6 +37,10 @@ REFERENCE = SCENES / "reference_60.py"
 LAST_BEAT = SCENES / "reference_60_last_beat.py"
 RUNTIME_ERROR = SCENES / "runtime_error.py"
 WIN32_FIXTURES = REPO / "tests" / "fixtures" / "win32"
+# The lines that end a job; exactly one of them does (C7.1).
+TERMINAL_EVENTS = frozenset({"done", "error", "rejected"})
+# The stderr lines a SupervisorClient keeps for its failure messages.
+_STDERR_LINES = 200
 
 
 def venv_python() -> Path:
@@ -237,13 +246,37 @@ class FakeManim:
 
 
 def video_render(layout: ProjectLayout, quality: str, clips: list[bytes], suffix: str = ".mp4") -> dict[Path, bytes]:
-    """The files of one finished video render: a partial per beat, the segment list and the movie."""
+    """The files of one finished video render: a partial per beat, the segment list and the movie.
+
+    The segment list is written as ``manim_main`` makes Manim write it, quotes included.
+    """
     folder = layout.partial_movie_dir(quality)
     files = {folder / f"{index:064x}{suffix}": data for index, data in enumerate(clips)}
-    listing = "".join(f"file 'file:{path.as_posix()}'\n" for path in files)
-    files[folder / "partial_movie_file_list.txt"] = listing.encode("utf-8")
+    files[folder / "partial_movie_file_list.txt"] = concat_manifest_bytes([str(path) for path in files])
     files[folder.parent.parent / f"MainScene{suffix}"] = complete_clip(suffix)
     return files
+
+
+@contextlib.contextmanager
+def unreadable(path: Path) -> Iterator[None]:
+    """Keep ``path`` unreadable: open with no sharing on Windows, mode 000 elsewhere."""
+    if sys.platform == "win32":
+        import _winapi
+
+        generic_read, open_existing = 0x80000000, 3
+        handle = _winapi.CreateFile(str(path), generic_read, 0, 0, open_existing, 0, 0)
+        try:
+            yield
+        finally:
+            _winapi.CloseHandle(handle)
+        return
+    if os.geteuid() == 0:
+        pytest.skip("root reads files whatever their mode")
+    path.chmod(0)
+    try:
+        yield
+    finally:
+        path.chmod(0o644)
 
 
 def sha256_file(path: Path) -> str:
@@ -297,19 +330,30 @@ class Stdout:
         return [line for line in self.read() if line["jobId"] == job_id]
 
     def wait_for(self, job_id: str, event: str) -> dict[str, Any]:
+        """The job's first ``event`` line. Fails at once when the job ended without one (C7.1)."""
         deadline = time.monotonic() + 30
         while True:
-            found = [line for line in self.of(job_id) if line["event"] == event]
+            lines = self.of(job_id)
+            found = [line for line in lines if line["event"] == event]
             if found:
                 return found[0]
+            assert not any(line["event"] in TERMINAL_EVENTS for line in lines), lines
             assert time.monotonic() < deadline, self.lines
             time.sleep(0.02)
 
 
 class SupervisorClient:
+    """A supervisor in its own process, spoken to over stdin and stdout as the shell speaks to it.
+
+    The last lines of its stderr are kept, so a wait that fails shows the
+    traceback of a supervisor that died. A wait fails as soon as stdout closes.
+    """
+
     def __init__(self, proc: subprocess.Popen[bytes]) -> None:
         self.proc = proc
         self.events: list[dict[str, object]] = []
+        self._stderr_tail: deque[str] = deque(maxlen=_STDERR_LINES)
+        self._closed = False
         self._condition = threading.Condition()
         self._thread = threading.Thread(target=self._read, name="supervisor-stdout", daemon=True)
         self._thread.start()
@@ -331,12 +375,15 @@ class SupervisorClient:
             with self._condition:
                 self.events.append(event)
                 self._condition.notify_all()
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
 
     def _drain_stderr(self) -> None:
         if self.proc.stderr is None:
             return
-        for _line in self.proc.stderr:
-            continue
+        for raw in self.proc.stderr:
+            self._stderr_tail.append(raw.decode("utf-8", errors="replace").rstrip())
 
     def send(self, message: dict[str, object]) -> None:
         assert self.proc.stdin is not None
@@ -344,17 +391,37 @@ class SupervisorClient:
         self.proc.stdin.write(payload)
         self.proc.stdin.flush()
 
-    def wait_for(self, predicate, timeout: float) -> dict[str, object]:
+    def wait_for(self, predicate: Callable[[dict[str, object]], bool], timeout: float) -> dict[str, object]:
+        """The first event that matches. Raises once stdout has closed without one, or at the timeout."""
         deadline = time.monotonic() + timeout
         with self._condition:
             while True:
                 for event in self.events:
                     if predicate(event):
                         return event
+                if self._closed:
+                    raise AssertionError(self._failure("the supervisor closed its stdout"))
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError(json.dumps(self.events[-12:], indent=2))
+                    raise TimeoutError(self._failure(f"no matching event within {timeout} s"))
                 self._condition.wait(timeout=remaining)
+
+    def wait_for_end(self, job_id: str, timeout: float) -> dict[str, object]:
+        """The job's one terminal line: ``done``, ``error`` or ``rejected`` (C7.1)."""
+        return self.wait_for(
+            lambda event: event.get("jobId") == job_id and event.get("event") in TERMINAL_EVENTS, timeout
+        )
+
+    def _failure(self, reason: str) -> str:
+        """``reason``, with the exit code, the last events and the last lines of stderr."""
+        if self._closed:
+            # The process is ending: give it time to exit and its last stderr lines time to arrive.
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                self.proc.wait(timeout=5)
+            self._stderr.join(timeout=5)
+        stderr = "\n".join(self._stderr_tail)
+        events = json.dumps(self.events[-12:], indent=2)
+        return f"{reason}; exit code {self.proc.poll()}\nlast events: {events}\nstderr:\n{stderr}"
 
     def close(self) -> None:
         if self.proc.poll() is None and self.proc.stdin is not None:
@@ -393,11 +460,15 @@ def start_supervisor(
     supervisor_python: Path | None = None,
     pythonpath: list[Path] | None = None,
 ) -> SupervisorClient:
-    """Start a supervisor for ``project``. ``pythonpath`` goes before the worker on PYTHONPATH, for it and its Manim."""
+    """Start a supervisor for ``project``. ``pythonpath`` goes before the worker on PYTHONPATH, for it and its Manim.
+
+    The supervisor needs only the standard library; Manim is needed by the render tests alone.
+    """
     interpreter = supervisor_python or venv_python()
     if not interpreter.is_file():
         raise FileNotFoundError(
-            f"render interpreter not found at {interpreter}. Run `uv sync --locked` from the repo root."
+            f"no interpreter at {interpreter}. Set MATHIMATOR_PYTHON to any Python 3.13 or later, "
+            "or run `uv sync --locked` from the repo root to create .venv. Only the render tests need Manim."
         )
     manim_python = python or interpreter
     project.mkdir(parents=True, exist_ok=True)

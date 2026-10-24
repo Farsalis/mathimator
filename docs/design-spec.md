@@ -598,31 +598,215 @@ The header, seed, and imports match Journey A. Degrees in the document are conve
 
 ### Processes
 
-The shell starts the supervisor and the Typst processes. The supervisor starts Manim.
+There are three processes and two hops. The **shell** is the Tauri program: it hosts the UI, starts the supervisor, and runs the glyph preview's translator and Typst. The **supervisor** is a long-lived Python sidecar: it owns the document and the render queue, and it starts Manim. **Manim** renders, one process at a time.
 
-The **supervisor** is a long-lived Python sidecar on stdio. It does not import Manim or PyAV. It reads `project.json`, writes `scene.py`, spawns the Manim process, watches the partial-movie directory, and forwards events. Before each render it deletes and recreates `.mathimator/codegen/`, so the folder Manim imports `scene.py` from holds nothing else: a shared project folder cannot plant bytecode or a module there. `render_frame` is a separate short-lived helper so PyAV stays out of the supervisor. If the Manim process crashes, including a native Cairo crash, the supervisor emits an error and stays alive. The UI shows the error and keeps the last good frames. The shell restarts a dead supervisor and does not silently retry the failed job.
+- UI to shell: Tauri commands. Shell to UI: one Tauri event, `worker-event`.
+- Shell to supervisor: UTF-8 JSON, one object per line, on the supervisor's stdin. Supervisor to shell: the same on its stdout. The supervisor's stderr is diagnostics only; the shell appends it to `supervisor.err`.
+
+| State | Owner | Others hold |
+| --- | --- | --- |
+| Document, undo and redo, dirty flags, preview index, render records | Supervisor | The UI keeps a copy from the last `state` reply it applied |
+| Project binding, project lock, disk fingerprint, folder identity | Supervisor | The shell mirrors `projectPath` from `state` lines for the files the webview may read, the last project and the glyph folder |
+| Render queue: the current job, a held export, a held preview | Supervisor | The shell hands out job ids |
+| Which job ids the UI waits for, the stale-preview flag, the status line, the Export button, notes, automatic previews, the `project_changed` prompt | UI | |
+| The supervisor process: spawn, handshake, requests in flight, request order, timeouts | Shell | |
+| Temp projects, the last project, pruning, the quit warning | Shell | The supervisor leaves the temp-project marker alone |
+| Runtime paths, TeX status, log folder, notices | Shell | The UI shows notices and dismisses them |
+| Glyph preview: translator, Typst, the latest request per formula | Shell | The UI owns the request counter |
+| Selection, drafts, playhead, playback, open panels | UI | |
+
+The **supervisor** does not import Manim or PyAV. It reads `project.json`, writes `scene.py`, starts the Manim process, watches the partial-movie folder, and sends events. Before each render of a project it deletes and recreates `.mathimator/codegen/`, so the folder Manim imports `scene.py` from holds nothing else: a shared project folder cannot plant bytecode or a module there. If Manim fails, including a native Cairo crash, the job ends with an error and the supervisor stays alive. The UI shows the error and keeps the last good frames. A supervisor that dies is restarted by the shell on the next command, as in "Supervisor crash and resync" below; the failed job is not retried.
 
 The **Manim process** is `<python> ... -m mathimator_worker.manim_main render ...` as specified in section 5, which runs Manim's own command line. `<python>` is always a real interpreter. The installed app ships one. When the supervisor itself runs under a venv's `python.exe`, which on Windows is a launcher that starts the real interpreter as its child, Manim runs that real interpreter directly, so every process Manim starts is born inside its Job Object. Manim's config is process-global, so every render is a new interpreter. One Manim process at a time.
 
-**Typst** is started by the shell, not by the supervisor and not by Manim. A new keystroke kills the previous Typst process. Typst is never queued behind a scene render.
+**Typst** is started by the shell, not by the supervisor and not by Manim. A newer request for the same formula kills the older Typst process. Typst is never queued behind a scene render.
 
-Frames and movies cross the shell as file paths. They are not base64 on the stdio stream. The webview may read files inside the open project directory and nowhere else.
+Frames and movies cross every hop as absolute file paths. They are not base64 on the stdio stream. The webview may read files inside the open project folder and nowhere else.
 
 ### Protocol
 
-Stdio carries one UTF-8 JSON object per line.
+This is protocol 2. The supervisor defines `PROTOCOL_VERSION = 2` once, and the shell keeps the same constant.
 
-| Command | Meaning |
+**Lines.** Each line is one JSON object in UTF-8, ending in a line feed. Numbers are finite: `NaN`, `Infinity` and `-Infinity` make a line invalid JSON, and the supervisor never writes them. A line the supervisor cannot serialize goes out as `error internal` for the same id instead, so no reply is ever a line the shell cannot parse.
+
+A request has `cmd` and `id`, a non-empty string that is unique within one supervisor process. The shell takes every id from one counter: `rpc-N`, `status-N`, `cancel-N`, `preview-N` or `export-N`. Unknown request fields are ignored. Every supervisor line has `event` and `jobId`: the request's id for a reply, the job's id for a job's lines, and null only for a line that had no usable id.
+
+| Class | Line | Meaning | Afterwards |
+| --- | --- | --- | --- |
+| Success | The command's result: `ready`, `state` or `code` | Done | Changed as the command says |
+| Refusal | `rejected {code, message, field?}` | Refused before anything changed. `message` is written for the user | Nothing changed |
+| Failure | `error {code, message, details?}` | An internal failure, a malformed line, or a job that failed or was cancelled | For a request, nothing changed: every change is all or nothing |
+
+- A request whose answer the shell waits for gets exactly one reply line, written before the supervisor reads its next request, so replies arrive in request order.
+- `render_preview` and `export` start jobs and get no reply line. All of a job's lines carry its id, and a job ends with exactly one terminal line: `done`, `error` or `rejected`. Nothing follows it.
+- `cancel` writes no line when it succeeds; the target job ends with `error cancelled`.
+- An unexpected exception while a request is handled is logged with its traceback and answered at once with `error internal`. The supervisor keeps serving, with its undo history and any running export, and the request's change is rolled back or never applied.
+- Within protocol 2 the shell and the UI ignore unknown fields and unknown events.
+
+**Handshake.** The shell starts every supervisor the same way. It spawns it once the previous supervisor has exited, sends `status`, and waits up to 30 s for `ready`, which it keeps to itself. A `ready` whose `protocol` is missing (protocol 1) or is not 2 stops the supervisor, and the app shows "Worker unavailable" with "The worker is out of date (protocol P, this app needs 2). Reinstall Mathimator." A supervisor that exits or does not answer gives "The worker stopped during startup (exit code N). Details are in <logDir>\supervisor.err." or "The worker did not start within 30 s." `ready.startupError` is null when a project is bound, and otherwise says why none is (see "Project lifecycle"). Every command that needs the supervisor waits until the handshake is done.
+
+**Commands.** An RPC is a request whose reply the shell waits for.
+
+| cmd | Kind | Fields | Success | Refusal codes |
+| --- | --- | --- | --- | --- |
+| `status` | RPC | | `ready` | none |
+| `get_state` | RPC | | `state` | `no_project` |
+| `edit` | RPC | `edit`: an object | `state` with `changed`, and `focus` naming the object or beat the edit is about | `no_project`, `invalid_edit`, `invalid_text`, `unsupported_expression`, `limit_exceeded`, `untrusted_latex`, `project_unavailable`, `read_failed`, `project_changed`, `save_failed` |
+| `undo`, `redo` | RPC | | `state` | `no_project`, `nothing_to_undo`, `nothing_to_redo`, `project_unavailable`, `read_failed`, `project_changed`, `save_failed` |
+| `code` | RPC | | `code` | `no_project`, `invalid_document` |
+| `clear_cache` | RPC | | `state`, with `warning` when a file could not be removed | `no_project`, `render_in_progress`, `project_unavailable` |
+| `open_project` | RPC | `path`: a folder, or its `project.json`; `init`: a boolean, default false | `state` | `export_running`, `not_a_project`, `project_locked`, `lock_failed`, `save_failed` (the `init` write), `read_failed`, and the document codes: `not_utf8`, `invalid_json`, `invalid_text`, `untrusted_latex`, `unsupported_expression`, `limit_exceeded`, `invalid_document` |
+| `reload` | RPC | | `state` | `no_project`, `project_unavailable`, `read_failed`, and the document codes |
+| `overwrite` | RPC | | `state` | `no_project`, `project_unavailable`, `save_failed` |
+| `save_as` | RPC | `path`: a folder | `state` | `no_project`, `export_running`, `save_as_failed` |
+| `render_preview` | Job | | Job events | Terminal refusals: `no_project`, `project_unavailable`, `read_failed`, `project_changed`, `invalid_document`, `tex_unavailable`, `path_unsupported`. Terminal failures: `cancelled`, `render_failed`, `internal` |
+| `export` | Job | `force`: a boolean, default false (Re-export) | Job events | The refusals above and `export_running`. The failures above and `publish_failed` |
+| `cancel` | Send | `jobId`: the job to cancel | No line | `no_such_job` |
+
+A malformed request gets `error bad_request` with a message for developers: invalid JSON, `NaN` and `Infinity` included; a missing or empty `cmd` or `id`; an unknown `cmd`; or a top-level field that is missing or of the wrong type (`edit` not an object, `path` not a string, `jobId` not a non-empty string, `init` or `force` not a boolean). What is inside `edit` is a document matter: a missing, non-string or unknown `op`, and every bad edit field, give `rejected invalid_edit`. There is no `scrub` command, because playback belongs to the UI, and no `render_frame` command.
+
+**Edit operations.** `edit.op` names the change. Ids are strings, numbers are finite, and colors are `#RRGGBB`, compared without regard to case and stored in uppercase. An unknown, missing or non-string `op` is refused with "Unknown edit operation <op>."
+
+| op | Fields |
 | --- | --- |
-| `status` | Supervisor is ready. The cold-start test waits for this. |
-| `render_preview` | Render the current document at the preview profile. |
-| `render_frame` | Write one PNG for a time, using PyAV on an existing partial movie. Do not import the scene and do not call `construct`. |
-| `export` | Render at the export profile. |
-| `cancel` | Kill the grandchild process tree for that job id. On Windows, terminate its Job Object. |
+| `set_project_name` | `name` |
+| `set_object_name` | `objectId`, `name` |
+| `set_object_color` | `objectId`, `color` |
+| `set_expression` | `objectId`, `expression` |
+| `set_latex` | `objectId`, `latex` |
+| `set_text` | `objectId`, `text` |
+| `set_anchor` | `objectId`, `anchor` |
+| `set_object_shift` | `objectId`, `shift` as `[dx, dy]` |
+| `set_axes_range` | `objectId`, `axis` (`x`, `y`, or `z` in 3D), `value` as `[min, max, step]` |
+| `set_length` | `objectId`, `axis` (`x` or `y`), `value` |
+| `set_show_labels` | `objectId`, `value` as a boolean |
+| `set_domain` | `objectId`, `xMin`, `xMax` |
+| `set_beat_duration` | `beatId`, `duration` |
+| `set_beat_color` | `beatId`, `color` |
+| `set_beat_shift` | `beatId`, `shift` as `[dx, dy]` |
+| `add_axes_function`, `add_formula_transform`, `add_three_d_axes` | `afterBeatId`: a beat id or null |
+| `add_formula` | `afterBeatId`, `latex` (optional) |
+| `add_text` | `afterBeatId`, `text` (optional) |
+| `delete_object` | `objectId` |
+| `set_three_d_mode` | `mode` (`surface` or `curve`) |
+| `set_camera` | `key` (`phi`, `theta` or `zoom`), `value` |
+| `set_resolution` | `objectId`, `value` as `[u, v]` integers |
+| `set_curve_component` | `objectId`, `index` (0, 1 or 2), `expression` |
+| `set_export_profile` | `format`, `width`, `height`, `fps`, `transparent` |
 
-Events are `ready`, `beat_ready` (beat index and partial-movie path), `done` (output path), and `error`. The UI ignores events whose job id is not the current job.
+**Events.**
 
-Before a job, the supervisor copies the newest file of each beat that is not fresh into `cache/last-good/`, and records the size and modification time of every file in this job's quality folder. Manim finishes one beat before the next, and reuses any partial that already exists. A partial that is new or changed since that record was written by this run; it counts as finished once one with a later modification time exists, and it belongs to the next beat that is not fresh. Partials that share a modification time have no known order, so their beats wait for the segment list. When Manim exits, the segment list it wrote (`partial_movie_file_list.txt` in that folder) gives the partial of every beat in order, including the ones it reused, and settles the index. `beat_ready` goes out in increasing beat order, so a finished beat waits until every beat before it is known. Progress never comes from Manim's log text, which Rich wraps to its own width. The supervisor writes a preview index: beat id, derived start, duration, partial path, and whether that beat is fresh. A file counts as fresh only for the document it was rendered from: the index stores, with each file, a key of the beat and every beat before it, so an undo brings back the beat's earlier file as fresh when that file still exists, and a file from another document never shows without the badge. The keys stay on disk and are not sent to the UI. On disk the index names its files relative to the project folder, so a copied or moved project finds its own media, and a stored path outside the project's media and last-good folders is ignored. `render_frame` reads that index from a short-lived helper process, so the supervisor does not import PyAV. Scrub does not call `render_frame`. Phase 1 checks that a full render yields 8 partials in beat order, and that changing the last beat leaves the first 7 hashes unchanged.
+| event | Fields | Sent for |
+| --- | --- | --- |
+| `ready` | `protocol`: 2; `startupError`: null or `{code, message}` | `status` |
+| `state` | Below | `get_state`, `edit`, `undo`, `redo`, `clear_cache`, `open_project`, `reload`, `overwrite`, `save_as` |
+| `code` | `source`: the generated `scene.py` | `code` |
+| `rejected` | `code`, `message`, and `field` when the refusal is about one field | Any refused request; terminal for a job |
+| `error` | `code`, `message`, and `details` when there are more lines | A failed or cancelled job, an internal failure, a malformed line |
+| `queued` | `code`: `stopping_previous`; `message`: "Waiting for the previous render to stop." | A job held because the render before it did not stop within 1 s |
+| `started` | | A job that has just started Manim |
+| `beat_ready` | `beatIndex`, `path` | A preview beat whose partial movie is finished. Exports send none |
+| `done` | `path`; for a project's export also `current` | A job that succeeded |
+
+The `state` reply holds the whole document and what is derived from it:
+
+```text
+{
+  "event": "state",
+  "jobId": string,
+  "projectPath": string,              // the bound project folder
+  "document": object,                 // project.json as a JSON object
+  "derived": { "starts": number[], "total": number, "dirty": boolean[],
+               "canUndo": boolean, "canRedo": boolean },
+  "index": null | {
+    "output": string | null,          // the full preview MP4
+    "beats": [ { "id": string, "index": integer, "derivedStart": number,
+                 "duration": number, "partial": string | null,
+                 "lastGood": string | null, "fresh": boolean } ]
+  },
+  "source": string | null,            // the generated scene.py, which View code shows
+  "sourceError"?: string,             // why there is no source; only when source is null
+  "focus"?: { "beatId": string | null, "objectId": string | null },   // edit replies only
+  "changed"?: boolean,                // edit replies only; false when nothing changed
+  "warning"?: { "code": string, "message": string }                   // clear_cache only
+}
+```
+
+`dirty` is for the preview profile. Every absolute path the supervisor sends, `projectPath` and the `index`, `beat_ready` and `done` paths, is the bound folder's long path as `projectPath` spells it, joined with a path inside that folder. The supervisor never sends a path taken from Manim's log or segment list, or an 8.3 alias, because the webview may read files only under `projectPath`. The name `code` is kept for status codes: `rejected.code`, `error.code`, `warning.code` and `queued.code`.
+
+**Refusal codes.** A message in quotes is fixed text. The other messages name the field, beat, file or id they are about. `field` is the JSON path from the document root for open and reload, such as `scene.objects[2].params.latex`, and the edit's field name for an edit, such as `expression`.
+
+| code | When | Message |
+| --- | --- | --- |
+| `no_project` | No project is bound, and the request needs one. Also a hand-written scene that is missing | "No project is open." and why, or "No project is open, and <file> does not exist." |
+| `not_a_project` | `open_project` names no folder, or a folder without `project.json` and without `init`. Also the startup error of hand-written mode | "That folder is not a Mathimator project." |
+| `project_unavailable` | The bound folder was moved, deleted or replaced, or its `project.json` is gone | "The project folder was moved or deleted." |
+| `read_failed` | `project.json` exists but cannot be read: access denied, a sharing violation, an offline cloud placeholder | "Could not read project.json: <reason>." |
+| `project_locked` | Another Mathimator window holds the project | "This project is open in another Mathimator window." |
+| `lock_failed` | `.mathimator/` or its lock file cannot be created or opened, for example in a read-only folder | "Mathimator cannot write to <folder>: <reason>." |
+| `project_changed` | `project.json` differs from the bytes last read or written, before a write or a render | "project.json was changed outside Mathimator." |
+| `save_failed` | Writing `project.json` failed after its retries; the change was rolled back | "Could not save project.json: <reason>. The change was undone." |
+| `not_utf8` | `project.json` is not UTF-8 | "project.json must be saved as UTF-8 text." |
+| `invalid_json` | A JSON syntax error, nesting too deep, or a number too large | "project.json is not valid JSON: <detail>." |
+| `invalid_text` | A string holds a lone surrogate, NUL, or a C0 control other than tab, line feed or carriage return | "<field> contains a character Mathimator cannot store." |
+| `untrusted_latex` | Formula LaTeX uses a command outside the allowlist of section 4 | "<field> uses \<command>, which formulas cannot use." |
+| `unsupported_expression` | An expression outside the grammar of section 4, longer than 1000 characters, or nested deeper than 64 levels | "This expression is not supported." |
+| `limit_exceeded` | An axis over 500 ticks, sampling over its bound, a beat under 0.1 s, a total over 120 s, LaTeX over 500 or text over 200 characters, a resolution over 24×24 | Names the limit |
+| `invalid_document` | Any other refusal of a document: its schema, an unknown key, `start`, ids, numbers, the timeline rules, a newer `generatorVersion`. Also a scene the generator refuses, from `code` or at the start of a job | Names the field, beat or id |
+| `invalid_edit` | Any other refusal of an edit: an unknown `op`, an unknown id, a wrong object type, a range rule, a 3D template rule | Names the problem |
+| `nothing_to_undo`, `nothing_to_redo` | The history is empty | "Nothing to undo." or "Nothing to redo." |
+| `export_running` | An export runs or waits, and the request is `export`, `open_project` or `save_as` | "An export is already running." |
+| `render_in_progress` | `clear_cache` while a job runs or waits | "A render is in progress." |
+| `tex_unavailable` | A job whose scene needs LaTeX (a formula, or axes with labels) while the shell reports TeX unavailable | The shell's reason |
+| `path_unsupported` | The project path cannot render (section 5) | "Mathimator cannot render the project in <folder>: <reason>. Move it to a shorter or plainer path." |
+| `save_as_failed` | The Save As target is not a folder, is the open project, already holds `project.json` or `.mathimator`, or the copy failed | "Could not save the project to <folder>: <reason>." |
+| `no_such_job` | The `cancel` target neither runs nor waits | "No render with that id is running." |
+
+**Failure codes.**
+
+| code | When | Message and details |
+| --- | --- | --- |
+| `cancelled` | A job was cancelled, by the user or by a newer request | "cancelled". The UI decides on the code alone |
+| `render_failed` | Manim exited non-zero, exited 0 without its output or after using an incomplete partial, could not start, or a PNG sequence's frame count did not match; or the old TeX inputs or PNG frames could not be removed | One line, such as "manim exited with status N: <exception>" or "Could not start Manim: <reason>". A TeX failure is "LaTeX failed." with TeX's `!` line and its `l.N` line. `details` holds the last 80 lines of Manim's output; worker.log keeps all of it |
+| `publish_failed` | A finished export could not be copied into `.mathimator/exports/`, or failed the preview-file guard | "Could not save the export to <file>: <reason>." An operating-system error adds "If the file is open in another program, close it and export again." |
+| `internal` | An unexpected exception, or a line that could not be serialized | "Internal error: <type>: <text>. Details are in worker.log." |
+| `bad_request` | A malformed request | For developers |
+
+`clear_cache` may carry the warning `files_in_use`, "Some cache files are in use and were not removed. Close other programs using this project and try again." `queued` carries `stopping_previous`.
+
+### Jobs
+
+The shell hands out job ids, `preview-N` and `export-N`, from one counter per app run. The UI records the id as its current preview or export before it sends the job, so no event arrives for an id it does not know, and it ignores events for any other id.
+
+For one job id the supervisor sends, in this order:
+
+1. At most one `queued`.
+2. At most one `started`, when the job starts Manim. A job that ends without Manim sends none: an export found in the export cache, a refusal, or a held job that is cancelled.
+3. For a preview, zero or more `beat_ready`, each `beatIndex` at most once, in increasing order.
+4. Exactly one terminal line: `done`, `error` or `rejected`.
+
+A preview's `done.path` is the preview MP4. An export's `done.path` is the published file in `.mathimator/exports/<key16>/`, and `done.current` is true when the export key captured at the click is still the current document's. An export found in the export cache sends `done {current: true}` at once.
+
+A preview sends `beat_ready` only while it is not cancelled, belongs to the folder bound now, and renders the document open now, beat for beat. The supervisor checks that, records the partial in the preview index and writes the line in one step under the document lock. An edit, undo, redo, reload, Open or Save As therefore either comes first, and the line is not sent, or comes after, and its reply follows the line on stdout.
+
+**Starting a job.** Holding the document, the supervisor checks, in order:
+
+1. A project is bound (`no_project`), or the folder is in hand-written mode.
+2. The write and render checks of "Project lifecycle": the folder (`project_unavailable`), then `project.json` (`read_failed`, `project_changed`).
+3. The scene generates (`invalid_document`).
+4. TeX is available when the scene needs it (`tex_unavailable`).
+5. The project path can render (`path_unsupported`).
+6. For an export without `force`, the export cache, which may answer `done` at once.
+
+Then it writes `scene.py`, builds the command line, starts Manim and sends `started`. Starting a job never writes `project.json`: every edit has saved it already, and a file changed outside Mathimator must not be overwritten.
+
+**Cancel.** `cancel {jobId}` ends a running job by terminating its Job Object or, without one, its process tree, and the job ends with `error cancelled`. A held job leaves its slot and ends with `error cancelled` at once. Any other id gives `rejected no_such_job`. A newer preview, an export, a replaced held preview, and an Open or Save As cancel previews the same way; the protocol does not say who cancelled. Only the newest, possibly cut-off partial is discarded.
+
+**Hand-written mode.** A folder without `project.json`, opened at startup without `--init`, renders the `scene.py` found in `.mathimator/codegen/`, and leaves that folder as it is. Only the phase 1 tests use it. Its `ready.startupError` is `not_a_project`, and every request that needs a document is refused with `no_project`. It takes no lock and runs none of the checks. A preview sends `started`, `beat_ready` lines read from the segment list, and `done`; an export sends `started` and `done` with Manim's own movie, publishes nothing and has no `current`. A folder whose `project.json` was refused is never in this mode: its jobs get `no_project`.
+
+### Progress and the preview index
+
+Before a job, the supervisor copies the newest file of each beat that is not fresh into `cache/last-good/`, and records the size and modification time of every file in this job's quality folder. Manim finishes one beat before the next, and reuses any partial that already exists. A partial that is new or changed since that record was written by this run; it counts as finished once one with a later modification time exists, and it belongs to the next beat that is not fresh. Partials that share a modification time have no known order, so their beats wait for the segment list. When Manim exits, the segment list it wrote (`partial_movie_file_list.txt` in that folder) gives the partial of every beat in order, including the ones it reused, and settles the index. `beat_ready` goes out in increasing beat order, so a finished beat waits until every beat before it is known. Progress never comes from Manim's log text, which Rich wraps to its own width. The supervisor writes a preview index: beat id, derived start, duration, partial path, and whether that beat is fresh. A file counts as fresh only for the document it was rendered from: the index stores, with each file, a key of the beat and every beat before it, so an undo brings back the beat's earlier file as fresh when that file still exists, and a file from another document never shows without the badge. The keys stay on disk and are not sent to the UI. On disk the index names its files relative to the project folder, so a copied or moved project finds its own media, and a stored path outside the project's media and last-good folders is ignored. Phase 1 checks that a full render yields 8 partials in beat order, and that changing the last beat leaves the first 7 hashes unchanged.
 
 Manim reuses any partial movie that exists, so a cut-off partial would break every later render of its beat. The supervisor records a partial in the preview index, or marks its beat fresh, only when its container is complete. An MP4 or MOV is complete when its top-level boxes add up to exactly the file length, none has size 0 (the placeholder FFmpeg fills in when it closes a file), and one of them is `moov`. A WebM is complete when an EBML header is followed by top-level elements of known size that add up to exactly the file length, one of them a Segment. The check uses the standard library only. Before each render the supervisor deletes the incomplete partials in this job's quality folder, so those beats render again. A render that exits 0 after using an incomplete partial is an error: that partial is deleted, nothing is published, and the next render redoes its beat. A PNG-sequence export writes no partials, so it reads no segment list.
 
@@ -638,34 +822,179 @@ Export formats and the allowed resolutions (854×480, 1280×720, 1920×1080) and
 
 When every beat is fresh, the canvas plays the MP4 Manim wrote for the preview, and scrub sets that element's time. When any beat is dirty, the canvas shows the partial movie for the beat under the playhead: the new file if that beat is fresh, otherwise the last good file, with the badge "Preview is out of date". If a beat has never had a partial movie, the canvas is blank and the badge is shown.
 
-Playback is a timer on those files. It does not call Manim. `cache/last-good/` holds the previous partial for a dirty beat until the replacement partial is ready. Clear cache may delete it.
+Playback is a timer on those files, owned by the UI. It sends no request to the supervisor and does not call Manim. `cache/last-good/` holds the previous partial for a dirty beat until the replacement partial is ready. Clear cache may delete it.
 
 ### Stale preview and export
 
-The Export action stays available. The progress label "Rendering export" is shown within 200 ms, from the UI, before the supervisor answers.
+The status "Rendering export" is shown within 200 ms of the Export click, from the UI, before the supervisor answers. From the click until the export's terminal line, or until the export stops before it is sent, Open, Sample, New and Save As are disabled, and the supervisor refuses `open_project` and `save_as` with `export_running` while an export runs or waits.
 
-A file is the current export only when an `export.json` manifest beside it records the current `exportKey`. If that file already exists, the supervisor returns it and does not start Manim. Otherwise the supervisor runs an export-quality render. Re-export skips that check and renders again, reusing Manim's cached segments; the older file stays until the new one replaces it. On exit code 0 the supervisor copies the primary output to a temporary name in `.mathimator/exports/<exportKey>/`, replaces the published file with it, and then writes the manifest the same way. A PNG sequence is a folder, so the old folder is moved aside first and moved back if the new one cannot take its place. The copy runs without holding the document, so edits are answered while it runs. If the file cannot be replaced, for example because a player holds it open, the older file and its manifest stay and the export fails with "Could not save the export to <file>: <reason>. If the file is open in another program, close it and export again." Preview files are never copied there.
+A file is the current export only when an `export.json` manifest beside it records the current `exportKey`. If that file already exists, the supervisor returns it and does not start Manim. Otherwise the supervisor runs an export-quality render. Re-export (`export {force: true}`) skips that check and renders again, reusing Manim's cached segments; the older file stays until the new one replaces it. On exit code 0 the supervisor copies the primary output to a temporary name in `.mathimator/exports/<exportKey>/`, replaces the published file with it, and then writes the manifest the same way. A PNG sequence is a folder, so the old folder is moved aside first and moved back if the new one cannot take its place. The copy runs without holding the document, so edits are answered while it runs. If the file cannot be replaced, for example because a player holds it open, the older file and its manifest stay and the export fails with `publish_failed`: "Could not save the export to <file>: <reason>. If the file is open in another program, close it and export again." Preview files are never copied there; an output that fails that guard also gives `publish_failed`.
 
-If the document changes while an export runs, the export continues for the `exportKey` captured at the click. Typing does not cancel it and does not start a new export. When it finishes, the file is kept for the hash it was rendered from. It becomes the current export only if that hash is still current. A second Export click while one is running is ignored, and the UI says an export is already running.
+If the document changes while an export runs, the export continues for the `exportKey` captured at the click. Typing does not cancel it and does not start a new export. When it finishes, the file is kept for the hash it was rendered from, and `done.current` says whether that hash is still current. When it is not, the UI notes "This file is from an older export." A second export while one runs or waits is refused with `export_running`.
 
 Cancel discards an unfinished export output. A previous finished export for an older hash is left in place and is not labeled current.
 
 ### Job queue
 
-- At most one Manim grandchild.
-- A new preview for this scene cancels the in-flight preview. Late output from the cancelled job is ignored.
-- Document edits never cancel an export and never start one.
-- An Export click cancels an in-flight preview, then starts the export.
-- While an export runs or waits, the newest preview request waits and runs after the export ends or is cancelled.
-- Preview cancel uses the same 1 second process-exit criterion as export cancel.
-- If the cancelled render is still running after that second, the new request waits in a hold slot, one for an export and one for a preview, and the UI shows "Waiting for the previous render to stop". It starts when that render ends; a held export goes first. A newer preview replaces a held one.
-- A cancelled render keeps reading Manim's output to the end, so Manim never blocks on a full pipe, but it does not wait more than 0.5 s for a child that escaped the kill and still holds that output.
+At most one Manim grandchild runs. The supervisor keeps the current job and two hold slots, one for an export and one for a preview.
+
+| When the request arrives | `render_preview` | `export` |
+| --- | --- | --- |
+| Nothing runs | Starts | Starts |
+| A preview runs | Cancels it, then starts | Cancels the preview, then starts. The preview is not queued again; the UI asks for one when the export ends |
+| An export runs or waits | Waits in the preview slot. An older waiting preview is cancelled | Refused with `export_running` |
+| The job before was told to stop and still runs 1 s later | Waits in the preview slot and sends `queued` | Waits in the export slot and sends `queued` |
+
+When the current job ends, the held export starts, otherwise the held preview. A preview held behind a held export waits for it too. Document edits never cancel an export and never start one. Preview cancel uses the same 1 second process-exit criterion as export cancel. A render that never stops holds the next request until it does; the user can cancel the held export or supersede the held preview. A cancelled render keeps reading Manim's output to the end, so Manim never blocks on a full pipe, but it does not wait more than 0.5 s for a child that escaped the kill and still holds that output.
 
 On Windows the supervisor puts each Manim child in a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, using `ctypes`, and cancel terminates the job. `latex` and `dvisvgm` are gone within 1 second. The Tauri shell assigns the supervisor to a kill-on-close job so quitting the app reaps the same tree. When a job cannot be used (`MATHIMATOR_WIN32_JOBS=0`, or assigning or terminating it fails), cancel falls back to a hidden PowerShell helper that lists every process with its parent and creation time. The helper starts with the first render that runs without a job, never at launch. Windows keeps the parent id of a process whose parent has exited and reuses ids, so the fallback counts a process as a child only when it was created no earlier than its parent, and kills each one through a handle that shows it is still the process the list named. A process it could not end is written to the worker log. The helper is the PowerShell script in `process_group.py`; a small C# class inside it makes the fallback's Win32 calls, `CreateToolhelp32Snapshot`, `Process32First`, `Process32Next`, `OpenProcess`, `GetProcessTimes`, `GetExitCodeProcess`, `TerminateProcess` and `CloseHandle`, so the worker makes none of them through `ctypes` (D15). Linux terminates the process group through `subprocess`. macOS is untested. The worker does not use `pywin32`, `win32api`, or `taskkill`. Craig approved this Windows binding; it replaces the earlier rule that forbade every Win32 call. Besides it, the worker calls `GetShortPathNameW` for the 8.3 alias of a project folder, and reads the `LongPathsEnabled` registry value with `winreg`, for the path checks of section 5 (D61).
 
+### Project lifecycle
+
+The supervisor is bound to at most one project folder: at startup, by `open_project` (Open, Sample and New), and by `save_as`. While bound it holds the folder's lock, the SHA-256 of `project.json` as last read or written, and the folder's identity, its volume and file id (section 4). Every bind starts a new binding generation, and a job started under an earlier one records nothing in the folder bound now.
+
+**Write and render checks.** Before a request writes `project.json` or starts a render, the supervisor checks, in order:
+
+1. The folder is still a folder with the identity it was bound with. Otherwise `project_unavailable`.
+2. `project.json` exists. Otherwise `project_unavailable`.
+3. Its bytes can be read. Otherwise `read_failed`.
+4. They hash to the fingerprint. Otherwise `project_changed`.
+
+`get_state`, `code` and an edit that changes nothing write nothing and skip the checks. `overwrite` runs checks 1 and 2, `clear_cache` check 1, and hand-written mode none. A change refused with `project_unavailable` is not applied. The changes saved before it stay in memory, and Save As writes them to another folder.
+
+**Edits.** An edit is checked and applied to a copy of the document. If the saved bytes would not change, the reply is `state {changed: false}`: nothing is written, no undo step is added, Redo is kept, and the checks are skipped. Otherwise the checks run, `project.json` is written atomically (`save_failed` leaves everything as it was), and only then is the change committed: one undo step, Redo cleared, the new fingerprint. The preview index and the render records follow; a record that cannot be written is logged, and the edit still succeeds. Undo and redo do the same with the document from their stack.
+
+**Startup.** The shell starts the supervisor as `<python> -P -m mathimator_worker --project <folder> --python <python> [--init]`; tests may add `--log <file>`. In order:
+
+1. A folder that does not exist leaves the supervisor unbound, with `startupError` `project_unavailable`. Nothing is created, and log lines go to stderr.
+2. A folder without `project.json`, started without `--init`, is in hand-written mode.
+3. The supervisor takes the project lock (`project_locked`, `lock_failed`).
+4. With `--init` and no `project.json`, it writes an empty project (`save_failed`). Only the shell's new temp folders use `--init`.
+5. It reads, decodes and checks `project.json` (`read_failed`, then the document codes).
+6. It binds the folder.
+
+A refusal in steps 3 to 5 leaves the supervisor unbound and serving, with the refusal as its `startupError`. It releases the lock, deletes a `project.json` that step 4 wrote, answers `get_state` with `no_project`, and lets `open_project` bind another folder. Startup never exits on a project problem, and it starts no helper process.
+
+**`open_project {path, init}`.** A path to a `project.json` means its folder. In order: `export_running` while an export runs or waits; the folder must exist, and must hold `project.json` unless `init` is true (`not_a_project`, and nothing is created); the folder's lock (`project_locked`, `lock_failed`), which reopening the bound folder keeps; with `init` and no `project.json`, an empty project (`save_failed`); then the read, decode and check of `project.json` (`read_failed` and the document codes). Only then does the supervisor cancel a held preview and stop a running one, without waiting more than 1 s, release the old lock and bind the folder with a new session, whose undo history is empty. A refusal leaves the old binding, session, undo history and jobs as they were, releases the lock it took, and removes what the attempt created. Open works when the old folder is gone.
+
+**`reload`** reads `project.json` again the same way, replaces the session, so undo history is cleared, and takes the new fingerprint. Jobs keep running; a running preview stops recording partials, because its document no longer matches.
+
+**`overwrite`** writes the document in memory over `project.json` without the fingerprint check, and takes the new fingerprint.
+
+**`save_as {path}`.** The target must be an existing folder other than the bound one that holds neither `project.json` nor `.mathimator` (`save_as_failed`), and Save As is refused with `export_running` while an export runs or waits. The supervisor locks the target, stops previews, writes `project.json`, and copies the render cache and the exports; a source folder that is gone is skipped. On any failure it removes what it wrote in the target and keeps the old binding. Then it binds the target, keeping the session and its undo history, with the preview index rewritten for the new folder. It copies nothing else, not the generated code, the glyph files, the logs, the lock or the temp-project marker, and it never changes the old folder.
+
+**`clear_cache`** deletes the derived files described in section 4, and is refused with `render_in_progress` while a job runs or waits.
+
+**Temp projects.** The shell, not the supervisor, makes temp projects: the launch project when there is no last project to reopen, New, and each Sample copy. Each is a folder `%TEMP%\mathimator-<pid>-<ms>`, marked once the supervisor has bound and locked it by `.mathimator\temp-project.json`: `{"kind": "mathimator-temp", "seedSha256": "<64 hex>", "createdMs": <unix ms>}`. `seedSha256` is the hash of the folder's `project.json` as first created. A temp project is touched when its `project.json` no longer has that hash, or its `exports` folder holds a file.
+
+The last project is kept in `%APPDATA%\com.mathimator.desktop\state.json` as `{"lastProject": "<folder>"}`. The shell rewrites it whenever a `state` line names a `projectPath` other than the last one it saw, temp projects included, so a temp project the user quit with reopens at the next launch.
+
+At launch the shell starts the supervisor on the last project when that folder still holds `project.json`, and otherwise on a new temp folder with `--init`. If `ready.startupError` is set, it opens a new temp project instead and adds the notice "Could not reopen <folder>: <message>. A new project was started." It writes the marker and `state.json` before it releases the commands waiting for the handshake. Pruning and the TeX self-test then run in the background.
+
+Pruning deletes the `%TEMP%\mathimator-<pid>-<ms>` folders that are at least 24 hours old, are not the bound project, are not locked, and have no file in `exports`. A marked folder's age is its `createdMs`, and it must still hash to its seed. An unmarked folder is pruned only when it comes from an older build, which never created `.mathimator\lock`; its age is the `<ms>` in its name. An unmarked folder this build bound, for example by a reply that arrived after its request timed out, is never pruned. Each deletion is logged in `shell.log`.
+
+New writes an empty project into a new temp folder, and Sample copies the bundled sample into one. Either deletes its folder when the supervisor refuses it, and keeps the folder, unmarked, when the request fails in another way, such as a timeout. Save As asks for a folder ("Save project as"); on success it deletes an old temp folder, which makes Save As a move.
+
+Quitting with a touched temp project asks "This project is in a temporary folder that Windows may delete. Save it before quitting?", with Save As…, Quit and Cancel. Save As… runs Save As, written after the request in flight and before any later one, and quits only when it succeeds; a refusal is shown, and the window stays open. Quit keeps the folder, which reopens at the next launch. Open, Sample and New ask the same before they leave a touched temp project. An untouched temp project is left without a question.
+
+**Supervisor crash and resync.** When the supervisor's stdout ends and the shell did not ask it to stop, the shell fails every request in flight at once with `worker_exited` ("The worker stopped (exit code N)."), logs the exit, and sends the `worker-event` `worker_exited {message, exitCode}`. It ends the old process for good, closing its Job Object so that Manim goes too, and waits for it to exit, so a new supervisor never meets the old one's lock. If it still runs after 5 s, the app shows "The previous worker did not stop. Restart Mathimator." The next command starts a supervisor on the bound folder without `--init`. If that one reports a `startupError`, the shell falls back to a new temp project as at launch, with the notice "Could not reopen <folder> after the worker restarted: <message>. A new project was started."
+
+On `worker_exited` the UI ends every job it waits for and resets the Export button, without showing "Cancelled", and asks once for `get_state`. A state with another `projectPath` resets the UI as Open does. Otherwise the UI clears drafts, drops a selection that is gone, and notes "The worker restarted. The document was reloaded from disk and undo history was cleared." No preview starts by itself after a resync.
+
+### The shell and the UI
+
+Every command that needs the supervisor is asynchronous, so the window keeps repainting while it waits, and it waits for the handshake first. A supervisor reply comes back unchanged as the command's value, so a `rejected` line is a value, not an error. The shell's own failures are errors `{code, message}` with the codes `worker_unavailable`, `worker_exited`, `timeout`, `io` and `bad_argument` (a bad argument the shell checks itself).
+
+| Tauri command | Arguments | Value | Supervisor request, timeout |
+| --- | --- | --- | --- |
+| `app_status` | | `AppStatus` | none |
+| `restart_worker` | | `AppStatus` | retries a worker that is unavailable |
+| `dismiss_notice` | `id` | null | none |
+| `reserve_job_id` | `prefix`: `preview` or `export` | the id | none |
+| `get_state` | | `state` or `rejected` | `get_state`, 30 s |
+| `edit_document` | `edit` | `state` or `rejected` | `edit`, 30 s |
+| `undo_document`, `redo_document` | | `state` or `rejected` | `undo`, `redo`, 30 s |
+| `clear_cache` | | `state` or `rejected` | `clear_cache`, 120 s |
+| `reload_project`, `overwrite_project` | | `state` or `rejected` | `reload`, `overwrite`, 30 s |
+| `new_project` | | `state` or `rejected` | `open_project` with `init`, 30 s |
+| `open_sample` | | `state` or `rejected` | `open_project`, 30 s |
+| `open_project_dialog` | | `state`, `rejected` or `{cancelled: true}` | a folder picker, then `open_project`, 30 s |
+| `save_project_as_dialog` | | `state`, `rejected` or `{cancelled: true}` | a folder picker, then `save_as`, 600 s |
+| `export_code_dialog` | | `{path}`, `rejected` or `{cancelled: true}` | `code`, then a save picker, 30 s |
+| `render_preview` | `jobId` | null | `render_preview`, sent only |
+| `export_movie` | `jobId`, `force` | null | `export`, sent only |
+| `cancel_render` | `jobId` | null | `cancel`, sent only |
+| `compile_equation_preview` | `latex`, `slot`, `generation` | a glyph result | none; Typst, 10 s |
+| `cancel_equation_preview` | `slot`, `generation` | null | none |
+| `note_shell_ready` | | null | none; writes the ready marker only when `MATHIMATOR_SHELL_READY_FILE` names a file |
+| `open_project_path` | `path` | `state` or `rejected` | `open_project`, 30 s; only in debug builds and builds with the `test-hooks` feature |
+
+`tests/fixtures/protocol/commands.json` lists every command, its arguments and the supervisor command it sends; the worker's, the shell's and the UI's tests all check against it. The webview gets Tauri's `core:default` capability and nothing more.
+
+**Routing.** A supervisor line whose `jobId` matches a request in flight goes to that request only. Every other line goes to the UI as `worker-event`: job events, the `no_such_job` refusal of a cancel, errors with a null `jobId`, and replies that arrive after their request timed out. A line that is not JSON is only logged. A request that timed out still runs in the supervisor: the UI ignores its late reply, and the `get_state` resync that follows, answered in order, shows its result. The shell takes `projectPath` from every `state` line, claimed or broadcast, for the files the webview may read and for the last project.
+
+**One queue.** The UI sends every request that needs the supervisor through one queue. Tasks run one at a time, in the order they were queued, and apply their result before the next one starts, so the shell writes requests in UI order, the supervisor answers in that order, and the UI applies the answers in that order. The shell holds one request gate from writing a request until its reply or timeout, and it neither reorders nor retries. A failed task never blocks later ones; only an open `project_changed` prompt pauses the queue.
+
+- The Export click shows "Rendering export", disables Open, Sample, New and Save As, and queues the Export task. The task reserves an export id; stops with "Cancelled" if Cancel export was pressed; sends `set_export_profile`, an ordinary edit that is one undo step when the profile changed and a no-op otherwise; stops if that edit is refused; checks Cancel export again; and sends `export` with the Re-export flag. Cancel export queues a cancel of that export, if it was sent.
+- The preview task reserves a preview id, records it, and sends `render_preview`.
+- Job events reach the UI outside the queue. A preview's `done` queues a `get_state`, and the UI never applies a `state` line from the event channel.
+- An applied edit with `changed: true`, an undo, redo or reload, or a state with another `projectPath` makes the current preview stale: the UI ignores its later `beat_ready` lines, and its terminal line still ends it.
+- After a timeout the UI says "The worker did not answer in time." and asks once for `get_state`.
+- Open, Sample and New, and any applied state with another `projectPath`, reset the UI: no selection, no drafts, playhead at 0, playback stopped, View code closed, no field errors, no export path or note.
+
+**Refusals in the UI.**
+
+| Code | UI |
+| --- | --- |
+| `project_changed` | One prompt at a time, with the message and Reload (which discards undo history), Overwrite and Cancel. The queue waits while it is open, and a further `project_changed` joins it. Reload drops the joined requests and previews afterwards. Overwrite retries each joined request once, in order, a job with a new id and an export with its profile and Re-export flag. Cancel drops them |
+| `project_unavailable` | A banner with the message and a Save As… button |
+| `read_failed`, `lock_failed`, `path_unsupported` | A banner with the message |
+| `invalid_edit`, `invalid_text`, `unsupported_expression`, `limit_exceeded`, `untrusted_latex` from an edit | A banner, and an error on the edited object's field |
+| `tex_unavailable` | A banner; the TeX warning under the status line stays |
+| Any other code | A banner with the message |
+
+A banner for an `error` line shows `message` as one line, with Show details for `details` and Dismiss, which clears it for good.
+
+**Status line.**
+
+| Situation | Status |
+| --- | --- |
+| No job | "Ready" |
+| A preview is asked for, has started, or has sent a beat, and no export runs | "Rendering preview", then "Rendering preview — beat N", N counted from 1, for each beat of a preview that is not stale |
+| Export clicked or its `started` | "Rendering export" |
+| `queued` for the export, or for the preview when there is no export | "Waiting for the previous render to stop" |
+| Export `done` | "Ready" and the file's path, with "This file is from an older export." when `current` is false |
+| An export cancelled by Cancel export, before or after it was sent | "Cancelled" |
+| Any other `error cancelled` | Unchanged while an export or a newer preview runs, otherwise "Ready" |
+| Any other `error` or `rejected` of the current job, a refused `set_export_profile` before an export, or a job request the shell could not send | "Ready", and the banner or prompt for its code |
+| `worker_exited` | "Ready" after the resync |
+
+**Automatic previews.** The UI asks for a preview, after the same 300 ms debounce as edits, after Open, Sample, New, Reload and Clear cache, and after the terminal line of an export that pre-empted a preview, when no preview is current or held. It never asks after undo or redo, for an edit with `changed: false`, for a scene without beats, or after a resync. Unchanged beats reuse Manim's partial cache.
+
+**Startup and AppStatus.** Setup never fails on the runtime, the spawn or the handshake, so the window always opens.
+
+```text
+AppStatus = {
+  "worker": "ready" | "unavailable",
+  "reason": string | null,
+  "tex": { "state": "checking" | "ok" | "failed", "message": string | null },
+  "notices": [ { "id": integer, "message": string } ]
+}
+```
+
+At mount the UI subscribes to `worker-event`, calls `app_status`, and shows each notice once; a notice stays until `dismiss_notice` removes it. With a ready worker it asks for `get_state`. With an unavailable one it shows "Worker unavailable", the reason, and Retry, which calls `restart_worker`; editing, Open, Sample, New, Save As and Export stay disabled, and the third-party notices stay available. A later `worker_unavailable` from any command shows the same. The shell's own `worker-event` lines have `jobId: null`: `worker_exited {message, exitCode}`, `notice {id, message}` for a notice added after startup, and `tex_status {state, message}` when the TeX self-test ends.
+
+**Runtime and spawn.** A debug build runs the repository's worker with `MATHIMATOR_PYTHON` or the repository's `.venv`, and takes Typst and TinyTeX from `MATHIMATOR_TYPST` and `MATHIMATOR_TINYTEX_BIN`, the bundled copies, or PATH. A release build reads only the bundle: `<resources>/runtime/runtime.json` gives `platform` (`windows-x86_64`), `python` (the real interpreter, D33), `worker` and `sample`, all required, and `typst` and `tinytexBin`, which only disable the glyph preview or block TeX when missing; other fields are informational. A release build ignores the `MATHIMATOR_*` overrides, logs that it did, and reads only `MATHIMATOR_SHELL_READY_FILE`. A missing or wrong runtime gives "Worker unavailable" with "The installed runtime is incomplete (<field>). Reinstall Mathimator." The supervisor runs with `PYTHONPATH` set to the worker folder, unbuffered UTF-8 stdio, no `PYTHONHOME`, `PYTHONSTARTUP`, `TEXINPUTS` or `TEXMF*`, TinyTeX first on PATH, and `MATHIMATOR_TEX_ERROR` while TeX is blocked. It starts in a folder the shell owns, without a console window, inside a kill-on-close Job Object.
+
+**TeX.** A release build without its bundled TinyTeX blocks formulas and axis labels: the TeX state is failed with "Formulas and axis labels cannot render: the bundled TeX is missing. Reinstall Mathimator." At every launch the shell also runs a TeX self-test in the background, in a fresh `%TEMP%\mathimator-texcheck-<pid>` folder: `latex` and `dvisvgm --no-fonts` on a one-line formula with `amsmath` and `amssymb`, with hidden consoles and 30 s in all. A failed self-test blocks formulas and axis labels the same way, with "Formulas and axis labels cannot render on this PC: <first `!` line or reason>. Reinstall Mathimator for all users.", until a later check passes. While TeX is blocked, a job whose scene needs it is refused with `tex_unavailable` and that message, and the UI shows the failed state as a persistent warning under the status line.
+
+**Logs.** `shell.log` and `supervisor.err` are in the log folder: `<repo>/out/logs` in a debug build, `%LOCALAPPDATA%\com.mathimator.desktop\logs` in a release build. `shell.log` records the runtime paths, each spawn and exit with its exit code, a protocol mismatch, Job Object failures, the TeX self-test, prune and Save As deletions, ignored overrides, and supervisor lines that are not JSON. `supervisor.err` appends the supervisor's stderr under a header for each start, and moves to `supervisor.err.1` above 1 MiB. `worker.log` stays in the project (section 4).
+
+**View code, colors and export settings.** View code shows the latest applied `state.source`, or `sourceError` when there is no source, so it follows every edit, undo and redo without a request of its own. Export code asks for `code`, which comes from the same document, so the two match. The color picker commits once, when it closes, so one use is one edit and one undo step; the hex field commits on blur. `set_export_profile` is sent before every export (above).
+
 ### Equation preview
 
-The stored formula is LaTeX. After a 100 ms debounce, a translator converts the supported subset to Typst math and the shell runs Typst 0.15.0 `compile` on one `.typ` file to one `.svg`.
+The stored formula is LaTeX. After a 100 ms debounce, the shell translates the supported subset to Typst math and runs Typst 0.15.0 `compile --ignore-system-fonts` on one `.typ` file to one `.svg` in `.mathimator/equation/`, with no console and a 10 s limit. The translator is part of the shell; `equation.py` in the worker is the reference the tests compare it with.
 
 The generated Typst document is:
 
@@ -684,6 +1013,8 @@ $ y = sin(x) $
 | ASCII letters and digits | passed through, each as its own atom: a space separates it from a neighboring letter, digit or command name, so `E = mc^2` becomes `E = m c^2` and `\sin\theta` becomes `sin theta` |
 
 `tests/fixtures/equation/translate-cases.json` holds the expected Typst math for each test formula, with `null` where there is no preview.
+
+Each request names its formula (`slot`, the object id) and a `generation` from one counter in the UI that only grows. A request older than the newest one seen for its slot, compile or cancel, comes back `cancelled` at once; a newer one kills the slot's older Typst. Two formulas on screen together use different slots. A page reload resets the newest generations, because the UI's counter starts again at 1. A compile returns `ok` with the SVG path, `unsupported`, `error` with a message, or `cancelled`; success deletes the slot's older files. A missing project folder gives "The project folder was moved or deleted.", and a missing Typst gives "Typst is unavailable: <reason>".
 
 `\int` and any other command produce no SVG. The editor shows "No live preview for this formula." The scene can still render that formula with `MathTex`. A failed Typst run keeps the last good SVG and shows the error. The caption "Live preview is Typst. The video uses LaTeX and will look different." stays visible whenever a formula is selected.
 
@@ -741,7 +1072,7 @@ Manim writes every PNG sequence to one folder, `images/<scene>/MainScene`, and n
 
 Resolutions are 854×480, 1280×720, and 1920×1080. Frame rates are 15, 30, and 60. The 3 minute budget applies to `reference-60` at 1920×1080, 30 fps, MP4, cold export cache. Other combinations must finish and match their profile; they do not inherit that time limit.
 
-When transparency is on, a sample background pixel has alpha 0. Object pixels for the default surface stay opaque. The preview stays opaque.
+When transparency is on, a sample background pixel has alpha 0. Object pixels for the default surface stay opaque. The preview stays opaque. A WebM keeps its alpha in a separate stream that FFmpeg's own vp9 decoder ignores, so the check decodes it with libvpx-vp9, as WebView2 does, and also requires the track's `alpha_mode` tag.
 
 Pass when all of these hold:
 
@@ -775,7 +1106,7 @@ Automated tests are pytest for the worker, the document, and codegen, plus scrip
 | Phase | Tests that must exist |
 | --- | --- |
 | 1 | Worker renders `reference-60` to 8 partial movies, in beat order, and a preview MP4 within one frame of 60 s. Changing the last beat and rendering again leaves the first 7 partial-movie hashes unchanged. A scene that raises `RuntimeError` returns an error, and a following `status` succeeds. Cancel ends the grandchild and any TeX child within 1 s. The argv contains `--renderer cairo` and `--seed`, and does not contain `opengl`, `--live-preview`, or `--preview`. |
-| 2 | Byte-identical codegen for the Journey A block and for `reference-60`. Prefix stability: editing the last beat does not change the earlier source. Invalidation on `lesson-60` as in section 5. Derived times, refusal of a stored `start`, save/open, undo/redo, display-name stability, scrub with a quiet worker log, expression rejection of `__import__("os")`. |
+| 2 | Byte-identical codegen for the Journey A block and for `reference-60`. Prefix stability: editing the last beat does not change the earlier source. Invalidation on `lesson-60` as in section 5. Derived times, refusal of a stored `start`, save/open, undo/redo, display-name stability, scrub that sends no request to the worker, expression rejection of `__import__("os")`. |
 | 3 | Translator fixtures for every supported command and for `\int`. Equation budget on `y = \sin(x)`. Generated source uses `MathTex` only. An unsupported formula still renders in the scene. |
 | 4 | All three templates insert the specified objects and beats. 3D source and argv match section 5 for surface and curve. Refusal rules for mixed 2D/3D projects. 20 second insert measurement. |
 | 5 | Export matrix in section 7, including alpha checks and the ban on upscaling. `typst --version` is 0.15.0. With the network disconnected, the bundled interpreter imports `manim`, and `latex` and `dvisvgm` run. The clean-machine install test. Notices mention Manim, Typst, and TinyTeX. |

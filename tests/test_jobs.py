@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -530,6 +531,27 @@ def test_re_export_skips_the_export_cache(
     assert _argv_count(supervisor) == 2
 
 
+def test_an_export_of_another_profile_renders_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
+) -> None:
+    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
+    clips = [complete_clip(".mp4")] * 4
+    fake_manim.plan(
+        {**video_render(supervisor.layout, "1080p30", clips), **video_render(supervisor.layout, "1080p60", clips)}
+    )
+    _run(supervisor, cmd="export", id="export-1")
+    profile = {"format": "mp4", "width": 1920, "height": 1080, "fps": 60, "transparent": False}
+    _send(supervisor, cmd="edit", id="fps", edit={"op": "set_export_profile", **profile})
+    _run(supervisor, cmd="export", id="export-2")
+    # The export cache misses, so Manim renders the new profile (F136).
+    assert [line["event"] for line in stdout.of("export-2")] == ["started", "done"]
+    first, second = (Path(stdout.of(job_id)[-1]["path"]) for job_id in ("export-1", "export-2"))
+    assert first.parent != second.parent
+    assert stdout.of("export-2")[-1]["current"] is True
+    first_argv, second_argv = _argvs(supervisor)
+    assert (first_argv[first_argv.index("--fps") + 1], second_argv[second_argv.index("--fps") + 1]) == ("30", "60")
+
+
 def test_a_re_export_that_cannot_replace_the_file_keeps_the_older_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
@@ -676,6 +698,43 @@ def test_a_failed_render_reads_the_tex_log_it_wrote(
     assert failed["details"].splitlines() == output
 
 
+@pytest.mark.parametrize(("command", "job_id"), [("render_preview", "preview-1"), ("export", "export-1")])
+def test_a_render_that_exits_0_without_a_movie_fails(
+    command: str, job_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
+) -> None:
+    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
+    fake_manim.plan({})
+    _run(supervisor, cmd=command, id=job_id)
+    assert stdout.of(job_id) == [
+        {"event": "started", "jobId": job_id},
+        {"event": "error", "jobId": job_id, "code": "render_failed", "message": "manim exited 0 without a movie"},
+    ]
+    assert not supervisor.layout.exports_dir.exists()
+    index = _index(supervisor)
+    assert index.output is None
+    assert all(beat.partial is None for beat in index.beats)
+
+
+@pytest.mark.parametrize(("command", "job_id"), [("render_preview", "preview-1"), ("export", "export-1")])
+def test_a_manim_that_cannot_start_ends_the_job_without_started(
+    command: str, job_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout
+) -> None:
+    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch)
+
+    def missing(*args: object, **kwargs: object) -> NoReturn:
+        raise FileNotFoundError(2, "No such file")
+
+    monkeypatch.setattr(supervisor_module.subprocess, "Popen", missing)
+    _run(supervisor, cmd=command, id=job_id)
+    # The terminal line is the job's only line: Manim never started (C7.2).
+    (failed,) = stdout.of(job_id)
+    assert (failed["event"], failed["code"]) == ("error", "render_failed")
+    assert failed["message"].startswith("Could not start Manim: ")
+    assert not supervisor.layout.run_marker.exists()
+    _send(supervisor, cmd="status", id="status-1")
+    assert stdout.last() == {"event": "ready", "jobId": "status-1", "protocol": 2, "startupError": None}
+
+
 def _tex_failure_output(error: str) -> str:
     """What Manim writes when a TeX compile fails: its log line through Rich, then the exception."""
     return (
@@ -780,3 +839,9 @@ def _wait_for_beats(stdout: Stdout, job_id: str, count: int) -> None:
 
 def _argv_count(supervisor: Supervisor) -> int:
     return supervisor.log_path.read_text(encoding="utf-8").count("argv: ")
+
+
+def _argvs(supervisor: Supervisor) -> list[list[str]]:
+    """Each Manim command line the supervisor logged, in order."""
+    lines = supervisor.log_path.read_text(encoding="utf-8").splitlines()
+    return [json.loads(line.split("argv: ", 1)[1]) for line in lines if "argv: " in line]

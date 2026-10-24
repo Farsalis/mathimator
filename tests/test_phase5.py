@@ -185,10 +185,7 @@ def test_unchanged_gif_export_key_does_not_start_manim(tmp_path: Path) -> None:
     try:
         _ready(client)
         client.send({"cmd": "export", "id": "again"})
-        done = client.wait_for(
-            lambda event: event.get("jobId") == "again" and event.get("event") in {"done", "error"},
-            10,
-        )
+        done = client.wait_for_end("again", 10)
         assert done["event"] == "done"
         assert done["path"] == str(artifact)
     finally:
