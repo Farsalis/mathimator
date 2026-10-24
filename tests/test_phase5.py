@@ -201,11 +201,6 @@ def test_notices_name_manim_typst_and_tinytex() -> None:
     assert "TinyTeX" in text
     assert "MIT" in text
     assert "WebView2" in text
-    panel = (REPO / "desktop" / "src" / "exportProfile.ts").read_text(encoding="utf-8")
-    assert "MP4 cannot store transparency." in panel
-    assert "GIF cannot store an alpha channel." in panel
-    assert "854" in panel and "480" in panel and "15" in panel
-    assert "1920" in panel and "1080" in panel and "30" in panel
 
 
 def _profile(fmt: str, width: int, height: int, fps: int, transparent: bool) -> dict[str, object]:

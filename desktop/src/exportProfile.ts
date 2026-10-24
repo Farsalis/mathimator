@@ -20,9 +20,6 @@ export const RESOLUTIONS: readonly { width: number; height: number; label: strin
 
 export const FRAME_RATES: readonly number[] = [15, 30, 60];
 
-export const MP4_TRANSPARENCY = "MP4 cannot store transparency.";
-export const GIF_TRANSPARENCY = "GIF cannot store an alpha channel.";
-
 const PRESET_DEFAULTS: Record<ExportFormat, { width: number; height: number; fps: number }> = {
   mp4: { width: 1920, height: 1080, fps: 30 },
   gif: { width: 854, height: 480, fps: 15 },
@@ -48,9 +45,9 @@ export function allowsTransparency(format: ExportFormat): boolean {
 export function transparencyMessage(format: ExportFormat): string {
   switch (format) {
     case "mp4":
-      return MP4_TRANSPARENCY;
+      return "MP4 cannot store transparency.";
     case "gif":
-      return GIF_TRANSPARENCY;
+      return "GIF cannot store an alpha channel.";
     case "webm":
     case "png_sequence":
       return "Transparency includes the background.";

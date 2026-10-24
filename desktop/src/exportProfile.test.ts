@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vitest";
-import documentSource from "../../worker/mathimator_worker/document.py?raw";
+import fixture from "../../tests/fixtures/protocol/export-choices.json";
 import {
   allowsTransparency,
   asExportProfile,
   EXPORT_FORMATS,
   FRAME_RATES,
-  GIF_TRANSPARENCY,
   isExportFormat,
-  MP4_TRANSPARENCY,
   presetDefaults,
   RESOLUTIONS,
   transparencyMessage,
@@ -17,27 +15,20 @@ import { ParseError } from "./parse";
 
 const PROFILE: ExportProfile = { format: "webm", width: 1280, height: 720, fps: 60, transparent: true };
 
-/** Every match of `pattern` in what the worker's document.py assigns to `name`. */
-function workerValues(name: string, pattern: RegExp): Set<string> {
-  const value = new RegExp(`^${name} = (.+)$`, "m").exec(documentSource)?.[1] ?? "";
-  return new Set(Array.from(value.matchAll(pattern), ([match]) => match));
-}
-
 describe("export choices (spec §1, F174)", () => {
   it("offers the formats, sizes and frame rates the worker accepts", () => {
-    expect(new Set(EXPORT_FORMATS)).toEqual(workerValues("EXPORT_FORMATS", /(?<=")\w+(?=")/g));
-    expect(new Set(RESOLUTIONS.map(({ width, height }) => `(${width}, ${height})`))).toEqual(
-      workerValues("EXPORT_SIZES", /\(\d+, \d+\)/g),
+    expect(new Set(EXPORT_FORMATS)).toEqual(new Set(fixture.formats));
+    expect(new Set(RESOLUTIONS.map(({ width, height }) => `${width}x${height}`))).toEqual(
+      new Set(fixture.sizes.map(([width, height]) => `${width}x${height}`)),
     );
-    expect(new Set(FRAME_RATES.map(String))).toEqual(workerValues("EXPORT_FPS", /\d+/g));
+    expect(new Set(FRAME_RATES)).toEqual(new Set(fixture.fps));
   });
 
   it("refuses transparency in MP4 and GIF with the worker's words", () => {
-    expect(EXPORT_FORMATS.filter(allowsTransparency)).toEqual(["webm", "png_sequence"]);
-    expect(transparencyMessage("mp4")).toBe(MP4_TRANSPARENCY);
-    expect(transparencyMessage("gif")).toBe(GIF_TRANSPARENCY);
-    expect(documentSource).toContain(`"${MP4_TRANSPARENCY}"`);
-    expect(documentSource).toContain(`"${GIF_TRANSPARENCY}"`);
+    const opaque = EXPORT_FORMATS.filter((format) => !allowsTransparency(format));
+    expect(Object.fromEntries(opaque.map((format) => [format, transparencyMessage(format)]))).toEqual(
+      fixture.opaqueReasons,
+    );
     expect(transparencyMessage("webm")).toBe("Transparency includes the background.");
     expect(transparencyMessage("png_sequence")).toBe("Transparency includes the background.");
   });

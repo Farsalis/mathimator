@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import documentSource from "../../worker/mathimator_worker/document.py?raw";
+import fixture from "../../tests/fixtures/protocol/export-choices.json";
 import {
   clampDuration,
   derivedStarts,
@@ -21,15 +21,10 @@ function beats(...durations: number[]): Beat[] {
   }));
 }
 
-/** A number constant of the worker's document.py. */
-function workerConstant(name: string): number {
-  return Number(new RegExp(`^${name} = (.+)$`, "m").exec(documentSource)?.[1]);
-}
-
 describe("duration limits (spec §4, F174)", () => {
   it("are the worker's", () => {
-    expect(MIN_BEAT_SECONDS).toBe(workerConstant("MIN_BEAT_SECONDS"));
-    expect(MAX_TOTAL_SECONDS).toBe(workerConstant("MAX_TOTAL_SECONDS"));
+    expect(MIN_BEAT_SECONDS).toBe(fixture.minBeatSeconds);
+    expect(MAX_TOTAL_SECONDS).toBe(fixture.maxTotalSeconds);
   });
 });
 

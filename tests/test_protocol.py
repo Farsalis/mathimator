@@ -22,7 +22,15 @@ import pytest
 
 from mathimator_worker import supervisor as supervisor_module
 from mathimator_worker.codegen import CodegenError
-from mathimator_worker.document import NOT_UTF8
+from mathimator_worker.document import (
+    EXPORT_FORMATS,
+    EXPORT_FPS,
+    EXPORT_SIZES,
+    FORMATS,
+    MAX_TOTAL_SECONDS,
+    MIN_BEAT_SECONDS,
+    NOT_UTF8,
+)
 from mathimator_worker.preview_index import PreviewIndex
 from mathimator_worker.progress import ManimProgress
 from mathimator_worker.protocol import PROTOCOL_VERSION, REQUEST_FIELDS
@@ -41,6 +49,7 @@ from tests.support import (
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 SHARED_COMMANDS = REPO / "tests" / "fixtures" / "protocol" / "commands.json"
+SHARED_EXPORT_CHOICES = REPO / "tests" / "fixtures" / "protocol" / "export-choices.json"
 NO_PROJECT = f"No project is open. {NOT_A_PROJECT}"
 _JOURNEY_TEXT = JOURNEY.read_text(encoding="utf-8")
 # For each document code, a project.json made from Journey A that breaks one of its rules, and the field it names.
@@ -274,6 +283,17 @@ def test_the_worker_commands_match_the_shared_list(tmp_path: Path, monkeypatch: 
     assert {entry["worker"] for entry in shared["tauriCommands"]} - {None} <= commands
     assert commands == set(REQUEST_FIELDS)
     assert set(_supervisor(tmp_path / "project", monkeypatch)._commands) == commands
+
+
+def test_the_export_choices_and_duration_limits_match_the_shared_list() -> None:
+    shared = json.loads(SHARED_EXPORT_CHOICES.read_text(encoding="utf-8"))
+    assert set(shared["formats"]) == EXPORT_FORMATS
+    assert {(width, height) for width, height in shared["sizes"]} == EXPORT_SIZES
+    assert set(shared["fps"]) == EXPORT_FPS
+    assert shared["minBeatSeconds"] == MIN_BEAT_SECONDS
+    assert shared["maxTotalSeconds"] == MAX_TOTAL_SECONDS
+    opaque = {name: spec.opaque_reason for name, spec in FORMATS.items() if spec.opaque_reason is not None}
+    assert shared["opaqueReasons"] == opaque
 
 
 # The handshake and startup errors (C6)
