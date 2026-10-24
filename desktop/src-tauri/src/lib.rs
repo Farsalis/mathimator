@@ -433,7 +433,8 @@ impl Tex {
 }
 
 /// Records the TeX self-test result, logs it and sends `tex_status` (C9.7). A failure blocks
-/// formulas (C14 Q4): the worker is restarted, so that it runs with MATHIMATOR_TEX_ERROR.
+/// formulas (C14 Q4): the running worker hears the result through `set_tex_error`, and every
+/// worker started later through MATHIMATOR_TEX_ERROR. Nothing running is stopped.
 async fn tex_checked(worker: &Worker, tex: &Tex, host: &dyn Host, result: Result<(), String>) {
     let status = tex.checked(result);
     host.log(&match &status.message {
@@ -441,11 +442,9 @@ async fn tex_checked(worker: &Worker, tex: &Tex, host: &dyn Host, result: Result
         None => "The TeX self-test passed.".to_owned(),
     });
     host.emit(status.event());
-    if status.state == TexState::Failed {
-        let message = "The worker was restarted because formulas cannot render.".to_owned();
-        if let Err(err) = worker.retire(message).await {
-            host.log(&err.message);
-        }
+    let message = status.error().map(str::to_owned);
+    if let Err(err) = worker.set_tex_error(message).await {
+        host.log(&err.message);
     }
 }
 

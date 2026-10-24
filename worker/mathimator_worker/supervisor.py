@@ -3,10 +3,10 @@
 It speaks protocol 2 (``protocol.py``). The commands are ``status``,
 ``get_state``, ``edit``, ``undo``, ``redo``, ``code``, ``clear_cache``,
 ``open_project``, ``reload``, ``overwrite``, ``save_as``, ``render_preview``,
-``export`` and ``cancel``. Every request gets exactly one reply line, except
-the jobs and ``cancel``: a job sends ``queued`` when it has to wait,
-``started``, ``beat_ready`` (previews only) and one terminal ``done``,
-``error`` or ``rejected`` (C7.1). An unexpected
+``export``, ``cancel`` and ``set_tex_error``. Every request gets exactly one
+reply line, except the jobs, ``cancel`` and ``set_tex_error``: a job sends
+``queued`` when it has to wait, ``started``, ``beat_ready`` (previews only)
+and one terminal ``done``, ``error`` or ``rejected`` (C7.1). An unexpected
 exception is answered with ``error internal`` and the worker keeps serving;
 every state change is all-or-nothing, so nothing is left half changed (D03).
 
@@ -223,6 +223,8 @@ class Supervisor:
         self._startup_error: DocumentError | None = None
         self._handwritten = False
         # Why formulas cannot render, when the shell found TeX missing or failing its self-test (D31, C14 Q4).
+        # MATHIMATOR_TEX_ERROR gives it at startup and set_tex_error afterwards. It changes under the document
+        # lock, so a job start reads one value.
         self._tex_error = os.environ.get("MATHIMATOR_TEX_ERROR") or None
         self._clips = ClipChecker()
         # The commands of protocol.REQUEST_FIELDS, each answered from its parsed request.
@@ -241,6 +243,7 @@ class Supervisor:
             "render_preview": self._render_preview,
             "export": self._export,
             "cancel": self._cancel,
+            "set_tex_error": self._set_tex_error,
         }
         self._start(init)
 
@@ -480,6 +483,14 @@ class Supervisor:
                 "startupError": None if startup is None else {"code": startup.code, "message": str(startup)},
             }
         )
+
+    def _set_tex_error(self, request: Request) -> None:
+        """Use the shell's latest TeX error for the jobs that start from now on; null clears it (C9.7, C14 Q4).
+
+        It writes no line, and leaves a running job, the document and its undo history as they are.
+        """
+        with self._doc_lock:
+            self._tex_error = request.string_or_none("message")
 
     def _get_state(self, request: Request) -> None:
         with self._doc_lock:

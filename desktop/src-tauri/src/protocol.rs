@@ -37,6 +37,10 @@ pub enum Request {
         #[serde(rename = "jobId")]
         job_id: String,
     },
+    /// The message later job starts refuse formulas with, or `None` once TeX works (C9.7).
+    SetTexError {
+        message: Option<String>,
+    },
 }
 
 fn is_false(value: &bool) -> bool {
@@ -138,6 +142,22 @@ mod tests {
         assert_eq!(
             parsed(&cancel.line("cancel-6").unwrap()),
             json!({"cmd": "cancel", "id": "cancel-6", "jobId": "preview-2"})
+        );
+    }
+
+    #[test]
+    fn set_tex_error_lines_carry_the_message_or_null() {
+        let failed = Request::SetTexError {
+            message: Some("LaTeX is not working.".to_owned()),
+        };
+        assert_eq!(
+            parsed(&failed.line("tex-7").unwrap()),
+            json!({"cmd": "set_tex_error", "id": "tex-7", "message": "LaTeX is not working."})
+        );
+        let passed = Request::SetTexError { message: None };
+        assert_eq!(
+            parsed(&passed.line("tex-8").unwrap()),
+            json!({"cmd": "set_tex_error", "id": "tex-8", "message": null})
         );
     }
 

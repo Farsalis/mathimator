@@ -613,7 +613,7 @@ There are three processes and two hops. The **shell** is the Tauri program: it h
 | Which job ids the UI waits for, the stale-preview flag, the status line, the Export button, notes, automatic previews, the `project_changed` prompt | UI | |
 | The supervisor process: spawn, handshake, requests in flight, request order, timeouts | Shell | |
 | Temp projects, the last project, pruning, the quit warning | Shell | The supervisor leaves the temp-project marker alone |
-| Runtime paths, TeX status, log folder, notices | Shell | The UI shows notices and dismisses them |
+| Runtime paths, TeX status, log folder, notices | Shell | The UI shows notices and dismisses them. The supervisor keeps the TeX error it was last given |
 | Glyph preview: translator, Typst, the latest request per formula | Shell | The UI owns the request counter |
 | Selection, drafts, playhead, playback, open panels | UI | |
 
@@ -631,7 +631,7 @@ This is protocol 2. The supervisor defines `PROTOCOL_VERSION = 2` once, and the 
 
 **Lines.** Each line is one JSON object in UTF-8, ending in a line feed. Numbers are finite: `NaN`, `Infinity` and `-Infinity` make a line invalid JSON, and the supervisor never writes them. A line the supervisor cannot serialize goes out as `error internal` for the same id instead, so no reply is ever a line the shell cannot parse.
 
-A request has `cmd` and `id`, a non-empty string that is unique within one supervisor process. The shell takes every id from one counter: `rpc-N`, `status-N`, `cancel-N`, `preview-N` or `export-N`. Unknown request fields are ignored. Every supervisor line has `event` and `jobId`: the request's id for a reply, the job's id for a job's lines, and null only for a line that had no usable id.
+A request has `cmd` and `id`, a non-empty string that is unique within one supervisor process. The shell takes every id from one counter: `rpc-N`, `status-N`, `cancel-N`, `tex-N`, `preview-N` or `export-N`. Unknown request fields are ignored. Every supervisor line has `event` and `jobId`: the request's id for a reply, the job's id for a job's lines, and null only for a line that had no usable id.
 
 | Class | Line | Meaning | Afterwards |
 | --- | --- | --- | --- |
@@ -641,7 +641,7 @@ A request has `cmd` and `id`, a non-empty string that is unique within one super
 
 - A request whose answer the shell waits for gets exactly one reply line, written before the supervisor reads its next request, so replies arrive in request order.
 - `render_preview` and `export` start jobs and get no reply line. All of a job's lines carry its id, and a job ends with exactly one terminal line: `done`, `error` or `rejected`. Nothing follows it.
-- `cancel` writes no line when it succeeds; the target job ends with `error cancelled`.
+- `cancel` writes no line when it succeeds; the target job ends with `error cancelled`. `set_tex_error` writes no line.
 - An unexpected exception while a request is handled is logged with its traceback and answered at once with `error internal`. The supervisor keeps serving, with its undo history and any running export, and the request's change is rolled back or never applied.
 - Within protocol 2 the shell and the UI ignore unknown fields and unknown events.
 
@@ -664,8 +664,9 @@ A request has `cmd` and `id`, a non-empty string that is unique within one super
 | `render_preview` | Job | | Job events | Terminal refusals: `no_project`, `project_unavailable`, `read_failed`, `project_changed`, `invalid_document`, `tex_unavailable`, `path_unsupported`. Terminal failures: `cancelled`, `render_failed`, `internal` |
 | `export` | Job | `force`: a boolean, default false (Re-export) | Job events | The refusals above and `export_running`. The failures above and `publish_failed` |
 | `cancel` | Send | `jobId`: the job to cancel | No line | `no_such_job` |
+| `set_tex_error` | Send | `message`: why formulas cannot render, or null when they can | No line | none |
 
-A malformed request gets `error bad_request` with a message for developers: invalid JSON, `NaN` and `Infinity` included; a missing or empty `cmd` or `id`; an unknown `cmd`; or a top-level field that is missing or of the wrong type (`edit` not an object, `path` not a string, `jobId` not a non-empty string, `init` or `force` not a boolean). What is inside `edit` is a document matter: a missing, non-string or unknown `op`, and every bad edit field, give `rejected invalid_edit`. There is no `scrub` command, because playback belongs to the UI, and no `render_frame` command.
+A malformed request gets `error bad_request` with a message for developers: invalid JSON, `NaN` and `Infinity` included; a missing or empty `cmd` or `id`; an unknown `cmd`; or a top-level field that is missing or of the wrong type (`edit` not an object, `path` not a string, `jobId` not a non-empty string, `message` neither a non-empty string nor null, `init` or `force` not a boolean). What is inside `edit` is a document matter: a missing, non-string or unknown `op`, and every bad edit field, give `rejected invalid_edit`. There is no `scrub` command, because playback belongs to the UI, and no `render_frame` command.
 
 **Edit operations.** `edit.op` names the change. Ids are strings, numbers are finite, and colors are `#RRGGBB`, compared without regard to case and stored in uppercase. An unknown, missing or non-string `op` is refused with "Unknown edit operation <op>."
 
@@ -931,7 +932,7 @@ Every command that needs the supervisor is asynchronous, so the window keeps rep
 | `note_shell_ready` | | null | none; writes the ready marker only when `MATHIMATOR_SHELL_READY_FILE` names a file |
 | `open_project_path` | `path` | `state` or `rejected` | `open_project`, 30 s; only in debug builds and builds with the `test-hooks` feature |
 
-`tests/fixtures/protocol/commands.json` lists every command, its arguments and the supervisor command it sends; the worker's, the shell's and the UI's tests all check against it. The webview gets Tauri's `core:default` capability and nothing more.
+`tests/fixtures/protocol/commands.json` lists every supervisor command, and every Tauri command with its arguments and the supervisor command it sends; the worker's, the shell's and the UI's tests all check against it. The webview gets Tauri's `core:default` capability and nothing more.
 
 **Routing.** A supervisor line whose `jobId` matches a request in flight goes to that request only. Every other line goes to the UI as `worker-event`: job events, the `no_such_job` refusal of a cancel, errors with a null `jobId`, and replies that arrive after their request timed out. A line that is not JSON is only logged. A request that timed out still runs in the supervisor: the UI ignores its late reply, and the `get_state` resync that follows, answered in order, shows its result. The shell takes `projectPath` from every `state` line, claimed or broadcast, for the files the webview may read and for the last project.
 
@@ -988,7 +989,7 @@ At mount the UI subscribes to `worker-event`, calls `app_status`, and shows each
 
 **Runtime and spawn.** A debug build runs the repository's worker with `MATHIMATOR_PYTHON` or the repository's `.venv`, and takes Typst and TinyTeX from `MATHIMATOR_TYPST` and `MATHIMATOR_TINYTEX_BIN`, the bundled copies, or PATH. A release build reads only the bundle: `<resources>/runtime/runtime.json` gives `platform` (`windows-x86_64`), `python` (the real interpreter, D33), `worker` and `sample`, all required, and `typst` and `tinytexBin`, which only disable the glyph preview or block TeX when missing; other fields are informational. A release build ignores the `MATHIMATOR_*` overrides, logs that it did, and reads only `MATHIMATOR_SHELL_READY_FILE`. A missing or wrong runtime gives "Worker unavailable" with "The installed runtime is incomplete (<field>). Reinstall Mathimator." The supervisor runs with `PYTHONPATH` set to the worker folder, unbuffered UTF-8 stdio, no `PYTHONHOME`, `PYTHONSTARTUP`, `TEXINPUTS` or `TEXMF*`, TinyTeX first on PATH, and `MATHIMATOR_TEX_ERROR` while TeX is blocked. It starts in a folder the shell owns, without a console window, inside a kill-on-close Job Object.
 
-**TeX.** A release build without its bundled TinyTeX blocks formulas and axis labels: the TeX state is failed with "Formulas and axis labels cannot render: the bundled TeX is missing. Reinstall Mathimator." At every launch the shell also runs a TeX self-test in the background, in a fresh `%TEMP%\mathimator-texcheck-<pid>` folder: `latex` and `dvisvgm --no-fonts` on a one-line formula with `amsmath` and `amssymb`, with hidden consoles and 30 s in all. A failed self-test blocks formulas and axis labels the same way, with "Formulas and axis labels cannot render on this PC: <first `!` line or reason>. Reinstall Mathimator for all users.", until a later check passes. While TeX is blocked, a job whose scene needs it is refused with `tex_unavailable` and that message, and the UI shows the failed state as a persistent warning under the status line.
+**TeX.** A release build without its bundled TinyTeX blocks formulas and axis labels: the TeX state is failed with "Formulas and axis labels cannot render: the bundled TeX is missing. Reinstall Mathimator." At every launch the shell also runs a TeX self-test in the background, in a fresh `%TEMP%\mathimator-texcheck-<pid>` folder: `latex` and `dvisvgm --no-fonts` on a one-line formula with `amsmath` and `amssymb`, with hidden consoles and 30 s in all. A failed self-test blocks formulas and axis labels the same way, with "Formulas and axis labels cannot render on this PC: <first `!` line or reason>. Reinstall Mathimator for all users.", until a later check passes. While TeX is blocked, a job whose scene needs it is refused with `tex_unavailable` and that message, and the UI shows the failed state as a persistent warning under the status line. The supervisor learns the TeX state from the shell: every supervisor the shell starts gets `MATHIMATOR_TEX_ERROR` while TeX is blocked, and when the self-test ends the shell sends `set_tex_error` to the running one, with the failure message or null. The supervisor applies it to the jobs that start afterwards. A running job goes on, the document keeps its undo history, and the supervisor is not restarted.
 
 **Logs.** `shell.log` and `supervisor.err` are in the log folder: `<repo>/out/logs` in a debug build, `%LOCALAPPDATA%\com.mathimator.desktop\logs` in a release build. `shell.log` records the runtime paths, each spawn and exit with its exit code, a protocol mismatch, Job Object failures, the TeX self-test, prune and Save As deletions, ignored overrides, and supervisor lines that are not JSON. `supervisor.err` appends the supervisor's stderr under a header for each start, and moves to `supervisor.err.1` above 1 MiB. `worker.log` stays in the project (section 4).
 

@@ -300,15 +300,13 @@ impl Worker {
         .await
     }
 
-    /// Ends the running worker, so that the next command starts one with the shell's current
-    /// settings, such as a TeX error (C9.7). The UI hears `worker_exited` with `message`, as after
-    /// a crash, so it ends its jobs and reloads the document (C8.6).
-    pub async fn retire(&self, message: String) -> Result<(), ShellError> {
-        self.hold(move |session| {
-            session.retire(&message);
-            Ok(())
-        })
-        .await
+    /// Tells the running worker the message its later job starts refuse formulas with, or `None`
+    /// once TeX works (C9.7, C14 Q4). Nothing running stops, and the document keeps its undo
+    /// history. A worker that is not running is left alone: the next one starts with the shell's
+    /// TeX error as MATHIMATOR_TEX_ERROR.
+    pub async fn set_tex_error(&self, message: Option<String>) -> Result<(), ShellError> {
+        self.hold(move |session| session.set_tex_error(message))
+            .await
     }
 
     /// Whether leaving the bound project asks first: it is a touched temp project, and a worker
@@ -537,24 +535,14 @@ impl Session<'_> {
         Ok(())
     }
 
-    /// Ends a running worker whose stdout is still open, and tells the UI as a crash would (C8.6).
-    /// A worker that is not running starts with the current settings anyway.
-    fn retire(&mut self, message: &str) {
+    /// Sends `set_tex_error` to a running worker whose stdout is still open (C9.7).
+    fn set_tex_error(&mut self, message: Option<String>) -> Result<(), ShellError> {
         match &*self.status {
             Status::Running(link) if self.shared.is_open(link.generation) => {}
-            _ => return,
+            _ => return Ok(()),
         }
-        if let Err(reason) = self.stop() {
-            self.shared.host.log(&reason);
-            *self.status = Status::Unavailable(reason);
-        }
-        self.shared.host.log(message);
-        self.shared.host.emit(json!({
-            "event": "worker_exited",
-            "jobId": null,
-            "message": message,
-            "exitCode": null,
-        }));
+        let id = self.shared.next_id("tex");
+        self.send(&Request::SetTexError { message }, &id)
     }
 
     /// Sends `status` and checks the reply (C6). Returns the worker's `startupError`.
@@ -1045,6 +1033,7 @@ mod tests {
     use crate::{spawner, tex_checked, Tex, TexStatus};
 
     const FAKE_EXIT_CODE: i32 = 3;
+    const TEX_FAILED: &str = "Formulas and axis labels cannot render on this PC: latex failed (exit code: 1). Reinstall Mathimator for all users.";
 
     /// How a fake worker answers one request: the lines to write, or `None` to exit instead.
     type Answer = dyn Fn(&Value) -> Option<Vec<String>> + Send + Sync;
@@ -1417,12 +1406,12 @@ mod tests {
             .to_string()
     }
 
-    /// Protocol 2 to `status`, `state` to every RPC, and nothing to job commands. `open_project`
-    /// binds its folder first.
+    /// Protocol 2 to `status`, `state` to every RPC, and nothing to job commands, `cancel` and
+    /// `set_tex_error`. `open_project` binds its folder first.
     fn answer(request: &Value) -> Option<Vec<String>> {
         Some(match cmd(request) {
             "status" => vec![ready_line(request)],
-            "render_preview" | "export" | "cancel" => vec![],
+            "render_preview" | "export" | "cancel" | "set_tex_error" => vec![],
             "open_project" => {
                 bind(
                     Path::new(request["path"].as_str().unwrap()),
@@ -1762,42 +1751,18 @@ mod tests {
     }
 
     #[test]
-    fn retire_ends_the_worker_and_the_next_command_respawns_it() {
-        let test = Test::start(answer);
-        block_on(test.worker.get_state()).unwrap();
-        let message = "The worker was restarted because formulas cannot render.";
-        block_on(test.worker.retire(message.to_owned())).unwrap();
-        assert_eq!(
-            test.events(),
-            [
-                json!({"event": "worker_exited", "jobId": null, "message": message, "exitCode": null})
-            ]
-        );
-        assert!(test.history().contains(&"exited".to_owned()));
-        block_on(test.worker.get_state()).unwrap();
-        let folder = test.launch_folder();
-        assert_eq!(
-            lock(&test.spawns).as_slice(),
-            [(folder.clone(), true), (folder, false)]
-        );
-        assert_eq!(test.events().len(), 1, "{:?}", test.events());
-        let logs = lock(&test.host.logs).clone();
-        assert!(logs.contains(&message.to_owned()), "{logs:?}");
-        assert!(
-            logs.contains(&"Stopped the worker (exit code 3).".to_owned()),
-            "{logs:?}"
-        );
-    }
-
-    #[test]
-    fn retire_does_nothing_without_a_running_worker() {
+    fn set_tex_error_does_nothing_without_a_running_worker() {
         let test = Test::without_runtime("No runtime.");
-        block_on(test.worker.retire("Restarted.".to_owned())).unwrap();
+        block_on(test.worker.set_tex_error(Some(TEX_FAILED.to_owned()))).unwrap();
+        assert!(lock(&test.requests).is_empty());
         assert!(test.events().is_empty());
     }
 
     /// A worker spawned through the shell's own spawner, and the TeX error each spawn saw.
-    fn launch_with_tex(tex: &Arc<Tex>) -> (Test, Arc<Mutex<Vec<Option<String>>>>) {
+    fn launch_with_tex(
+        tex: &Arc<Tex>,
+        answer: impl Fn(&Value) -> Option<Vec<String>> + Send + Sync + 'static,
+    ) -> (Test, Arc<Mutex<Vec<Option<String>>>>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let (tex, recorded) = (Arc::clone(tex), Arc::clone(&seen));
         let test = Test::launch(Exit::WithStdout, answer, move |fake| {
@@ -1813,44 +1778,68 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_tex_check_restarts_the_worker_with_the_tex_error() {
+    fn a_failed_tex_check_tells_the_running_worker_and_stops_nothing() {
         let tex = Arc::new(Tex::new(TexStatus::at_launch(None)));
-        let (test, seen) = launch_with_tex(&tex);
-        block_on(test.worker.get_state()).unwrap();
-        let message = "Formulas and axis labels cannot render on this PC: latex failed (exit code: 1). Reinstall Mathimator for all users.";
+        let (test, seen) = launch_with_tex(&tex, answer);
+        let export = test.worker.reserve_job_id("export").unwrap();
+        block_on(test.worker.export_movie(export, false)).unwrap();
         block_on(tex_checked(
             &test.worker,
             &tex,
             &*test.host,
-            Err(message.to_owned()),
+            Err(TEX_FAILED.to_owned()),
         ));
-        block_on(test.worker.get_state()).unwrap();
-        assert_eq!(lock(&seen).as_slice(), [None, Some(message.to_owned())]);
+        block_on(test.worker.undo_document()).unwrap();
+        let sent = lock(&test.requests).clone();
+        let cmds: Vec<&str> = sent.iter().map(cmd).collect();
+        assert_eq!(cmds, ["status", "export", "set_tex_error", "undo"]);
+        assert_eq!(
+            sent[2],
+            json!({"cmd": "set_tex_error", "id": "tex-3", "message": TEX_FAILED})
+        );
+        // One worker, never ended: the export runs on, and the undo reaches its history.
+        assert_eq!(lock(&seen).as_slice(), [None]);
+        assert!(!test.history().contains(&"end".to_owned()));
         assert_eq!(
             test.events(),
             [
-                json!({"event": "tex_status", "jobId": null, "state": "failed", "message": message}),
-                json!({
-                    "event": "worker_exited",
-                    "jobId": null,
-                    "message": "The worker was restarted because formulas cannot render.",
-                    "exitCode": null,
-                }),
+                json!({"event": "tex_status", "jobId": null, "state": "failed", "message": TEX_FAILED})
             ]
         );
     }
 
     #[test]
-    fn a_passed_tex_check_keeps_the_worker() {
+    fn a_passed_tex_check_clears_the_tex_error_of_the_running_worker() {
         let tex = Arc::new(Tex::new(TexStatus::at_launch(None)));
-        let (test, seen) = launch_with_tex(&tex);
+        let (test, seen) = launch_with_tex(&tex, answer);
         block_on(tex_checked(&test.worker, &tex, &*test.host, Ok(())));
-        block_on(test.worker.get_state()).unwrap();
+        assert_eq!(
+            test.request(1),
+            json!({"cmd": "set_tex_error", "id": "tex-2", "message": null})
+        );
         assert_eq!(lock(&seen).as_slice(), [None]);
         assert_eq!(
             test.events(),
             [json!({"event": "tex_status", "jobId": null, "state": "ok", "message": null})]
         );
+    }
+
+    #[test]
+    fn a_worker_started_after_a_failed_tex_check_gets_the_tex_error_at_spawn() {
+        let tex = Arc::new(Tex::new(TexStatus::at_launch(None)));
+        let (test, seen) = launch_with_tex(&tex, crash_on_undo);
+        block_on(test.worker.undo_document()).unwrap_err();
+        block_on(tex_checked(
+            &test.worker,
+            &tex,
+            &*test.host,
+            Err(TEX_FAILED.to_owned()),
+        ));
+        block_on(test.worker.get_state()).unwrap();
+        assert_eq!(lock(&seen).as_slice(), [None, Some(TEX_FAILED.to_owned())]);
+        let sent = lock(&test.requests).clone();
+        let cmds: Vec<&str> = sent.iter().map(cmd).collect();
+        assert_eq!(cmds, ["status", "undo", "status", "get_state"]);
     }
 
     #[test]
@@ -2025,16 +2014,15 @@ mod tests {
 
     #[test]
     fn restart_starts_a_worker_once_the_one_that_did_not_stop_has_exited() {
-        let test = Test::start_with_exit(Exit::Late, answer);
-        block_on(test.worker.get_state()).unwrap();
-        block_on(test.worker.retire("Restarted.".to_owned())).unwrap();
-        let stuck = "The previous worker did not stop. Restart Mathimator.";
-        assert_eq!(block_on(test.worker.unavailable()), Some(stuck.to_owned()));
-        assert_eq!(
-            block_on(test.worker.get_state()).unwrap_err(),
-            ShellError::new(ErrorCode::WorkerUnavailable, stuck)
-        );
-        assert_eq!(lock(&test.spawns).len(), 1);
+        // The first worker is out of date, and still runs when the shell gives up ending it.
+        let test = Test::start_with_exit(Exit::Late, |request| match cmd(request) {
+            "status" if request["id"] == "status-1" => Some(vec![
+                json!({"event": "ready", "jobId": request["id"]}).to_string(),
+            ]),
+            _ => answer(request),
+        });
+        assert!(block_on(test.worker.unavailable()).is_some());
+        assert!(lock(&test.host.logs).contains(&STUCK.to_owned()));
         assert_eq!(block_on(test.worker.restart()).unwrap(), None);
         assert_eq!(block_on(test.worker.unavailable()), None);
         let history = test.history();
@@ -2043,11 +2031,7 @@ mod tests {
             history[..respawn].contains(&"exited".to_owned()),
             "the new worker started before the old one exited: {history:?}"
         );
-        let folder = test.launch_folder();
-        assert_eq!(
-            lock(&test.spawns).as_slice(),
-            [(folder.clone(), true), (folder, false)]
-        );
+        assert_eq!(lock(&test.spawns).len(), 2);
     }
 
     #[test]
@@ -2410,12 +2394,13 @@ mod tests {
 
     #[test]
     fn an_unavailable_worker_never_asks_before_its_project_is_left() {
-        // The worker does not stop when it is retired, which leaves it unavailable.
-        let test = Test::start_with_exit(Exit::Never, answer);
+        // The worker crashes and does not exit, which leaves it unavailable.
+        let test = Test::start_with_exit(Exit::Never, crash_on_undo);
         block_on(test.worker.unavailable());
         fs::write(test.launch_folder().join("project.json"), b"{}").unwrap();
         assert!(block_on(test.worker.is_touched_temp_project()));
-        block_on(test.worker.retire("Restarted.".to_owned())).unwrap();
+        block_on(test.worker.undo_document()).unwrap_err();
+        block_on(test.worker.get_state()).unwrap_err();
         assert!(block_on(test.worker.unavailable()).is_some());
         assert!(!block_on(test.worker.is_touched_temp_project()));
     }

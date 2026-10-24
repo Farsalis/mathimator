@@ -35,12 +35,14 @@ REQUEST_FIELDS: dict[str, dict[str, tuple[str, bool]]] = {
     "render_preview": {},
     "export": {"force": ("a boolean", False)},
     "cancel": {"jobId": ("a non-empty string", True)},
+    "set_tex_error": {"message": ("a non-empty string or null", True)},
 }
 
 _KINDS: dict[str, Callable[[object], bool]] = {
     "an object": lambda value: isinstance(value, dict),
     "a string": lambda value: isinstance(value, str),
     "a non-empty string": lambda value: isinstance(value, str) and value != "",
+    "a non-empty string or null": lambda value: value is None or (isinstance(value, str) and value != ""),
     "a boolean": lambda value: isinstance(value, bool),
 }
 
@@ -63,6 +65,9 @@ class Request:
 
     def string(self, name: str) -> str:
         return cast(str, self.fields[name])
+
+    def string_or_none(self, name: str) -> str | None:
+        return cast(str | None, self.fields[name])
 
     def mapping(self, name: str) -> dict[str, object]:
         return cast(dict[str, object], self.fields[name])

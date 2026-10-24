@@ -1,4 +1,4 @@
-"""Protocol 2: the request envelope, replies, every refusal, cancel and hand-written mode (contract C2 to C8).
+"""Protocol 2: the request envelope, replies, every refusal, cancel, the TeX state and hand-written mode (C2 to C8).
 
 Every test runs a Supervisor in this process through ``handle_line`` and reads
 its replies from the captured stdout. Each line is parsed the strict way the
@@ -51,6 +51,7 @@ JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 SHARED_COMMANDS = REPO / "tests" / "fixtures" / "protocol" / "commands.json"
 SHARED_EXPORT_CHOICES = REPO / "tests" / "fixtures" / "protocol" / "export-choices.json"
 NO_PROJECT = f"No project is open. {NOT_A_PROJECT}"
+TEX_ERROR = "Formulas and axis labels cannot render on this PC: ! I can't find file `check'. Reinstall Mathimator."
 _JOURNEY_TEXT = JOURNEY.read_text(encoding="utf-8")
 # For each document code, a project.json made from Journey A that breaks one of its rules, and the field it names.
 DOCUMENT_DEFECTS: dict[str, tuple[bytes, str | None]] = {
@@ -150,6 +151,9 @@ def test_status_reports_protocol_2(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         pytest.param('{"cmd": "cancel", "id": "r"}', "r", id="cancel-without-target"),
         pytest.param('{"cmd": "cancel", "id": "r", "jobId": ""}', "r", id="cancel-empty-target"),
         pytest.param('{"cmd": "cancel", "id": "r", "jobId": null}', "r", id="cancel-null-target"),
+        pytest.param('{"cmd": "set_tex_error", "id": "r"}', "r", id="tex-error-missing"),
+        pytest.param('{"cmd": "set_tex_error", "id": "r", "message": ""}', "r", id="tex-error-empty"),
+        pytest.param('{"cmd": "set_tex_error", "id": "r", "message": 5}', "r", id="tex-error-not-a-string"),
     ],
 )
 def test_a_malformed_request_is_a_bad_request(
@@ -732,6 +736,45 @@ def test_held_previews_are_cancelled_while_the_export_runs_on(
     assert [line["event"] for line in stdout.of("export-1")] == ["started", "done"]
     assert supervisor._current is None
     assert supervisor.log_path.read_text(encoding="utf-8").count("argv: ") == 1
+
+
+# The TeX state the shell sets (C9.7, C14 Q4)
+
+
+def test_a_tex_error_refuses_later_formula_jobs_and_stops_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
+) -> None:
+    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
+    _send(supervisor, cmd="edit", id="rpc-1", edit=_rename("Waves"))
+    fake_manim.plan(video_render(supervisor.layout, "1080p30", [complete_clip(".mp4")] * 4), hold=True)
+    _send(supervisor, cmd="export", id="export-2")
+    export = _current(supervisor)
+    stdout.wait_for("export-2", "started")
+    fake_manim.wait_until_held()
+    _send(supervisor, cmd="set_tex_error", id="tex-3", message=TEX_ERROR)
+    fake_manim.release()
+    _join(export)
+    _run(supervisor, cmd="render_preview", id="preview-4")
+    assert stdout.of("tex-3") == []
+    assert [line["event"] for line in stdout.of("export-2")] == ["started", "done"]
+    assert stdout.of("preview-4") == [
+        {"event": "rejected", "jobId": "preview-4", "code": "tex_unavailable", "message": TEX_ERROR}
+    ]
+    assert _undo_depth(supervisor) == 1
+
+
+def test_a_null_tex_error_lets_formula_jobs_render_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
+) -> None:
+    monkeypatch.setenv("MATHIMATOR_TEX_ERROR", TEX_ERROR)
+    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
+    _run(supervisor, cmd="render_preview", id="preview-1")
+    _send(supervisor, cmd="set_tex_error", id="tex-2", message=None)
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
+    _run(supervisor, cmd="render_preview", id="preview-3")
+    assert stdout.of("preview-1")[-1]["code"] == "tex_unavailable"
+    assert stdout.of("tex-2") == []
+    assert stdout.of("preview-3")[-1]["event"] == "done"
 
 
 # Robust kills (F025, F097, F098)

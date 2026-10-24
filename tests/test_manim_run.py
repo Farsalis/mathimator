@@ -313,7 +313,7 @@ def test_the_start_checks_run_in_the_contract_order(
         (folder / "project.json").write_bytes(saved)
         _run(supervisor, cmd="export", id="codegen")
     _run(supervisor, cmd="export", id="tex")
-    supervisor._tex_error = None
+    _run(supervisor, cmd="set_tex_error", id="clear-tex", message=None)
     _run(supervisor, cmd="export", id="path")
     codes = ["project_changed", "invalid_document", "tex_unavailable", "path_unsupported"]
     assert [(line["event"], line["code"]) for line in stdout.read()] == [("rejected", code) for code in codes]

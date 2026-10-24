@@ -61,7 +61,7 @@ Ubuntu package as `libwebkit2gtk-4.1-dev` and `libxdo-dev`.
 | `MATHIMATOR_TYPST` | debug shell | The `typst` executable for the glyph preview, in place of the bundle's or the one on PATH. |
 | `MATHIMATOR_TINYTEX_BIN` | debug shell | The TinyTeX `bin` folder, in place of the bundle's. |
 | `MATHIMATOR_SHELL_READY_FILE` | shell | When it names a file, the shell writes `ready <unix ms>` there once the UI is up. The startup timing measurements read it. It is the only one of these variables that a release shell reads. |
-| `MATHIMATOR_TEX_ERROR` | worker | Set by the shell, not by hand, to the reason formulas cannot render. The worker then refuses jobs that need LaTeX with `tex_unavailable` and that reason. |
+| `MATHIMATOR_TEX_ERROR` | worker | Set by the shell, not by hand, to the reason formulas cannot render. The worker then refuses jobs that need LaTeX with `tex_unavailable` and that reason, until the shell's `set_tex_error` request replaces it. |
 | `MATHIMATOR_TEST_*` | Win32 stand-ins | Set by the Job Object tests for the C# stand-in programs in `tests/fixtures/win32`. |
 
 The three tool overrides, `MATHIMATOR_PYTHON`, `MATHIMATOR_TYPST` and

@@ -1,7 +1,7 @@
 {
   "workerCommands": ["status", "get_state", "edit", "undo", "redo", "code", "clear_cache",
                      "open_project", "reload", "overwrite", "save_as", "render_preview",
-                     "export", "cancel"],
+                     "export", "cancel", "set_tex_error"],
   "tauriCommands": [
     {"name": "app_status", "args": [], "worker": null},
     {"name": "restart_worker", "args": [], "worker": null},
