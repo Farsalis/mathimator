@@ -156,6 +156,16 @@ describe("parseWorkerEvent", () => {
     expect(parseWorkerEvent(refused)).toEqual(refused);
   });
 
+  it("reads the shell's worker_exited line", () => {
+    const exited = { event: "worker_exited", jobId: null, message: "The worker stopped (exit code 1).", exitCode: 1 };
+    expect(parseWorkerEvent(exited)).toEqual({
+      event: "worker_exited",
+      message: "The worker stopped (exit code 1).",
+      exitCode: 1,
+    });
+    expect(parseWorkerEvent({ ...exited, exitCode: null })).toMatchObject({ exitCode: null });
+  });
+
   it("ignores events the UI does not read", () => {
     expect(parseWorkerEvent(stateReply())).toBeNull();
     expect(parseWorkerEvent({ event: "code", jobId: "rpc-1", source: "" })).toBeNull();
@@ -169,6 +179,7 @@ describe("parseWorkerEvent", () => {
     ["error.code", { event: "error", jobId: "preview-1", message: "cancelled" }],
     ["rejected.jobId", { event: "rejected", jobId: null, code: "no_such_job", message: "No render with that id." }],
     ["started.jobId", { event: "started" }],
+    ["worker_exited.exitCode", { event: "worker_exited", jobId: null, message: "The worker stopped." }],
   ])("names %s in a malformed event", (field, event) => {
     expect(failingField(() => parseWorkerEvent(event))).toBe(field);
   });

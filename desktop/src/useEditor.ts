@@ -1,24 +1,41 @@
-import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { derivedStarts } from "./format";
 import type { ExportProfile } from "./exportProfile";
 import {
-  armExportCancel,
+  abandonPreview,
+  abortExport,
   beginExport,
   beginPreview,
+  clearExportResult,
   createHandshake,
-  markExportSent,
+  loaded,
+  markStale,
+  openReset,
   receive,
   requestCancel,
+  requestExport,
+  withNote,
+  workerUnavailable,
   type Handshake,
 } from "./jobSession";
 import { asString, fieldsOf } from "./parse";
 import { patchBeat } from "./playback";
-import { parseEditorState, parseWorkerEvent, type Edit, type EditorState, type WorkerEvent } from "./types";
-import { errorMessage, invokeWorker, WorkerFailure, WorkerQueue, WorkerRefusal } from "./workerQueue";
+import {
+  parseEditorState,
+  parseWorkerEvent,
+  type Edit,
+  type EditorState,
+  type ProjectDocument,
+  type WorkerEvent,
+} from "./types";
+import { errorMessage, invokeWorker, WorkerQueue, WorkerRefusal } from "./workerQueue";
 
-const PREVIEW_DEBOUNCE_MS = 300;
+export const PREVIEW_DEBOUNCE_MS = 300;
+
+const EXPORT_RUNNING = "An export is already running.";
+const RESTART_NOTE = "The worker restarted. The document was reloaded from disk and undo history was cleared.";
 
 /** Edits whose refusal is shown under the expression field. */
 const FIELD_EDITS: ReadonlySet<Edit["op"]> = new Set(["set_expression", "set_curve_component", "set_resolution"]);
@@ -39,7 +56,7 @@ export function useEditor() {
   const [state, setState] = useState<EditorState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fieldError, setFieldError] = useState<string | null>(null);
-  const [status, setStatus] = useState("Starting");
+  const [handshake, setHandshake] = useState(createHandshake);
   const [selection, setSelection] = useState<Selection>({ kind: "none" });
   const [drafts, setDrafts] = useState<Record<string, number>>({});
   const [playhead, setPlayhead] = useState(0);
@@ -48,25 +65,18 @@ export function useEditor() {
   const [codeText, setCodeText] = useState("");
   const [noticesOpen, setNoticesOpen] = useState(false);
   const [presetOpen, setPresetOpen] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [exportLabel, setExportLabel] = useState("Export");
-  const [exportNote, setExportNote] = useState<string | null>(null);
-  const [exportPath, setExportPath] = useState<string | null>(null);
-  const [rendering, setRendering] = useState(false);
   const [queue] = useState(
     () => new WorkerQueue({ report: (reason) => setError(errorMessage(reason)), resync: refreshState }),
   );
-  const jobs = useRef<Handshake>(createHandshake());
-  const armingExport = useRef(false);
+  const jobs = useRef(handshake);
+  /** The last applied state reply. Queued tasks read it before React has rendered it. */
+  const applied = useRef<EditorState | null>(null);
+  /** The worker exited, so the next get_state is the C8.6 resync. */
+  const restarted = useRef(false);
   const notedReady = useRef(false);
+  /** Bumped by every schedulePreview, so a later one supersedes a preview task that has not recorded its id. */
   const epoch = useRef(0);
   const debounce = useRef<number | null>(null);
-  const stateRef = useRef<EditorState | null>(null);
-  const projectPath = useRef<string | null>(null);
-
-  useLayoutEffect(() => {
-    stateRef.current = state;
-  }, [state]);
 
   const onWorkerLine = useEffectEvent((payload: unknown) => {
     try {
@@ -123,30 +133,53 @@ export function useEditor() {
     try {
       await invokeWorker("worker_status");
     } catch (reason: unknown) {
-      setStatus("Worker unavailable");
+      publish(workerUnavailable(jobs.current));
       throw reason;
     }
   }
 
+  /**
+   * Loads the worker's state: at startup, after a preview, and as the queue's single-flight resync. The first load
+   * after the worker exited also clears the drafts, drops a selection that is gone and shows the restart note. On
+   * another folder the Open reset does that instead, and no note is shown (C8.6). No preview follows (Q5).
+   */
   async function refreshState(): Promise<void> {
-    applyState(parseEditorState(await invokeWorker("get_state")));
-    setStatus((current) => (current === "Starting" ? "Ready" : current));
+    const restart = restarted.current;
+    restarted.current = false;
+    const next = parseEditorState(await invokeWorker("get_state"));
+    const sameProject = applied.current?.projectPath === next.projectPath;
+    applyState(next);
+    publish(loaded(jobs.current));
+    if (restart && sameProject) {
+      setDrafts({});
+      setSelection((current) => (selectionIn(current, next.document) ? current : { kind: "none" }));
+      publish(withNote(jobs.current, RESTART_NOTE));
+    }
   }
 
   /** Applies a state reply. A state for another folder, such as a late Open reply, runs the Open reset (C9.2). */
   function applyState(next: EditorState): void {
-    if (projectPath.current !== null && projectPath.current !== next.projectPath) {
+    if (applied.current !== null && applied.current.projectPath !== next.projectPath) {
       resetView();
     }
-    projectPath.current = next.projectPath;
+    applied.current = next;
     setState(next);
   }
 
-  /** Applies the reply of Open or Sample, which always runs the Open reset. */
+  /** Applies an edit reply. An edit that changed the document overtakes the current preview (C9.2). */
+  function applyEdit(next: EditorState): void {
+    applyState(next);
+    if (next.changed !== false) {
+      publish(markStale(jobs.current));
+    }
+  }
+
+  /** Applies the reply of Open or Sample: the Open reset, then a preview (C7.5). */
   function applyOpened(next: EditorState): void {
     resetView();
     applyState(next);
     setError(null);
+    schedulePreview();
   }
 
   /** The Open reset (C9.2). */
@@ -157,51 +190,53 @@ export function useEditor() {
     setPlaying(false);
     setCodeOpen(false);
     setFieldError(null);
-    jobs.current = { ...jobs.current, exportPath: null, exportNote: null };
-    setExportPath(null);
-    setExportNote(null);
+    publish(openReset(jobs.current));
   }
 
   function publish(next: Handshake): void {
     jobs.current = next;
-    setStatus(next.status);
-    setRendering(next.rendering);
-    setExporting(next.exporting);
-    setExportLabel(next.exportLabel);
-    setExportNote(next.exportNote);
-    setExportPath(next.exportPath);
-    if (next.error) {
-      setError(next.error);
-    }
+    setHandshake(next);
   }
 
   function onWorkerEvent(message: WorkerEvent): void {
     if (message.event === "ready") {
       setReady(true);
     }
-    const previewDone = message.event === "done" && message.jobId === jobs.current.previewJobId;
     const step = receive(jobs.current, message);
     publish(step.session);
-    applyBeats(step.applied);
-    if (previewDone) {
-      void queue.enqueue(refreshState);
+    if (step.failure) {
+      setError(step.failure.message);
+    }
+    const beat = step.beat;
+    if (beat) {
+      setState((current) => patchBeat(current, beat.beatIndex, beat.path));
+    }
+    switch (step.next) {
+      case "refresh":
+        void queue.enqueue(refreshState);
+        break;
+      case "preview":
+        schedulePreview();
+        break;
+      case "resync":
+        restarted.current = true;
+        queue.resync();
+        break;
+      case null:
+        break;
     }
   }
 
-  function applyBeats(events: WorkerEvent[]): void {
-    for (const event of events) {
-      if (event.event === "beat_ready") {
-        setState((current) => patchBeat(current, event.beatIndex, event.path));
-      }
-    }
-  }
-
+  /** Schedules a preview of the applied state after the debounce. A scene with no beats gets none (C7.5). */
   function schedulePreview(): void {
     epoch.current += 1;
     const token = epoch.current;
-    jobs.current = { ...jobs.current, epoch: token };
     if (debounce.current !== null) {
       window.clearTimeout(debounce.current);
+      debounce.current = null;
+    }
+    if ((applied.current?.document.scene.beats ?? []).length === 0) {
+      return;
     }
     debounce.current = window.setTimeout(() => {
       debounce.current = null;
@@ -218,18 +253,12 @@ export function useEditor() {
     if (token !== epoch.current) {
       return;
     }
-    const step = beginPreview(jobs.current, jobId, token);
-    jobs.current = step.session;
-    setStatus(step.session.status);
-    setRendering(step.session.rendering);
-    applyBeats(step.applied);
+    publish(beginPreview(jobs.current, jobId));
     try {
       await invokeWorker("render_preview", { jobId });
     } catch (reason: unknown) {
-      if (reason instanceof WorkerFailure) {
-        // A failed send ends the preview as if its terminal line were this error (C7.4).
-        onWorkerEvent({ event: "error", jobId, code: reason.code, message: reason.message, details: reason.details });
-      }
+      // A failed send ends the preview as if its terminal line were this error (C7.4); the queue shows the banner.
+      publish(abandonPreview(jobs.current, jobId));
       throw reason;
     }
   }
@@ -238,13 +267,14 @@ export function useEditor() {
     return queue.enqueue(async () => {
       try {
         const next = parseEditorState(await invokeWorker("edit_document", { edit }));
-        applyState(next);
+        applyEdit(next);
         setError(null);
         setFieldError(null);
         if (next.focus?.beatId) {
           setSelection({ kind: "beat", id: next.focus.beatId });
         }
-        if (preview) {
+        // An edit that changed nothing gets no preview (D08).
+        if (preview && next.changed !== false) {
           schedulePreview();
         }
       } catch (reason: unknown) {
@@ -264,107 +294,91 @@ export function useEditor() {
     return runHistory("redo_document");
   }
 
+  /** Undo and redo overtake the current preview and start none (spec §2). */
   function runHistory(command: "undo_document" | "redo_document"): Promise<void> {
     return queue.enqueue(async () => {
       applyState(parseEditorState(await invokeWorker(command)));
+      publish(markStale(jobs.current));
       setError(null);
       setDrafts({});
     });
   }
 
   function onExport(): void {
-    if (jobs.current.exporting || armingExport.current) {
-      setExportNote("An export is already running.");
+    if (jobs.current.exporting) {
+      publish(withNote(jobs.current, EXPORT_RUNNING));
       return;
     }
-    setExportNote(null);
+    publish(withNote(jobs.current, null));
     setPresetOpen(true);
   }
 
-  function onStartExport(profile: ExportProfile): void {
-    if (jobs.current.exporting || armingExport.current) {
-      setExportNote("An export is already running.");
+  /** The Export click: "Rendering export" at once, then the Export task. Re-export passes `force` (D56). */
+  function onStartExport(profile: ExportProfile, force: boolean): void {
+    if (jobs.current.exporting) {
+      publish(withNote(jobs.current, EXPORT_RUNNING));
       return;
     }
-    armingExport.current = true;
-    setExportLabel("Rendering export");
-    setExporting(true);
-    setExportNote(null);
+    publish(requestExport(jobs.current));
     setError(null);
-    setStatus("Rendering export");
     setPresetOpen(false);
-    const edit: Edit = {
-      op: "set_export_profile",
-      format: profile.format,
-      width: profile.width,
-      height: profile.height,
-      fps: profile.fps,
-      transparent: profile.transparent,
-    };
-    void queue.enqueue(() => runExport(edit));
+    void queue.enqueue(() => runExport(profile, force));
   }
 
-  /** The Export task (C9.2): reserve an id, save the profile, then send the export unless Cancel came first. */
-  async function runExport(edit: Edit): Promise<void> {
+  /**
+   * The Export task (C9.2): record the id, save the profile (a no-op when it is unchanged, F168), then send the export.
+   * Cancel export pressed before the send stops the task with "Cancelled"; a refused or failed step stops it with
+   * "Ready". After worker_exited has ended the export (C8.6), the task stops without sending anything more.
+   */
+  async function runExport(profile: ExportProfile, force: boolean): Promise<void> {
     try {
       const jobId = await invoke<string>("reserve_job_id", { prefix: "export" });
-      const begun = beginExport(jobs.current, jobId);
-      publish(begun.session);
-      applyBeats(begun.applied);
-      if (!begun.session.exporting) {
-        armingExport.current = false;
+      if (!jobs.current.exporting) {
         return;
       }
-      applyState(parseEditorState(await invokeWorker("edit_document", { edit })));
-      if (jobs.current.pendingCancel) {
-        stopExport("Cancelled");
+      publish(beginExport(jobs.current, jobId));
+      if (!jobs.current.cancelRequested) {
+        const edit: Edit = { op: "set_export_profile", ...profile };
+        applyEdit(parseEditorState(await invokeWorker("edit_document", { edit })));
+      }
+      if (jobs.current.exportJobId !== jobId) {
         return;
       }
-      await invokeWorker("export_movie", { jobId });
-      const sent = markExportSent(jobs.current);
-      jobs.current = sent.session;
-      armingExport.current = false;
-      if (sent.cancelJobId) {
-        await invokeWorker("cancel_render", { jobId: sent.cancelJobId });
+      if (jobs.current.cancelRequested) {
+        publish(abortExport(jobs.current, "Cancelled"));
+        return;
       }
+      await invokeWorker("export_movie", { jobId, force });
     } catch (reason: unknown) {
-      stopExport("Ready");
+      publish(abortExport(jobs.current, "Ready"));
       throw reason;
     }
   }
 
-  function stopExport(status: string): void {
-    armingExport.current = false;
-    publish({
-      ...jobs.current,
-      exportJobId: null,
-      exportCommandSent: false,
-      pendingCancel: false,
-      exporting: false,
-      exportLabel: "Export",
-      status,
-    });
-  }
-
+  /**
+   * Cancel export: marks the cancel as the user's and queues the Cancel task. The queue runs it after the Export task,
+   * so an export id that is still current has been sent; otherwise the Export task has already stopped (C9.2).
+   */
   function onCancelExport(): void {
-    if (armingExport.current && jobs.current.exportJobId === null) {
-      jobs.current = armExportCancel(jobs.current);
+    if (!jobs.current.exporting || jobs.current.cancelRequested) {
       return;
     }
-    const step = requestCancel(jobs.current);
-    jobs.current = step.session;
-    const jobId = step.cancelJobId;
-    if (jobId !== null) {
-      void queue.enqueue(() => invokeWorker("cancel_render", { jobId }));
-    }
+    publish(requestCancel(jobs.current));
+    void queue.enqueue(async () => {
+      const jobId = jobs.current.exportJobId;
+      if (jobId !== null) {
+        await invokeWorker("cancel_render", { jobId });
+      }
+    });
   }
 
   function onClearCache(): Promise<void> {
     return queue.enqueue(async () => {
       const next = parseEditorState(await invokeWorker("clear_cache"));
       applyState(next);
+      publish(clearExportResult(jobs.current));
       setError(next.warning?.message ?? null);
-      setExportPath(null);
+      schedulePreview();
     });
   }
 
@@ -396,7 +410,7 @@ export function useEditor() {
         return;
       }
       const read = fieldsOf(reply, "export_code_dialog");
-      setExportNote(`Code exported to ${read("path", asString)}`);
+      publish(withNote(jobs.current, `Code exported to ${read("path", asString)}`));
       setError(null);
     });
   }
@@ -415,7 +429,7 @@ export function useEditor() {
   }
 
   function onCommitDuration(beatId: string, duration: number): void {
-    const beat = stateRef.current?.document.scene.beats.find((item) => item.id === beatId);
+    const beat = applied.current?.document.scene.beats.find((item) => item.id === beatId);
     setDrafts((current) => {
       const next = { ...current };
       delete next[beatId];
@@ -440,7 +454,7 @@ export function useEditor() {
     state,
     error,
     fieldError,
-    status,
+    status: handshake.status,
     selection,
     setSelection,
     drafts,
@@ -455,11 +469,9 @@ export function useEditor() {
     setNoticesOpen,
     presetOpen,
     setPresetOpen,
-    exporting,
-    exportLabel,
-    exportNote,
-    exportPath,
-    rendering,
+    exporting: handshake.exporting,
+    note: handshake.note,
+    exportPath: handshake.exportPath,
     starts,
     total,
     commit,
@@ -477,4 +489,16 @@ export function useEditor() {
     onDraftDuration,
     onCommitDuration,
   };
+}
+
+/** Whether `document` still holds the selected beat or object. */
+function selectionIn(selection: Selection, document: ProjectDocument): boolean {
+  switch (selection.kind) {
+    case "none":
+      return true;
+    case "beat":
+      return document.scene.beats.some((beat) => beat.id === selection.id);
+    case "object":
+      return document.scene.objects.some((object) => object.id === selection.id);
+  }
 }

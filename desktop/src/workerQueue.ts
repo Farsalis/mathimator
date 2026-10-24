@@ -98,7 +98,7 @@ type Task = () => Promise<unknown>;
 /**
  * The one ordered queue of worker tasks (D20, C9.2). Tasks run one at a time in call order, so at most one worker
  * request is outstanding and each task applies its results before the next one starts. A failed task is reported
- * and never blocks later ones. A timeout also queues the `get_state` resync, at most one at a time (F164).
+ * and never blocks later ones. A timeout also queues the `get_state` resync, at most one queued at a time (F164).
  */
 export class WorkerQueue {
   private tail: Promise<void> = Promise.resolve();
@@ -116,19 +116,19 @@ export class WorkerQueue {
     });
   }
 
-  /** Queues the resync unless one is already queued or running. A resync that fails is reported, not repeated. */
+  /**
+   * Queues the resync unless one is already queued. A request while it runs queues another, because that run may
+   * fail with the exit that prompted the request (C8.6). A resync that fails is reported, not repeated.
+   */
   resync(): void {
     if (this.resyncQueued) {
       return;
     }
     this.resyncQueued = true;
-    void this.schedule(
-      () =>
-        this.hooks.resync().finally(() => {
-          this.resyncQueued = false;
-        }),
-      this.hooks.report,
-    );
+    void this.schedule(() => {
+      this.resyncQueued = false;
+      return this.hooks.resync();
+    }, this.hooks.report);
   }
 
   private schedule(task: Task, onFailure: (reason: unknown) => void): Promise<void> {

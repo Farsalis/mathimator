@@ -190,6 +190,26 @@ describe("WorkerQueue", () => {
     expect(report.mock.calls.map(([reason]) => errorMessage(reason))).toEqual([TIMEOUT_TEXT, TIMEOUT_TEXT]);
   });
 
+  it("queues one more resync for requests made while a resync runs", async () => {
+    const first = deferred();
+    invokeMock.mockReturnValueOnce(first.promise).mockResolvedValue(STATE);
+    const queue = new WorkerQueue({
+      report: vi.fn(),
+      resync: async () => {
+        await invokeWorker("get_state");
+      },
+    });
+
+    queue.resync();
+    await flush();
+    queue.resync();
+    queue.resync();
+    first.resolve(STATE);
+    await queue.enqueue(idle);
+
+    expect(callsOf("get_state")).toBe(2);
+  });
+
   it("does not repeat a resync that times out itself", async () => {
     invokeMock.mockRejectedValue(TIMEOUT);
     const report = vi.fn();

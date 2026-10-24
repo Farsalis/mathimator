@@ -6,8 +6,8 @@ interface TopBarProps {
   ready: boolean;
   canUndo: boolean;
   canRedo: boolean;
-  canExport: boolean;
-  exportLabel: string;
+  /** An export runs: the Export button says so, and Open and Sample are disabled (D22). */
+  exporting: boolean;
   onRename: (name: string) => void;
   onOpen: () => void;
   onAdd: (kind: AddKind) => void;
@@ -25,8 +25,7 @@ export function TopBar({
   ready,
   canUndo,
   canRedo,
-  canExport,
-  exportLabel,
+  exporting,
   onRename,
   onOpen,
   onAdd,
@@ -70,7 +69,7 @@ export function TopBar({
         }}
       />
       <div className="top-actions">
-        <button type="button" data-testid="open-button" onClick={onOpen} disabled={!ready}>
+        <button type="button" data-testid="open-button" onClick={onOpen} disabled={!ready || exporting}>
           Open
         </button>
         <AddMenu disabled={!ready} onAdd={onAdd} />
@@ -80,8 +79,8 @@ export function TopBar({
         <button type="button" data-testid="redo-button" onClick={onRedo} disabled={!ready || !canRedo}>
           Redo
         </button>
-        <button type="button" data-testid="export-button" onClick={onExport} disabled={!ready || !canExport}>
-          {exportLabel}
+        <button type="button" data-testid="export-button" onClick={onExport} disabled={!ready}>
+          {exporting ? "Rendering export" : "Export"}
         </button>
         <button type="button" data-testid="view-code-button" onClick={onViewCode} disabled={!ready}>
           View code
@@ -89,7 +88,7 @@ export function TopBar({
         <button type="button" data-testid="notices-button" onClick={onNotices}>
           Notices
         </button>
-        <button type="button" data-testid="sample-button" onClick={onOpenSample} disabled={!ready}>
+        <button type="button" data-testid="sample-button" onClick={onOpenSample} disabled={!ready || exporting}>
           Sample
         </button>
         <button type="button" data-testid="clear-cache-button" onClick={onClearCache} disabled={!ready}>

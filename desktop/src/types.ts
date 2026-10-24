@@ -115,7 +115,9 @@ export type WorkerEvent =
   | { event: "beat_ready"; jobId: string; beatIndex: number; path: string }
   | { event: "done"; jobId: string; path: string; current?: boolean }
   | { event: "error"; jobId: string | null; code: string; message: string; details?: string }
-  | { event: "rejected"; jobId: string; code: string; message: string; field?: string };
+  | { event: "rejected"; jobId: string; code: string; message: string; field?: string }
+  /** The shell's line when the worker process ended without being asked to (C8.6). */
+  | { event: "worker_exited"; message: string; exitCode: number | null };
 
 export type Edit =
   | { op: "set_project_name"; name: string }
@@ -231,6 +233,12 @@ export function parseWorkerEvent(value: unknown): WorkerEvent | null {
         code: read("code", asString),
         message: read("message", asString),
         field: read("field", optional(asString)),
+      };
+    case "worker_exited":
+      return {
+        event: "worker_exited",
+        message: read("message", asString),
+        exitCode: read("exitCode", nullable(asInteger)),
       };
     default:
       return null;

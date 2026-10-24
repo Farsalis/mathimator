@@ -58,8 +58,7 @@ export function App() {
         ready={editor.ready && document !== null}
         canUndo={editor.state?.derived.canUndo === true}
         canRedo={editor.state?.derived.canRedo === true}
-        canExport={editor.ready}
-        exportLabel={editor.exportLabel}
+        exporting={editor.exporting}
         onRename={(name) => void editor.commit({ op: "set_project_name", name }, false)}
         onOpen={() => void editor.onOpen()}
         onAdd={onAdd}
@@ -86,9 +85,9 @@ export function App() {
           {editor.error}
         </p>
       ) : null}
-      {editor.exportNote ? (
+      {editor.note ? (
         <p className="export-note" data-testid="export-note">
-          {editor.exportNote}
+          {editor.note}
         </p>
       ) : null}
       <PreviewStage
