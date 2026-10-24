@@ -287,14 +287,17 @@ if (-not (Test-Path $TlmgrPerl) -or -not (Test-Path (Join-Path $tinytexRoot $Tlm
     throw "tlmgr.pl was not found under $tinytexRoot"
 }
 
-function Invoke-Tlmgr([string[]]$CommandArgs) {
+# Runs $Action in the environment tlmgr.bat sets up: tlperl's modules, tlperl
+# and the TeX binaries (tlmgr needs kpsewhich) first on PATH, and the TinyTeX
+# root as the working directory.
+function Invoke-InTlmgrEnvironment([scriptblock]$Action) {
     $previousPerl = $env:PERL5LIB
     $previousPath = $env:PATH
     $env:PERL5LIB = Join-Path $tinytexRoot "tlpkg\tlperl\lib"
     $env:PATH = "$(Join-Path $tinytexRoot 'tlpkg\tlperl\bin');$TinytexBin;$previousPath"
     Push-Location $tinytexRoot
     try {
-        return Invoke-Captured $TlmgrPerl (@($TlmgrPl) + $CommandArgs)
+        return & $Action
     } finally {
         Pop-Location
         if ([string]::IsNullOrEmpty($previousPerl)) {
@@ -304,6 +307,10 @@ function Invoke-Tlmgr([string[]]$CommandArgs) {
         }
         $env:PATH = $previousPath
     }
+}
+
+function Invoke-Tlmgr([string[]]$CommandArgs) {
+    return Invoke-InTlmgrEnvironment { Invoke-Captured $TlmgrPerl (@($TlmgrPl) + $CommandArgs) }
 }
 
 function Assert-Tlmgr([string[]]$CommandArgs) {
@@ -316,11 +323,48 @@ function Assert-Tlmgr([string[]]$CommandArgs) {
     }
 }
 
+# Windows cannot replace tlmgr's own files while it runs, so `update --self`
+# only stages the new texlive.infra and writes temp\updater-w32. tlmgr.bat runs
+# that updater once perl exits; calling perl directly skips it, and the next
+# install then refuses with "tlmgr itself needs to be updated". Run the staged
+# updater the way tlmgr.bat does, but keep its exit code: the updater ends with
+# `goto :eof`, which drops its errorlevel under `cmd /c` unless it is `call`ed.
+# A failed update can leave the tree half replaced, so it also drops the stamp
+# and the next build extracts TinyTeX afresh.
+function Update-TlmgrSelf {
+    $updater = Join-Path $tinytexRoot "temp\updater-w32"
+    $batch = "$updater.bat"
+    # A failed earlier build can leave one behind; tlmgr.bat deletes it too.
+    foreach ($stale in @($updater, $batch)) {
+        if (Test-Path $stale) { Remove-Item -Force $stale }
+    }
+    Assert-Tlmgr @("update", "--self")
+    if (-not (Test-Path $updater)) {
+        return
+    }
+    Move-Item -Force $updater $batch
+    Write-Log "running the staged tlmgr self-update"
+    Invoke-InTlmgrEnvironment { & cmd.exe /d /c call $batch }
+    $code = $LASTEXITCODE
+    Remove-Item -Force $batch
+    if ($code -ne 0) {
+        Remove-Item -Force $tinytexStamp
+        $log = Join-Path $tinytexRoot "temp\update-self.log"
+        if (Test-Path $log) { Get-Content $log | ForEach-Object { Write-Log $_ } }
+        throw "tlmgr self-update exited $code; the next build extracts TinyTeX again"
+    }
+    Assert-Tlmgr @("update", "--self")
+    if (Test-Path $updater) {
+        Remove-Item -Force $tinytexStamp
+        throw "tlmgr is still out of date after its self-update; the next build extracts TinyTeX again"
+    }
+}
+
 # A rerun finds the disabled repository from the last build, so point tlmgr at
 # the pinned snapshot before anything reaches a repository.
 Assert-Tlmgr @("option", "repository", $TlnetRepository)
 Write-Log "tlmgr update --self"
-Assert-Tlmgr @("update", "--self")
+Update-TlmgrSelf
 $latexExe = Join-Path $TinytexBin "latex.exe"
 if (-not (Test-Path $latexExe)) {
     Assert-Tlmgr @("install", "latex-bin", "latex")
