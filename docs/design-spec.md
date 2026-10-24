@@ -543,7 +543,7 @@ The header, seed, and imports match Journey A. Degrees in the document are conve
 
 The shell starts the supervisor and the Typst processes. The supervisor starts Manim.
 
-The **supervisor** is a long-lived Python sidecar on stdio. It does not import Manim or PyAV. It reads `project.json`, writes `scene.py`, spawns the Manim process, watches the partial-movie directory, and forwards events. `render_frame` is a separate short-lived helper so PyAV stays out of the supervisor. If the Manim process crashes, including a native Cairo crash, the supervisor emits an error and stays alive. The UI shows the error and keeps the last good frames. The shell restarts a dead supervisor and does not silently retry the failed job.
+The **supervisor** is a long-lived Python sidecar on stdio. It does not import Manim or PyAV. It reads `project.json`, writes `scene.py`, spawns the Manim process, watches the partial-movie directory, and forwards events. Before each render it deletes and recreates `.mathimator/codegen/`, so the folder Manim imports `scene.py` from holds nothing else: a shared project folder cannot plant bytecode or a module there. `render_frame` is a separate short-lived helper so PyAV stays out of the supervisor. If the Manim process crashes, including a native Cairo crash, the supervisor emits an error and stays alive. The UI shows the error and keeps the last good frames. The shell restarts a dead supervisor and does not silently retry the failed job.
 
 The **Manim process** is `<python> -m manim render ...` as specified in section 5. Manim's config is process-global, so every render is a new interpreter. One Manim process at a time.
 
@@ -566,6 +566,10 @@ Stdio carries one UTF-8 JSON object per line.
 Events are `ready`, `beat_ready` (beat index and partial-movie path), `done` (output path), and `error`. The UI ignores events whose job id is not the current job.
 
 Dirty beats are a suffix of the timeline. Before a job, the supervisor copies those beats' current partials into `cache/last-good/` and snapshots `partial_movie_files/MainScene` for this job's quality folder. Manim finishes one beat before the next. Each new or replaced partial, in completion order, belongs to the next dirty beat. The supervisor writes a preview index: beat id, derived start, duration, partial path, and whether that beat is fresh. `render_frame` reads that index from a short-lived helper process, so the supervisor does not import PyAV. Scrub does not call `render_frame`. Phase 1 checks that a full render yields 8 partials in beat order, and that changing the last beat leaves the first 7 hashes unchanged.
+
+Manim reuses any partial movie that exists, so a cut-off partial would break every later render of its beat. The supervisor records a partial in the preview index, or marks its beat fresh, only when its container is complete. An MP4 or MOV is complete when its top-level boxes add up to exactly the file length, none has size 0 (the placeholder FFmpeg fills in when it closes a file), and one of them is `moov`. A WebM is complete when an EBML header is followed by top-level elements of known size that add up to exactly the file length, one of them a Segment. The check uses the standard library only. Before each render the supervisor deletes the incomplete partials in this job's quality folder, so those beats render again. A render that exits 0 after using an incomplete partial is an error: that partial is deleted, in whichever quality folder it lies, nothing is published, and the next render redoes its beat. A PNG-sequence export writes no partials, so it reads no segment list.
+
+Before it starts Manim, the supervisor writes `.mathimator/cache/manim-run.json` with the start time, and it removes the file when the run ends, whatever the outcome. A run that is cancelled or exits non-zero deletes the media it wrote, except the complete partials in its quality folder and a movie Manim reported ready. A quit, a crash or a kill can leave the marker behind. Whenever a folder is bound (startup, Open) while the marker exists and no render of that folder is running, the supervisor deletes the media written since that start time, then the marker. A marker it cannot read counts from its own modification time.
 
 ### Profiles
 
@@ -673,6 +677,8 @@ Pass when all of these hold:
 | GIF | 854×480, 15 fps | Unavailable. "GIF cannot store an alpha channel." Manim can write a one-bit transparent GIF; v1 does not offer it. | `--format gif` |
 | WebM | 1920×1080, 30 fps | Optional, including the background. | `--format webm`, plus `--transparent` when the control is on |
 | PNG sequence | 1920×1080, 30 fps | Optional, including the background. One PNG per frame. | `--format png-sequence`, plus `--transparent` when the control is on |
+
+Manim writes every PNG sequence to one folder, `images/<scene>/MainScene`, and never empties it. A PNG-sequence export deletes that folder before Manim starts; if it cannot, the export fails. It publishes the frames only when their number equals the count Manim reports, which guards against stale frames left in the folder.
 
 Resolutions are 854×480, 1280×720, and 1920×1080. Frame rates are 15, 30, and 60. The 3 minute budget applies to `reference-60` at 1920×1080, 30 fps, MP4, cold export cache. Other combinations must finish and match their profile; they do not inherit that time limit.
 

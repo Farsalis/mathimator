@@ -5,7 +5,9 @@ Manim 0.22 logs each finished segment as
 ``Animation N : Using cached data (hash : <digest>)``. With one encoder in
 flight those lines are the beat order. The supervisor also reads
 ``partial_movie_file_list.txt`` when the render ends, which is the segment
-order Manim concatenated.
+order Manim concatenated. A partial counts only when its container is
+complete (``clip_check``). The first one that is not stops the beat order and
+is kept in ``incomplete``.
 """
 
 from __future__ import annotations
@@ -13,6 +15,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from mathimator_worker.clip_check import clip_is_complete
 
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _WRITTEN = re.compile(
@@ -24,7 +28,9 @@ _CACHED = re.compile(
     re.IGNORECASE,
 )
 _READY = re.compile(r"File ready at\s+'([^']+)'", re.IGNORECASE)
-_IMAGES = re.compile(r"(\d+)\s+images ready at\s+(\S.*?)\s*$", re.IGNORECASE)
+_IMAGES = re.compile(r"\d+\s+images ready at\s+(\S.*?)\s*$", re.IGNORECASE)
+# Rich wraps the folder over several lines, but the count stays beside "images".
+_FRAMES = re.compile(r"(\d+)\s+images ready at", re.IGNORECASE)
 
 
 @dataclass
@@ -32,6 +38,8 @@ class ManimProgress:
     media_dir: Path
     beats: dict[int, Path] = field(default_factory=dict)
     output_path: Path | None = None
+    frame_count: int | None = None
+    incomplete: list[Path] = field(default_factory=list)
     _buffer: str = field(default="", init=False, repr=False)
 
     def feed(self, text: str) -> list[tuple[int, Path]]:
@@ -44,7 +52,9 @@ class ManimProgress:
                 continue
             self.output_path = candidate
         for match in _IMAGES.finditer(self._buffer):
-            self.output_path = clean_logged_path(match.group(2))
+            self.output_path = clean_logged_path(match.group(1))
+        for match in _FRAMES.finditer(self._buffer):
+            self.frame_count = int(match.group(1))
         return self._take_in_order(found)
 
     def flush_manifest(self) -> list[tuple[int, Path]]:
@@ -78,9 +88,19 @@ class ManimProgress:
                 break
             if "partial_movie_files" not in path.parts:
                 break
+            if not self._complete(path):
+                break
             self.beats[index] = path
             events.append((index, path))
         return events
+
+    def _complete(self, path: Path) -> bool:
+        if path in self.incomplete:
+            return False
+        if clip_is_complete(path):
+            return True
+        self.incomplete.append(path)
+        return False
 
 
 def clean_logged_path(raw: str) -> Path:

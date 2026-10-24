@@ -14,7 +14,9 @@ and never start one. Scrub does not start Manim.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -27,6 +29,7 @@ from pathlib import Path
 from typing import IO
 
 from mathimator_worker.argv import build_manim_argv
+from mathimator_worker.clip_check import SEGMENT_SUFFIXES, ClipChecker
 from mathimator_worker.codegen import CodegenError, generate
 from mathimator_worker.document import (
     MANIM_VERSION,
@@ -62,11 +65,18 @@ class _Job:
     project_dir: Path | None = None
     scene_path: Path | None = None
     media_dir: Path | None = None
+    run_marker: Path | None = None
     argv: list[str] = field(default_factory=list)
     quality: str = ""
     captured: Project | None = None
     capture_stamp: str | None = None
     capture_keys: list[str] | None = None
+
+    @property
+    def output_format(self) -> str:
+        if self.profile == "export" and self.captured is not None:
+            return self.captured.export_profile.format
+        return "mp4"
 
 
 class Supervisor:
@@ -79,7 +89,9 @@ class Supervisor:
     ) -> None:
         self.python = python
         self.init = init
-        self.project = project
+        # Resolve like _open_project does. Windows may hand over an 8.3 alias
+        # such as C:\Users\JOHNSM~1, and TeX stops reading a path at "~" (G4.1).
+        self.project = project.resolve()
         self._log_override = log_path
         self._log_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -90,9 +102,11 @@ class Supervisor:
         self.session: Session | None = None
         self._index: PreviewIndex | None = None
         self._startup_error: str | None = None
+        self._clips = ClipChecker()
         self._bind_paths()
         self.media_dir.mkdir(parents=True, exist_ok=True)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._sweep_interrupted_run()
         self._load_initial()
         self._warm_process_control()
 
@@ -103,11 +117,22 @@ class Supervisor:
         self.last_good_dir = root / "cache" / "last-good"
         self.rendered_path = root / "cache" / "rendered.json"
         self.index_path = root / "cache" / "preview-index.json"
+        self.run_marker = root / "cache" / "manim-run.json"
         self.project_file = self.project / "project.json"
         if self._log_override is not None:
             self.log_path = self._log_override
         else:
             self.log_path = root / "logs" / "worker.log"
+
+    def _sweep_interrupted_run(self) -> None:
+        """Remove what a Manim run cut off by a quit, a crash or a kill left behind (G1.1)."""
+        started = _marker_start(self.run_marker)
+        if started is None:
+            return
+        self.log(f"sweeping media from an interrupted run started={started}")
+        for path in discard_unfinished_partials(self.media_dir, started, set()):
+            self.log(f"removed unfinished media {path}")
+        self._remove_run_marker(self.run_marker)
 
     def _warm_process_control(self) -> None:
         if sys.platform != "win32":
@@ -328,6 +353,8 @@ class Supervisor:
             self.project = path.resolve()
             self._bind_paths()
             self.media_dir.mkdir(parents=True, exist_ok=True)
+            if not self._render_running_in(self.media_dir):
+                self._sweep_interrupted_run()
             self._startup_error = None
             self._adopt(project)
             payload = self._state_locked(job_id)
@@ -501,9 +528,14 @@ class Supervisor:
 
     def _discard_partials(self, job: _Job, started: float, finished: set[Path]) -> None:
         media = job.media_dir
-        if media is None:
+        scene_path = job.scene_path
+        if media is None or scene_path is None:
             return
-        for path in discard_unfinished_partials(media, started, finished):
+        # The log names MP4 segments only, so keep every complete segment this
+        # run wrote, whatever its container (C14 Q3).
+        segments = _segments(partial_movie_dir(media, scene_path.stem, job.quality))
+        keep = finished | {path for path in segments if self._clips.complete(path)}
+        for path in discard_unfinished_partials(media, started, keep):
             self.log(f"removed unfinished media {path}")
 
     def _release_job(self, job: _Job) -> None:
@@ -578,15 +610,92 @@ class Supervisor:
         with self._state_lock:
             return self._current is job and not job.cancel.is_set()
 
+    def _render_running_in(self, media_dir: Path) -> bool:
+        with self._state_lock:
+            current = self._current
+            return current is not None and current.thread.is_alive() and current.media_dir == media_dir
+
     def _run_job_inner(self, job: _Job) -> None:
         with self._doc_lock:
             if not self._prepare_job_locked(job):
                 return
             argv = list(job.argv)
+        if not self._clear_stale_media(job):
+            return
         self.log("argv: " + json.dumps(argv))
         if job.cancel.is_set() or not self._still_current(job):
             self._emit_cancelled(job.job_id)
             return
+        marker = job.run_marker
+        assert marker is not None
+        started = time.time()
+        if not self._write_run_marker(job.job_id, marker, started):
+            return
+        try:
+            self._run_manim(job, argv, started)
+        finally:
+            self._remove_run_marker(marker)
+
+    def _clear_stale_media(self, job: _Job) -> bool:
+        """Remove what this render must not reuse. Return False when it cannot start.
+
+        Manim never empties the PNG-sequence folder (F021), and it reuses any
+        partial movie that exists, complete or not (C14 Q3).
+        """
+        media_dir = job.media_dir
+        scene_path = job.scene_path
+        assert media_dir is not None and scene_path is not None
+        if job.output_format == "png_sequence":
+            frames = png_frames_dir(media_dir, scene_path.stem)
+            try:
+                _remove_tree(frames)
+            except OSError as exc:
+                self.emit(
+                    {
+                        "event": "error",
+                        "jobId": job.job_id,
+                        "message": f"could not remove the old PNG frames in {frames}: {exc}",
+                    }
+                )
+                return False
+        self._drop_incomplete_clips(partial_movie_dir(media_dir, scene_path.stem, job.quality))
+        return True
+
+    def _drop_incomplete_clips(self, folder: Path) -> None:
+        for path in _segments(folder):
+            if not self._clips.complete(path):
+                self._remove_clip(path)
+
+    def _remove_clip(self, path: Path) -> bool:
+        """Delete an incomplete clip. Return False when it is still there."""
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            self.log(f"could not remove incomplete clip {path}: {exc}")
+            return False
+        self.log(f"removed incomplete clip {path}")
+        return True
+
+    def _write_run_marker(self, job_id: str, marker: Path, started: float) -> bool:
+        """Record the run before Manim starts, so a later bind can sweep it (G1.1, G1.2)."""
+        temporary = marker.with_suffix(".json.tmp")
+        try:
+            temporary.write_text(json.dumps({"started": started}) + "\n", encoding="utf-8", newline="\n")
+            os.replace(temporary, marker)
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                temporary.unlink(missing_ok=True)
+            self.emit({"event": "error", "jobId": job_id, "message": f"could not write {marker}: {exc}"})
+            return False
+        return True
+
+    def _remove_run_marker(self, marker: Path) -> None:
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError as exc:
+            self.log(f"could not remove {marker}: {exc}")
+
+    def _run_manim(self, job: _Job, argv: list[str], started: float) -> None:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
@@ -607,7 +716,6 @@ class Supervisor:
             startupinfo = None
             creationflags = 0
             start_new_session = True
-        started = time.time()
         try:
             proc = subprocess.Popen(
                 argv,
@@ -698,15 +806,18 @@ class Supervisor:
         stdout_thread.join()
         stderr_thread.join()
 
+        with progress_lock:
+            finished = set(progress.beats.values())
+            if progress.output_path is not None:
+                finished.add(progress.output_path)
         if not self._still_current(job):
-            with progress_lock:
-                finished = set(progress.beats.values())
-                if progress.output_path is not None:
-                    finished.add(progress.output_path)
             self._discard_partials(job, started, finished)
             self._emit_cancelled(job.job_id)
             return
         if return_code != 0:
+            # Manim may have been killed from outside or crashed natively, so
+            # the newest partial can be cut off (G1.1).
+            self._discard_partials(job, started, finished)
             with capture_lock:
                 tail = "".join(captured[-80:])
             self.emit(
@@ -719,7 +830,9 @@ class Supervisor:
             return
 
         with progress_lock:
-            flushed = progress.flush_manifest()
+            # A PNG sequence writes no segments, so any manifest is another render's.
+            flushed = [] if job.output_format == "png_sequence" else progress.flush_manifest()
+            incomplete = list(progress.incomplete)
         for index, path in flushed:
             if not self._still_current(job):
                 self._emit_cancelled(job.job_id)
@@ -733,6 +846,20 @@ class Supervisor:
                     "path": str(path),
                 }
             )
+        if incomplete:
+            # Manim reused or wrote a clip that is cut off, so its output is
+            # suspect. Delete exactly those clips, which may sit in another
+            # quality folder, so the next render redoes their beats.
+            root = media_dir.resolve()
+            left = [
+                path for path in incomplete if not path.resolve().is_relative_to(root) or not self._remove_clip(path)
+            ]
+            if left:
+                message = f"manim used an incomplete clip {left[0]} that could not be removed"
+            else:
+                message = f"manim used an incomplete clip {incomplete[0].name}; it was removed, so render again"
+            self.emit({"event": "error", "jobId": job.job_id, "message": message})
+            return
         output = progress.output_path
         if output is None or not _artifact_ready(output):
             output = self._find_output(job)
@@ -745,6 +872,11 @@ class Supervisor:
                 }
             )
             return
+        if job.output_format == "png_sequence":
+            problem = _frame_count_problem(output, progress.frame_count)
+            if problem is not None:
+                self.emit({"event": "error", "jobId": job.job_id, "message": problem})
+                return
         if not self._still_current(job):
             self._emit_cancelled(job.job_id)
             return
@@ -755,6 +887,7 @@ class Supervisor:
         job.project_dir = self.project
         job.scene_path = self.scene_path
         job.media_dir = self.media_dir
+        job.run_marker = self.run_marker
         self.media_dir.mkdir(parents=True, exist_ok=True)
         if self.session is None:
             if not self.scene_path.is_file():
@@ -788,8 +921,17 @@ class Supervisor:
         except CodegenError as exc:
             self.emit({"event": "error", "jobId": job.job_id, "message": str(exc)})
             return False
-        self.scene_path.parent.mkdir(parents=True, exist_ok=True)
-        self.scene_path.write_text(source, encoding="utf-8", newline="\n")
+        # A shared project folder could carry a planted codegen/__pycache__ or a
+        # module that shadows one Manim imports. Manim imports scene.py from
+        # this folder, so it holds nothing but the scene just written (F170).
+        codegen = self.scene_path.parent
+        try:
+            _remove_tree(codegen)
+            codegen.mkdir(parents=True)
+            self.scene_path.write_text(source, encoding="utf-8", newline="\n")
+        except OSError as exc:
+            self.emit({"event": "error", "jobId": job.job_id, "message": f"could not write {self.scene_path}: {exc}"})
+            return False
         job.captured = load_text(dumps_project(project))
         job.capture_stamp = scene_stamp(project)
         job.capture_keys = beat_cache_keys(project, job.profile)
@@ -893,7 +1035,14 @@ class Supervisor:
     def _publish_export_locked(self, job: _Job, output: Path) -> Path | None:
         captured = job.captured
         project_dir = job.project_dir
-        if captured is None or project_dir is None:
+        media_dir = job.media_dir
+        if captured is None or project_dir is None or media_dir is None:
+            return None
+        # Judge the path below the media folder only, so a user folder named
+        # 480p15 above the project does not look like the preview (G4.9).
+        try:
+            parts = output.resolve().relative_to(media_dir.resolve()).parts
+        except ValueError:
             return None
         fmt = captured.export_profile.format
         file_name = export_artifact_name(fmt)
@@ -903,12 +1052,12 @@ class Supervisor:
                 return None
             # A preview movie lives under 480p15. PNG frames do not, unless a
             # caller hands that folder over by mistake.
-            if "480p15" in output.parts:
+            if "480p15" in parts:
                 return None
         else:
-            if job.quality and job.quality not in output.parts:
+            if job.quality and job.quality not in parts:
                 return None
-            if "480p15" in output.parts and job.quality != "480p15":
+            if "480p15" in parts and job.quality != "480p15":
                 return None
             if not output.is_file():
                 return None
@@ -1002,7 +1151,7 @@ class Supervisor:
             prior = previous.get(beat.id)
             if dirty[index]:
                 candidate = prior.last_good or prior.partial if prior is not None else None
-                last_good = candidate if candidate and Path(candidate).is_file() else None
+                last_good = candidate if candidate and self._clips.complete(Path(candidate)) else None
                 beats.append(
                     IndexBeat(
                         id=beat.id,
@@ -1015,8 +1164,9 @@ class Supervisor:
                     )
                 )
                 continue
+            # Only a complete clip makes its beat fresh (C14 Q3).
             candidate = prior.partial or prior.last_good if prior is not None else None
-            partial = candidate if candidate and Path(candidate).is_file() else None
+            partial = candidate if candidate and self._clips.complete(Path(candidate)) else None
             beats.append(
                 IndexBeat(
                     id=beat.id,
@@ -1102,10 +1252,7 @@ class Supervisor:
     def _find_output(self, job: _Job) -> Path | None:
         if job.scene_path is None or job.media_dir is None or not job.quality:
             return None
-        fmt = "mp4"
-        if job.profile == "export" and job.captured is not None:
-            fmt = job.captured.export_profile.format
-        return find_export_output(job.media_dir, job.scene_path.stem, job.quality, fmt)
+        return find_export_output(job.media_dir, job.scene_path.stem, job.quality, job.output_format)
 
     def _emit_cancelled(self, job_id: str) -> None:
         self.emit({"event": "error", "jobId": job_id, "message": "cancelled"})
@@ -1119,9 +1266,7 @@ def find_export_output(media_dir: Path, scene_stem: str, quality: str, fmt: str)
     A preview MP4 in ``480p15`` is not returned for another format.
     """
     if fmt == "png_sequence":
-        images = media_dir / "images" / scene_stem / "MainScene"
-        if "480p15" in images.parts:
-            return None
+        images = png_frames_dir(media_dir, scene_stem)
         if images.is_dir() and any(images.glob("*.png")):
             return images
         return None
@@ -1140,6 +1285,67 @@ def find_export_output(media_dir: Path, scene_stem: str, quality: str, fmt: str)
         return None
     matches.sort(key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
     return matches[0]
+
+
+def png_frames_dir(media_dir: Path, scene_stem: str) -> Path:
+    """Manim writes every PNG sequence here, whatever its size or frame rate."""
+    return media_dir / "images" / scene_stem / "MainScene"
+
+
+def partial_movie_dir(media_dir: Path, scene_stem: str, quality: str) -> Path:
+    return media_dir / "videos" / scene_stem / quality / "partial_movie_files" / "MainScene"
+
+
+def _segments(folder: Path) -> list[Path]:
+    """The partial movies in ``folder``, which may not exist."""
+    if not folder.is_dir():
+        return []
+    return [path for path in folder.iterdir() if path.suffix.lower() in SEGMENT_SUFFIXES and path.is_file()]
+
+
+def _frame_count_problem(frames: Path, reported: int | None) -> str | None:
+    """Describe why a PNG sequence cannot be published, or return None (F021)."""
+    written = sum(1 for _ in frames.glob("*.png"))
+    if reported is None:
+        return f"manim did not report how many PNG frames it wrote to {frames}"
+    if written != reported:
+        return f"manim reported {reported} PNG frames, but {frames} holds {written}"
+    return None
+
+
+def _marker_start(marker: Path) -> float | None:
+    """Return the start time a run marker records, or None when there is no marker.
+
+    A marker that cannot be read counts from its own mtime, which is just
+    before the run started.
+    """
+    try:
+        raw = json.loads(marker.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, RecursionError):
+        raw = None
+    started = raw.get("started") if isinstance(raw, dict) else None
+    if isinstance(started, (int, float)) and not isinstance(started, bool) and math.isfinite(started):
+        return float(started)
+    try:
+        return marker.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _remove_tree(path: Path) -> None:
+    """Delete a folder that may not exist, retrying for about 0.5 s while Windows reports it in use."""
+    for attempt in range(5):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.1)
 
 
 def _artifact_ready(path: Path) -> bool:

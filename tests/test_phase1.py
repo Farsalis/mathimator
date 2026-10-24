@@ -43,6 +43,7 @@ from tests.support import (
     scene_path,
     sha256_file,
     start_supervisor,
+    write_clip,
 )
 
 PREVIEW_TIMEOUT_S = 60 * 60
@@ -161,8 +162,8 @@ def test_progress_parser_emits_written_partials_in_order(tmp_path: Path) -> None
     partial_dir.mkdir(parents=True)
     first = partial_dir / "aaa.mp4"
     second = partial_dir / "bbb.mp4"
-    first.write_bytes(b"one")
-    second.write_bytes(b"two")
+    write_clip(first)
+    write_clip(second)
     movie = media / "videos" / "reference_60" / "480p15" / "MainScene.mp4"
     movie.parent.mkdir(parents=True, exist_ok=True)
     movie.write_bytes(b"movie")
@@ -184,7 +185,7 @@ def test_progress_parser_resolves_cached_hash(tmp_path: Path) -> None:
     partial_dir.mkdir(parents=True)
     digest = "ab" * 32
     cached = partial_dir / f"{digest}.mp4"
-    cached.write_bytes(b"cached")
+    write_clip(cached)
     progress = ManimProgress(media)
     events = progress.feed(f"Animation 0 : Using cached data (hash : {digest})\n")
     assert events == [(0, cached)]
@@ -197,8 +198,7 @@ def test_progress_parser_reads_manifest_order(tmp_path: Path) -> None:
     files = []
     for index in range(3):
         path = partial_dir / f"part-{index}.mp4"
-        path.write_bytes(f"part-{index}".encode())
-        files.append(path)
+        files.append(write_clip(path))
     manifest = partial_dir / "partial_movie_file_list.txt"
     body = "# This file records the segment order used by Manim.\n" + "".join(
         f"file 'file:{path.as_posix()}'\n" for path in files

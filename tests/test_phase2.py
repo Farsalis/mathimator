@@ -38,6 +38,7 @@ from tests.support import (
     SupervisorClient,
     read_argv,
     start_supervisor,
+    write_clip,
     write_fake_interpreter,
 )
 
@@ -441,7 +442,7 @@ def _install_fresh_index(project: Path) -> None:
     starts = _starts(loaded)
     for index, beat in enumerate(loaded.scene.beats):
         partial = partial_dir / f"partial-{index}.mp4"
-        partial.write_bytes(f"partial-{index}".encode())
+        write_clip(partial)
         beats.append(
             IndexBeat(
                 id=beat.id,

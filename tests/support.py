@@ -1,7 +1,7 @@
 """Helpers shared by every test module.
 
 Repo paths, the render interpreter, the supervisor client, fake interpreters,
-and video probes. ``OUT`` and the scene paths belong to the phase 1 tests.
+minimal complete clips, and video probes. ``OUT`` and the scene paths belong to the phase 1 tests.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import threading
 import time
@@ -78,6 +79,30 @@ def compile_csharp(source: Path, exe: Path) -> Path:
         detail = (completed.stdout + completed.stderr).strip()
         raise RuntimeError(f"csc failed for {exe}: {detail}")
     return exe
+
+
+def iso_box(kind: bytes, payload: bytes = b"") -> bytes:
+    """One ISO media box: a 32-bit size, a four-character type, then the payload."""
+    return struct.pack(">I4s", 8 + len(payload), kind) + payload
+
+
+def ebml_element(element_id: int, payload: bytes) -> bytes:
+    """One EBML element with an 8-byte size field, as FFmpeg writes a WebM Segment."""
+    size = (1 << 56) | len(payload)
+    return element_id.to_bytes((element_id.bit_length() + 7) // 8, "big") + size.to_bytes(8, "big") + payload
+
+
+def complete_clip(suffix: str) -> bytes:
+    """The smallest MP4, MOV or WebM file that the worker's clip check accepts."""
+    if suffix == ".webm":
+        header = ebml_element(0x1A45DFA3, ebml_element(0x4282, b"webm"))
+        return header + ebml_element(0x18538067, ebml_element(0x1F43B675, bytes(32)))
+    return iso_box(b"ftyp", b"isom" + bytes(4)) + iso_box(b"free") + iso_box(b"mdat", bytes(64)) + iso_box(b"moov")
+
+
+def write_clip(path: Path) -> Path:
+    path.write_bytes(complete_clip(path.suffix.lower()))
+    return path
 
 
 def sha256_file(path: Path) -> str:
