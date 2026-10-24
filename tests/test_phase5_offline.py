@@ -1,4 +1,8 @@
-"""Offline proof for the phase 5 bundle. Requires packaging/build-bundle.sh."""
+"""Offline proof for the phase 5 bundle. Requires packaging/build-bundle.sh.
+
+Manim runs with the worker's own command line and environment, in a project's
+codegen folder (D60, D61), with the worker from this checkout.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.support import REPO
+from mathimator_worker.argv import build_manim_argv, manim_environment
+from tests.support import REPO, WORKER
 
 pytestmark = pytest.mark.offline
 
@@ -55,9 +60,8 @@ def test_bundled_runtime_renders_mathtex_with_network_blocked(tmp_path: Path) ->
     tinytex = BUNDLE / str(manifest["tinytexBin"])
     latex = _tool(tinytex, "latex")
     dvisvgm = _tool(tinytex, "dvisvgm")
-    scene = tmp_path / "scene.py"
-    scene.write_text(SCENE, encoding="utf-8")
-    media = tmp_path / "media"
+    codegen = _scene_folder(tmp_path)
+    argv = build_manim_argv(str(python), "preview")
     script = tmp_path / "offline_check.py"
     script.write_text(
         textwrap.dedent(
@@ -89,36 +93,12 @@ def test_bundled_runtime_renders_mathtex_with_network_blocked(tmp_path: Path) ->
             print(imported.stdout.strip())
             if imported.stdout.strip() != "0.22.0":
                 sys.exit("manim pin drifted")
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "manim",
-                    "render",
-                    {str(scene)!r},
-                    "MainScene",
-                    "--renderer",
-                    "cairo",
-                    "--seed",
-                    "1",
-                    "-r",
-                    "854,480",
-                    "--fps",
-                    "15",
-                    "--format",
-                    "mp4",
-                    "--media_dir",
-                    {str(media)!r},
-                    "--progress_bar",
-                    "none",
-                ],
-                check=True,
-            )
+            subprocess.run({argv!r}, cwd={str(codegen)!r}, check=True)
             """
         ),
         encoding="utf-8",
     )
-    env = os.environ.copy()
+    env = manim_environment(os.environ, codegen)
     for key in (
         "TEXINPUTS",
         "TEXMFHOME",
@@ -132,10 +112,8 @@ def test_bundled_runtime_renders_mathtex_with_network_blocked(tmp_path: Path) ->
     ):
         env.pop(key, None)
     env["PATH"] = os.pathsep.join([str(tinytex), "/usr/bin", "/bin"])
-    env["HOME"] = str(tmp_path / "home")
+    env["PYTHONPATH"] = str(WORKER)
     env["PYTHONNOUSERSITE"] = "1"
-    env["PYTHONUNBUFFERED"] = "1"
-    Path(env["HOME"]).mkdir()
     result = subprocess.run(
         ["unshare", "--net", "--map-root-user", "--", str(python), str(script)],
         cwd=tmp_path,
@@ -148,7 +126,7 @@ def test_bundled_runtime_renders_mathtex_with_network_blocked(tmp_path: Path) ->
         raise AssertionError(f"exit {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
     assert "NETWORK_BLOCKED" in result.stdout
     assert "0.22.0" in result.stdout
-    movies = list(media.rglob("MainScene.mp4"))
+    movies = list((codegen.parent / "cache" / "media").rglob("MainScene.mp4"))
     assert movies, result.stdout
     assert movies[0].stat().st_size > 0
 
@@ -165,9 +143,8 @@ def test_windows_bundled_runtime_renders_mathtex_without_user_tex(tmp_path: Path
     tinytex = BUNDLE / str(manifest["tinytexBin"])
     latex = _tool(tinytex, "latex")
     dvisvgm = _tool(tinytex, "dvisvgm")
-    scene = tmp_path / "scene.py"
-    scene.write_text(SCENE, encoding="utf-8", newline="\n")
-    media = tmp_path / "media"
+    codegen = _scene_folder(tmp_path)
+    argv = build_manim_argv(str(python), "preview")
     script = tmp_path / "offline_check.py"
     script.write_text(
         textwrap.dedent(
@@ -198,38 +175,14 @@ def test_windows_bundled_runtime_renders_mathtex_without_user_tex(tmp_path: Path
             print(imported.stdout.strip())
             if imported.stdout.strip() != "0.22.0":
                 sys.exit("manim pin drifted")
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "manim",
-                    "render",
-                    {str(scene)!r},
-                    "MainScene",
-                    "--renderer",
-                    "cairo",
-                    "--seed",
-                    "1",
-                    "-r",
-                    "854,480",
-                    "--fps",
-                    "15",
-                    "--format",
-                    "mp4",
-                    "--media_dir",
-                    {str(media)!r},
-                    "--progress_bar",
-                    "none",
-                ],
-                check=True,
-            )
+            subprocess.run({argv!r}, cwd={str(codegen)!r}, check=True)
             """
         ),
         encoding="utf-8",
         newline="\n",
     )
     system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
-    env = os.environ.copy()
+    env = manim_environment(os.environ, codegen)
     for key in (
         "TEXINPUTS",
         "TEXMFHOME",
@@ -245,10 +198,8 @@ def test_windows_bundled_runtime_renders_mathtex_without_user_tex(tmp_path: Path
     env["PATH"] = os.pathsep.join(
         [str(tinytex), os.path.join(system_root, "System32"), os.path.join(system_root, "SysWOW64")]
     )
+    env["PYTHONPATH"] = str(WORKER)
     env["PYTHONNOUSERSITE"] = "1"
-    env["PYTHONUNBUFFERED"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
     env["HTTP_PROXY"] = "http://127.0.0.1:9"
     env["HTTPS_PROXY"] = "http://127.0.0.1:9"
     env["ALL_PROXY"] = "http://127.0.0.1:9"
@@ -266,9 +217,17 @@ def test_windows_bundled_runtime_renders_mathtex_without_user_tex(tmp_path: Path
     if result.returncode != 0:
         raise AssertionError(f"exit {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
     assert "0.22.0" in result.stdout
-    movies = list(media.rglob("MainScene.mp4"))
+    movies = list((codegen.parent / "cache" / "media").rglob("MainScene.mp4"))
     assert movies, result.stdout
     assert movies[0].stat().st_size > 0
+
+
+def _scene_folder(root: Path) -> Path:
+    """A project's codegen folder holding the test scene, where Manim runs."""
+    codegen = root / "project" / ".mathimator" / "codegen"
+    codegen.mkdir(parents=True)
+    (codegen / "scene.py").write_text(SCENE, encoding="utf-8", newline="\n")
+    return codegen
 
 
 def _manifest() -> dict[str, object]:

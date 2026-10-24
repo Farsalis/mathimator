@@ -14,7 +14,9 @@ The worker is bound to at most one project folder (contract C8). While bound
 it holds the folder's lock (D58), the folder's identity (D57) and the SHA-256
 of project.json as last read or written (D59). A write or a render first
 checks that the folder is still there and that project.json is unchanged on
-disk, and refuses otherwise. Startup never exits on a project problem: the
+disk, and refuses otherwise. A render then refuses a scene that cannot be
+generated, a scene with formulas while TeX is unavailable, and a project path
+Manim cannot use (C7.2). Startup never exits on a project problem: the
 worker stays unbound and says why in ``ready.startupError``. The worker never
 creates a project folder and never writes an empty project.json over a missing
 one.
@@ -54,9 +56,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 
-from mathimator_worker.argv import build_manim_argv, profile_size
+from mathimator_worker.argv import build_manim_argv, manim_environment, profile_size
 from mathimator_worker.clip_check import SEGMENT_SUFFIXES, ClipChecker
-from mathimator_worker.codegen import CodegenError, generate
+from mathimator_worker.codegen import CodegenError, generate, needs_latex
 from mathimator_worker.document import (
     MANIM_VERSION,
     Project,
@@ -72,6 +74,7 @@ from mathimator_worker.document import (
     scene_hash,
 )
 from mathimator_worker.document_error import DocumentError
+from mathimator_worker.manim_paths import manim_root
 from mathimator_worker.preview_index import IndexBeat, PreviewIndex, load_index
 from mathimator_worker.process_group import terminate_process_group, warm_process_table
 from mathimator_worker.progress import ManimProgress, discard_unfinished_partials, file_stamps, written_since
@@ -83,6 +86,7 @@ from mathimator_worker.project_folder import (
     folder_identity,
     make_folders,
     os_reason,
+    remove_file,
     remove_quietly,
     write_atomically,
 )
@@ -139,6 +143,8 @@ class _Job:
     scene_path: Path | None = None
     media_dir: Path | None = None
     run_marker: Path | None = None
+    # The scene's folder, which Manim runs in and takes as its home, through the project's 8.3 alias if TeX needs it.
+    manim_dir: Path | None = None
     argv: list[str] = field(default_factory=list)
     quality: str = ""
     # The binding generation the job started under (C7.1).
@@ -224,6 +230,8 @@ class Supervisor:
         # Why there is no session: the refusal of the startup project.json, or not_a_project in hand-written mode.
         self._startup_error: DocumentError | None = None
         self._handwritten = False
+        # Why formulas cannot render, when the shell found TeX missing or failing its self-test (D31, C14 Q4).
+        self._tex_error = os.environ.get("MATHIMATOR_TEX_ERROR") or None
         self._clips = ClipChecker()
         # The commands of protocol.REQUEST_FIELDS, each answered from its parsed request.
         self._commands: dict[str, Callable[[Request], None]] = {
@@ -377,7 +385,10 @@ class Supervisor:
             self.log(f"event {payload}")
 
     def serve(self) -> None:
-        self.log(f"supervisor listening project={self.project} python={self.python}")
+        latex, dvisvgm = shutil.which("latex"), shutil.which("dvisvgm")
+        self.log(f"supervisor listening project={self.project} python={self.python} latex={latex} dvisvgm={dvisvgm}")
+        if self._tex_error is not None:
+            self.log(f"formulas cannot render: {self._tex_error}")
         try:
             for line in sys.stdin:
                 self.handle_line(line)
@@ -979,6 +990,7 @@ class Supervisor:
             argv = list(job.argv)
         if not self._clear_stale_media(job):
             return
+        self.log(f"cwd: {job.manim_dir}")
         self.log("argv: " + json.dumps(argv))
         if job.cancel.is_set():
             return
@@ -995,11 +1007,21 @@ class Supervisor:
         """Remove what this render must not reuse. Return False when it cannot start.
 
         Manim never empties the PNG-sequence folder (F021), and it reuses any
-        partial movie that exists, complete or not (C14 Q3).
+        partial movie that exists, complete or not (C14 Q3). TeX reads its
+        inputs from Manim's TeX folder before its own, and Manim compiles any
+        TeX source or DVI file it finds there, so a shared project could plant
+        one that reads local files past the formula allowlist (D18, F076).
         """
         media_dir = job.media_dir
         scene_path = job.scene_path
         assert media_dir is not None and scene_path is not None
+        tex = media_dir / "Tex"
+        try:
+            _remove_tex_inputs(tex)
+        except OSError as exc:
+            message = f"could not remove the old TeX files in {tex}: {exc}"
+            self._end(job, error(job.job_id, "render_failed", message))
+            return False
         if job.output_format == "png_sequence":
             frames = png_frames_dir(media_dir, scene_path.stem)
             try:
@@ -1046,12 +1068,7 @@ class Supervisor:
             self.log(f"could not remove {marker}: {exc}")
 
     def _run_manim(self, job: _Job, argv: list[str]) -> None:
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
-        env["COLUMNS"] = "240"
-        env["NO_COLOR"] = "1"
+        assert job.media_dir is not None and job.manim_dir is not None
         if sys.platform == "win32":
             # start_new_session is ignored on Windows, so the grandchild would
             # stay in this console and could open its own window. A new process
@@ -1066,7 +1083,6 @@ class Supervisor:
             startupinfo = None
             creationflags = 0
             start_new_session = True
-        assert job.media_dir is not None
         # What the folders hold before Manim starts, which tells the files this run writes.
         progress = ManimProgress(job.video_dir, self._clips, job.ready, job.waiting)
         tex_logs = file_stamps(job.media_dir / "Tex", "*.log")
@@ -1079,7 +1095,8 @@ class Supervisor:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                env=env,
+                cwd=job.manim_dir,
+                env=manim_environment(os.environ, job.manim_dir),
                 bufsize=1,
                 startupinfo=startupinfo,
                 creationflags=creationflags,
@@ -1314,7 +1331,10 @@ class Supervisor:
         return target
 
     def _prepare_job_locked(self, job: _Job) -> bool:
-        """Write the scene and argv. Return False when the job has ended without Manim."""
+        """Run the start checks of C7.2 in order, then write the scene and the argv.
+
+        Return False when the job has ended without Manim.
+        """
         job.project_dir = self.project
         job.scene_path = self.scene_path
         job.media_dir = self.media_dir
@@ -1322,15 +1342,20 @@ class Supervisor:
         job.generation = self._generation
         if self.session is None:
             return self._prepare_handwritten_locked(job)
+        project = self.session.project
         try:
             # The start never writes project.json: every edit has saved it, and
             # a file changed outside Mathimator must not be overwritten (D59).
             self._check_disk_locked()
+            source = _scene_source(project)
+            latex = needs_latex(project)
+            if latex and self._tex_error is not None:
+                raise DocumentError(self._tex_error, code="tex_unavailable")
+            root = manim_root(self.project, latex=latex)
         except DocumentError as exc:
             self._end(job, _refusal(job.job_id, exc))
             return False
         make_folders(self.project, self.media_dir)
-        project = self.session.project
         export_format = "mp4"
         export_transparent = False
         if job.profile == "export":
@@ -1342,14 +1367,10 @@ class Supervisor:
                 self.log("export cache hit")
                 self._end(job, {"event": "done", "jobId": job.job_id, "path": str(existing), "current": True})
                 return False
-        try:
-            source = generate(project)
-        except CodegenError as exc:
-            self._end(job, rejected(job.job_id, "invalid_document", str(exc)))
-            return False
         # A shared project folder could carry a planted codegen/__pycache__ or a
         # module that shadows one Manim imports. Manim imports scene.py from
-        # this folder, so it holds nothing but the scene just written (F170).
+        # this folder, and runs in it, so it holds nothing but the scene just
+        # written (F170, D60).
         codegen = self.scene_path.parent
         try:
             _remove_tree(codegen)
@@ -1358,6 +1379,7 @@ class Supervisor:
         except OSError as exc:
             self._end(job, error(job.job_id, "render_failed", f"could not write {self.scene_path}: {exc}"))
             return False
+        job.manim_dir = root / codegen.relative_to(self.project)
         job.captured = load_text(dumps_project(project))
         if job.profile == "preview":
             width = project.preview_profile.width
@@ -1377,8 +1399,6 @@ class Supervisor:
         job.quality = f"{height}p{fps}"
         job.argv = build_manim_argv(
             self.python,
-            self.scene_path,
-            self.media_dir,
             job.profile,
             str(project.seed),
             width=width,
@@ -1402,7 +1422,8 @@ class Supervisor:
         make_folders(self.project, self.media_dir)
         _width, height, fps = profile_size(job.profile)
         job.quality = f"{height}p{fps}"
-        job.argv = build_manim_argv(self.python, self.scene_path, self.media_dir, job.profile)
+        job.manim_dir = self.scene_path.parent
+        job.argv = build_manim_argv(self.python, job.profile)
         return True
 
     def _existing_export_locked(self, project: Project) -> Path | None:
@@ -1715,6 +1736,14 @@ def _refusal(job_id: str, exc: DocumentError) -> dict[str, object]:
     return rejected(job_id, exc.code, str(exc), exc.field)
 
 
+def _scene_source(project: Project) -> str:
+    """The generated scene.py, or ``invalid_document`` with the codegen message (C7.2)."""
+    try:
+        return generate(project)
+    except CodegenError as exc:
+        raise DocumentError(str(exc)) from exc
+
+
 def _read_record(path: Path) -> object:
     """The JSON in a cache record, or None when it is missing or unreadable, which rebuilds the record."""
     try:
@@ -1756,6 +1785,27 @@ def _remove_tree(path: Path) -> None:
             if attempt == 4:
                 raise
             time.sleep(0.1)
+
+
+def _remove_tex_inputs(tex: Path) -> None:
+    """Delete everything in Manim's TeX folder but the SVG files it reuses.
+
+    Manim writes a TeX source and its DVI file again when it needs them. A
+    link goes, never what it points to: ``remove_file`` removes a link to a
+    folder on Windows too.
+    """
+    if tex.is_symlink() or tex.is_junction():
+        remove_file(tex)
+        return
+    if not tex.is_dir():
+        return
+    for path in list(tex.iterdir()):
+        if path.suffix == ".svg" and path.is_file(follow_symlinks=False):
+            continue
+        if path.is_dir(follow_symlinks=False) and not path.is_junction():
+            _remove_tree(path)
+        else:
+            remove_file(path)
 
 
 def _artifact_ready(path: Path) -> bool:

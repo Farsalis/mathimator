@@ -152,13 +152,33 @@ def written_since(before: dict[Path, Stamp], now: dict[Path, Stamp]) -> list[Pat
 
 
 def read_manifest(path: Path) -> list[str]:
-    """The file names in Manim's segment list, in order. Each entry is ``file 'file:<posix path>'``."""
+    """The file names in Manim's segment list, in order.
+
+    Each entry is ``file 'file:<posix path>'``, quoted as FFmpeg reads it, so
+    an apostrophe in the path is ``'\\''`` (``manim_main``).
+    """
     names: list[str] = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        entry = line.strip()
-        if entry.startswith("file '") and entry.endswith("'") and len(entry) > 7:
-            names.append(PurePosixPath(entry[6:-1].replace("\\", "/")).name)
+        keyword, _, token = line.strip().partition(" ")
+        target = _unquote(token.strip()).removeprefix("file:")
+        if keyword == "file" and target:
+            names.append(PurePosixPath(target.replace("\\", "/")).name)
     return names
+
+
+def _unquote(token: str) -> str:
+    """One token of a list FFmpeg reads: text in single quotes is taken as it is, and elsewhere ``\\`` escapes."""
+    characters: list[str] = []
+    quoted = False
+    rest = iter(token)
+    for character in rest:
+        if character == "'":
+            quoted = not quoted
+        elif character == "\\" and not quoted:
+            characters.append(next(rest, ""))
+        else:
+            characters.append(character)
+    return "".join(characters)
 
 
 _VIDEO_SUFFIXES = {".mp4", ".gif", ".webm", ".mov"}

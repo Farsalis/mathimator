@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from mathimator_worker.argv import build_manim_argv
+from mathimator_worker.argv import LAUNCHER, build_manim_argv
 from mathimator_worker.process_group import (
     _descendant_pids,
     process_alive,
@@ -70,7 +70,8 @@ def test_worker_source_has_no_manim_av_or_win32() -> None:
     assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in job_object
     for path in files:
         body = path.read_text(encoding="utf-8")
-        if path.name == "win32_job.py":
+        # The Job Object, and the 8.3 alias of a project path that TeX cannot take (D61).
+        if path.name in {"win32_job.py", "manim_paths.py"}:
             continue
         assert "ctypes" not in body, path
 
@@ -95,19 +96,20 @@ def test_importing_supervisor_does_not_load_manim_or_av() -> None:
 
 
 def test_preview_argv_matches_section_5() -> None:
-    argv = build_manim_argv(
-        "/opt/py/bin/python",
-        Path("/proj/scene.py"),
-        Path("/proj/.mathimator/cache/media"),
-        "preview",
-    )
+    argv = build_manim_argv("/opt/py/bin/python", "preview")
     assert argv == [
         "/opt/py/bin/python",
+        "-P",
+        "--check-hash-based-pycs",
+        "always",
         "-m",
-        "manim",
+        "mathimator_worker.manim_main",
         "render",
-        "/proj/scene.py",
+        "scene.py",
         "MainScene",
+        "--config_file",
+        str(WORKER / "mathimator_worker" / "manim.cfg"),
+        "--silent",
         "--renderer",
         "cairo",
         "--seed",
@@ -119,7 +121,7 @@ def test_preview_argv_matches_section_5() -> None:
         "--format",
         "mp4",
         "--media_dir",
-        "/proj/.mathimator/cache/media",
+        "../cache/media",
         "--max-inflight-encoders",
         "1",
         "--progress_bar",
@@ -129,12 +131,7 @@ def test_preview_argv_matches_section_5() -> None:
 
 
 def test_export_argv_changes_resolution_and_fps() -> None:
-    argv = build_manim_argv(
-        "/opt/py/bin/python",
-        Path("/proj/scene.py"),
-        Path("/proj/media"),
-        "export",
-    )
+    argv = build_manim_argv("/opt/py/bin/python", "export")
     assert_phase1_argv(argv, width=1920, height=1080, fps=30)
     assert argv[argv.index("-r") + 1] == "1920,1080"
     assert argv[argv.index("--fps") + 1] == "30"
@@ -449,7 +446,7 @@ def _wait_for_in_flight_manim(
 def _find_manim_pid(supervisor_pid: int) -> int | None:
     for pid in _descendant_pids(supervisor_pid):
         command = _process_cmdline(pid)
-        if " -m manim " in f" {command} " or command.endswith(" -m manim") or "manim render" in command:
+        if f"-m {LAUNCHER} render" in command:
             return pid
     return None
 

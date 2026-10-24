@@ -44,8 +44,6 @@ def test_export_argv_matrix_matches_manim_022_flags() -> None:
     for fmt, width, height, fps, transparent, flag, expect_transparent in cases:
         argv = build_manim_argv(
             "/opt/py/bin/python",
-            Path("/proj/scene.py"),
-            Path("/proj/media"),
             "export",
             width=width,
             height=height,
@@ -75,8 +73,6 @@ def test_mp4_and_gif_cannot_be_transparent() -> None:
     with pytest.raises(ValueError, match="mp4 cannot be transparent"):
         build_manim_argv(
             "python",
-            Path("scene.py"),
-            Path("media"),
             "export",
             fmt="mp4",
             transparent=True,
@@ -84,8 +80,6 @@ def test_mp4_and_gif_cannot_be_transparent() -> None:
     with pytest.raises(ValueError, match="gif cannot be transparent"):
         build_manim_argv(
             "python",
-            Path("scene.py"),
-            Path("media"),
             "export",
             fmt="gif",
             transparent=True,

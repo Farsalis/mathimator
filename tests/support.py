@@ -116,12 +116,13 @@ def write_clip(path: Path) -> Path:
 _FAKE_MANIM = '''\
 """Write the groups of files plan.json lists, print its log and exit with its code.
 
-seen.json records what the media folder held when this process started.
-Like Manim, it writes one file after another, so each file gets a later mtime
-than the one before. After each group but the last, and after the last too in
-a held plan, it writes held-<n>.txt and waits for go-<n>.txt. A plan with a
-child first starts a process that sleeps with this one's stdout and stderr,
-like a TeX child that outlives Manim, and writes its pid to child.txt.
+seen.json records what the media folder held when this process started, and
+the folder, arguments and environment it started with. Like Manim, it writes
+one file after another, so each file gets a later mtime than the one before.
+After each group but the last, and after the last too in a held plan, it
+writes held-<n>.txt and waits for go-<n>.txt. A plan with a child first
+starts a process that sleeps with this one's stdout and stderr, like a TeX
+child that outlives Manim, and writes its pid to child.txt.
 """
 import json
 import os
@@ -130,12 +131,19 @@ import sys
 import time
 from pathlib import Path
 
+from manim.scene.scene_file_writer import SceneFileWriter
+
+ENVIRONMENT = ("HOME", "USERPROFILE", "shell_escape", "openin_any", "openout_any")
 here = Path(__file__).parent
 plan = json.loads((here / "plan.json").read_text(encoding="utf-8"))
 media = Path(sys.argv[sys.argv.index("--media_dir") + 1])
 seen = {
     "marker": (media.parent / "manim-run.json").is_file(),
     "files": sorted(path.relative_to(media).as_posix() for path in media.rglob("*") if path.is_file()),
+    "cwd": os.getcwd(),
+    "argv": sys.argv[1:],
+    "env": {name: os.environ.get(name) for name in ENVIRONMENT},
+    "writer": SceneFileWriter._concat_manifest_bytes.__qualname__,
 }
 (here / "seen.json").write_text(json.dumps(seen), encoding="utf-8")
 if plan["child"]:
@@ -161,15 +169,28 @@ sys.exit(plan["exit"])
 '''
 
 
+_FAKE_WRITER = """\
+class SceneFileWriter:
+    @staticmethod
+    def _concat_manifest_bytes(input_files):
+        raise NotImplementedError
+"""
+
+
 class FakeManim:
-    """A ``manim`` package on PYTHONPATH that stands in for ``python -m manim``."""
+    """A ``manim`` package on PYTHONPATH that stands in for Manim under ``mathimator_worker.manim_main``.
+
+    Its scene writer has only the method that ``manim_main`` replaces.
+    """
 
     def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.package = root / "manim"
-        self.package.mkdir(parents=True)
+        (self.package / "scene").mkdir(parents=True)
         (self.package / "__init__.py").write_text("", encoding="utf-8")
         (self.package / "__main__.py").write_text(_FAKE_MANIM, encoding="utf-8")
-        monkeypatch.setenv("PYTHONPATH", str(root))
+        (self.package / "scene" / "__init__.py").write_text("", encoding="utf-8")
+        (self.package / "scene" / "scene_file_writer.py").write_text(_FAKE_WRITER, encoding="utf-8")
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(root), str(WORKER)]))
 
     def plan(
         self,

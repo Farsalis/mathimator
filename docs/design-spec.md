@@ -419,11 +419,30 @@ This is the normative `project.json` for Journey A.
 
 ## 5. Mapping timeline to Manim code
 
-The generated file defines `MainScene` and does not instantiate it. Quality, format, and transparency are command-line arguments, so the same file is the preview and the export. The worker runs it with the bundled interpreter:
+The generated file defines `MainScene` and does not instantiate it. Quality, format, and transparency are command-line arguments, so the same file is the preview and the export. The worker runs it with the bundled interpreter, in the folder that holds it, `<project>/.mathimator/codegen`:
 
 ```text
-<python> -m manim render scene.py MainScene --renderer cairo --seed 1 -r 854,480 --fps 15 --format mp4 --media_dir <project>/.mathimator/cache/media --max-inflight-encoders 1 --progress_bar none
+<python> -P --check-hash-based-pycs always -m mathimator_worker.manim_main render scene.py MainScene --config_file <worker>/mathimator_worker/manim.cfg --silent --renderer cairo --seed 1 -r 854,480 --fps 15 --format mp4 --media_dir ../cache/media --max-inflight-encoders 1 --progress_bar none
 ```
+
+`mathimator_worker.manim_main` runs Manim's own command line, `python -m manim`, with one fix. Manim 0.22 writes the segment list that FFmpeg joins with each path in single quotes and does not escape a quote inside one, so an apostrophe in the project path failed every video. The list writes it as `'\''`, which is how FFmpeg reads one.
+
+Manim runs isolated from the PC's own settings:
+
+- The folder it runs in is also its home folder (`HOME` and `USERPROFILE`). The worker writes that folder afresh before each render, holding only `scene.py`, so no per-user or per-folder `manim.cfg` applies.
+- The worker ships `manim.cfg` with `max_files_cached = 2400`. Manim deletes its least recently used cached clips above that count, and a document has at most 120 s / 0.1 s = 1200 beats, so the clips of the render that just finished are never deleted.
+- `--silent` stops the check for a newer Manim on PyPI that Manim otherwise makes after every render. Manim never uses the network.
+- `-P` keeps the folder off `sys.path`, and `--check-hash-based-pycs always` makes Python check bytecode against its source, so nothing planted beside the scene runs in its place.
+- LaTeX runs with `shell_escape=f`, `openin_any=p`, and `openout_any=p` in its environment, which kpathsea reads before `texmf.cnf`. Every inherited variable whose name starts with one of those is dropped, such as `shell_escape_latex`, which kpathsea would read first, so LaTeX runs no shell command whatever the user set.
+- Before each render the worker empties Manim's TeX folder, `.mathimator/cache/media/Tex`, of everything but the SVG files Manim reuses, and removes a link there without following it. TeX reads its inputs from that folder before its own, and Manim compiles any TeX source or DVI file it finds there, so a file planted in a shared project could otherwise read local files past the formula allowlist of section 4. A file that cannot be removed fails the render with `render_failed`.
+
+The paths are relative to that folder, so TeX never reads the user's folder names, and a project path with `%`, `~`, `^^`, or `'` renders. Before Manim starts, a job checks the project path, and a path that still cannot render is refused with `path_unsupported`. The message names the folder and the reason, and asks for a move to a shorter or plainer path:
+
+- `{` in the path: Manim formats its absolute scene path as a template while it holds one.
+- On Windows, characters outside the ANSI code page: dvisvgm reads its arguments and its folder in that code page. Manim then runs through the 8.3 alias of the project folder when Windows keeps one. Without an alias only a scene with no formula and no axis labels renders. Every path the worker reports stays in its long form.
+- On Windows, length: dvisvgm cannot open a path of 260 characters or more, even with Windows long paths on, so a scene with a formula or axis labels needs a project path of at most 210 characters. Without long paths Python cannot either, so every render needs one of at most 114 characters, the room the longest partial movie name leaves.
+
+A scene with a formula or axis labels is also refused, with `tex_unavailable`, while the shell reports TeX unavailable: the bundled TeX is missing or failed its self-test.
 
 Preview and export use that same `--media_dir`. The export command changes `-r`, `--fps`, and `--format`, and adds `--transparent` only when that format allows it. Manim separates quality variants in folders under the media directory, so a 854×480 partial is not a 1920×1080 partial. `--max-inflight-encoders 1` keeps Manim's default: each partial movie is finished before the next beat starts. The worker never passes `--preview`, `--live-preview`, `--renderer opengl`, `--disable_caching`, `--flush_cache`, or `--from_animation_number`.
 
@@ -583,7 +602,7 @@ The shell starts the supervisor and the Typst processes. The supervisor starts M
 
 The **supervisor** is a long-lived Python sidecar on stdio. It does not import Manim or PyAV. It reads `project.json`, writes `scene.py`, spawns the Manim process, watches the partial-movie directory, and forwards events. Before each render it deletes and recreates `.mathimator/codegen/`, so the folder Manim imports `scene.py` from holds nothing else: a shared project folder cannot plant bytecode or a module there. `render_frame` is a separate short-lived helper so PyAV stays out of the supervisor. If the Manim process crashes, including a native Cairo crash, the supervisor emits an error and stays alive. The UI shows the error and keeps the last good frames. The shell restarts a dead supervisor and does not silently retry the failed job.
 
-The **Manim process** is `<python> -m manim render ...` as specified in section 5. Manim's config is process-global, so every render is a new interpreter. One Manim process at a time.
+The **Manim process** is `<python> ... -m mathimator_worker.manim_main render ...` as specified in section 5, which runs Manim's own command line. Manim's config is process-global, so every render is a new interpreter. One Manim process at a time.
 
 **Typst** is started by the shell, not by the supervisor and not by Manim. A new keystroke kills the previous Typst process. Typst is never queued behind a scene render.
 
@@ -642,7 +661,7 @@ Cancel discards an unfinished export output. A previous finished export for an o
 - If the cancelled render is still running after that second, the new request waits in a hold slot, one for an export and one for a preview, and the UI shows "Waiting for the previous render to stop". It starts when that render ends; a held export goes first. A newer preview replaces a held one.
 - A cancelled render keeps reading Manim's output to the end, so Manim never blocks on a full pipe, but it does not wait more than 0.5 s for a child that escaped the kill and still holds that output.
 
-On Windows the supervisor puts each Manim child in a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, using `ctypes`, and cancel terminates the job. `latex` and `dvisvgm` are gone within 1 second. The Tauri shell assigns the supervisor to a kill-on-close job so quitting the app reaps the same tree. Linux and macOS terminate the process group through `subprocess`. The worker does not use `pywin32`, `win32api`, or `taskkill`. Craig approved this Windows binding; it replaces the earlier rule that forbade every Win32 call.
+On Windows the supervisor puts each Manim child in a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, using `ctypes`, and cancel terminates the job. `latex` and `dvisvgm` are gone within 1 second. The Tauri shell assigns the supervisor to a kill-on-close job so quitting the app reaps the same tree. Linux and macOS terminate the process group through `subprocess`. The worker does not use `pywin32`, `win32api`, or `taskkill`. Craig approved this Windows binding; it replaces the earlier rule that forbade every Win32 call. Besides it, the worker calls `GetShortPathNameW` for the 8.3 alias of a project folder, and reads the `LongPathsEnabled` registry value with `winreg`, for the path checks of section 5 (D61).
 
 ### Equation preview
 

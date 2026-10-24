@@ -75,6 +75,14 @@ def generate(project: Project) -> str:
     return header + "\n\n" + _join_blocks(blocks) + "\n"
 
 
+def needs_latex(project: Project) -> bool:
+    """Whether the scene runs LaTeX: it has a formula, or axes with their labels (D31)."""
+    return any(
+        item.type == "math_formula" or (item.type == "axes" and item.params.get("showLabels") is True)
+        for item in project.scene.objects
+    )
+
+
 def _header(project: Project, *, beat_time: bool) -> str:
     """The module top. ``beat_time`` adds the frame helper, which only a beat off whole seconds calls."""
     if project.scene.kind == "three_d_scene":

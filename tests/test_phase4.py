@@ -181,17 +181,10 @@ def test_three_d_surface_and_curve_match_section_5() -> None:
 
 
 def test_three_d_preview_argv_stays_on_cairo() -> None:
-    preview = build_manim_argv(
-        "/opt/py/bin/python",
-        Path("/proj/scene.py"),
-        Path("/proj/.mathimator/cache/media"),
-        "preview",
-    )
+    preview = build_manim_argv("/opt/py/bin/python", "preview")
     assert_phase1_argv(preview, width=854, height=480, fps=15)
     sequence = build_manim_argv(
         "/opt/py/bin/python",
-        Path("/proj/scene.py"),
-        Path("/proj/.mathimator/cache/media"),
         "export",
         width=1280,
         height=720,

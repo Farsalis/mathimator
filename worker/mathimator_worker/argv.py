@@ -1,11 +1,27 @@
-"""Manim command line for the preview and export profiles."""
+"""Manim command line and environment for the preview and export profiles.
+
+Manim runs in the job's ``.mathimator/codegen`` folder, which holds nothing
+but ``scene.py``, and takes that folder as its home, so no per-user or
+per-folder manim.cfg applies (D60). Its paths are relative to that folder, so
+TeX never sees the user's folder names (D61). Python runs with ``-P`` and
+checks hash-based bytecode against its source, so nothing planted beside the
+scene runs in its place (F124, F170).
+"""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 SCENE_CLASS = "MainScene"
 SEED = "1"
+# Relative to the folder Manim runs in, .mathimator/codegen.
+SCENE_FILE = "scene.py"
+MEDIA_DIR = "../cache/media"
+# Mathimator's Manim settings (D60).
+CONFIG_FILE = Path(__file__).with_name("manim.cfg")
+# Runs Manim's command line with FFmpeg's quoting fixed (D61).
+LAUNCHER = "mathimator_worker.manim_main"
 
 PREVIEW_WIDTH = 854
 PREVIEW_HEIGHT = 480
@@ -22,6 +38,9 @@ FORBIDDEN_TOKENS = (
     "--flush_cache",
     "--from_animation_number",
 )
+
+# kpathsea's settings for the LaTeX child (D18).
+_TEX_SETTINGS = {"shell_escape": "f", "openin_any": "p", "openout_any": "p"}
 
 _FORMAT_FLAGS = {
     "mp4": "mp4",
@@ -41,8 +60,6 @@ def profile_size(profile: str) -> tuple[int, int, int]:
 
 def build_manim_argv(
     python: str,
-    scene: Path,
-    media_dir: Path,
     profile: str,
     seed: str = SEED,
     *,
@@ -57,7 +74,9 @@ def build_manim_argv(
     Preview is 854×480 at 15 fps and stays an opaque mp4. Export uses the
     document's format. ``png_sequence`` is ``--format png-sequence``.
     ``--transparent`` is added only when that format allows it. Cairo, the
-    project seed, and one encoder in flight stay on every command.
+    project seed, one encoder in flight, Mathimator's manim.cfg and
+    ``--silent``, which keeps Manim from asking PyPI for a newer release, stay
+    on every command.
     """
     default_width, default_height, default_fps = profile_size(profile)
     if width is None:
@@ -74,11 +93,17 @@ def build_manim_argv(
         raise ValueError("preview stays an opaque mp4")
     argv = [
         python,
+        "-P",
+        "--check-hash-based-pycs",
+        "always",
         "-m",
-        "manim",
+        LAUNCHER,
         "render",
-        scene.as_posix(),
+        SCENE_FILE,
         SCENE_CLASS,
+        "--config_file",
+        str(CONFIG_FILE),
+        "--silent",
         "--renderer",
         "cairo",
         "--seed",
@@ -95,7 +120,7 @@ def build_manim_argv(
     argv.extend(
         [
             "--media_dir",
-            media_dir.as_posix(),
+            MEDIA_DIR,
             "--max-inflight-encoders",
             "1",
             "--progress_bar",
@@ -104,6 +129,41 @@ def build_manim_argv(
     )
     _reject_forbidden(argv)
     return argv
+
+
+def manim_environment(base: Mapping[str, str], home: Path) -> dict[str, str]:
+    """The environment of a Manim run in ``home``, the folder it runs in (D60, D18).
+
+    ``home`` stands in for the user's home folder, so Manim reads no per-user
+    manim.cfg. kpathsea reads ``shell_escape``, ``openin_any`` and
+    ``openout_any`` from the environment before texmf.cnf, and reads
+    ``shell_escape.latex`` and ``shell_escape_latex`` before
+    ``shell_escape``, so every inherited variable that starts with one of
+    those names goes. Whatever the user set, LaTeX runs no shell command and
+    opens files as paranoidly as the TeX release allows. The formula
+    allowlist keeps a formula from reading files, and the worker removes TeX
+    inputs planted in Manim's TeX folder before each render.
+    """
+    settings = {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+        "COLUMNS": "240",
+        "NO_COLOR": "1",
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        **_TEX_SETTINGS,
+    }
+    # Windows matches variable names in any case, so a user's SHELL_ESCAPE must not stay beside shell_escape.
+    names = {name.upper() for name in settings}
+    tex_names = tuple(name.upper() for name in _TEX_SETTINGS)
+    environment = {
+        name: value
+        for name, value in base.items()
+        if name.upper() not in names and not name.upper().startswith(tex_names)
+    }
+    environment.update(settings)
+    return environment
 
 
 def _reject_forbidden(argv: list[str]) -> None:

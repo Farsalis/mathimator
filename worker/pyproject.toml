@@ -16,3 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["mathimator_worker*"]
+
+# Every render passes this file to Manim (argv.CONFIG_FILE).
+[tool.setuptools.package-data]
+mathimator_worker = ["manim.cfg"]

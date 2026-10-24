@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from mathimator_worker.argv import LAUNCHER
 from mathimator_worker.codegen import generate
 from mathimator_worker.document import (
     Project,
@@ -393,7 +394,7 @@ def test_expression_rejection_does_not_spawn_manim(tmp_path: Path) -> None:
         client.close()
     log = log_path.read_text(encoding="utf-8")
     assert "argv:" not in log
-    assert " -m manim" not in log
+    assert LAUNCHER not in log
 
 
 @pytest.mark.process_table
@@ -406,7 +407,7 @@ def test_preview_waits_behind_export_and_edits_do_not_cancel_it(tmp_path: Path) 
         _ready(client)
         client.send({"cmd": "export", "id": "export-1"})
         first = read_argv(log_path, timeout=10)
-        assert first[1:4] == ["-m", "manim", "render"]
+        assert first[4:7] == ["-m", LAUNCHER, "render"]
         client.send({"cmd": "render_preview", "id": "preview-wait"})
         client.send({"cmd": "edit", "id": "rename", "edit": {"op": "set_project_name", "name": "During export"}})
         renamed = client.wait_for(lambda event: event.get("jobId") == "rename", 10)
@@ -562,12 +563,12 @@ def _fake_pids(supervisor_pid: int, needle: str) -> list[int]:
     On Windows the venv interpreter stays as a parent of the real worker, and
     that child's command line includes ``--python`` plus the fake executable.
     Matching the executable path alone would treat the worker as Manim. The
-    worker command is ``-m mathimator_worker``; Manim's is ``-m manim``.
+    worker command is ``-m mathimator_worker``; Manim's is ``-m mathimator_worker.manim_main``.
     """
     found: list[int] = []
     for pid in _descendant_pids(supervisor_pid):
         command = _cmdline(pid)
-        if "-m manim" not in command:
+        if f"-m {LAUNCHER}" not in command:
             continue
         if needle != "manim" and needle not in command:
             continue

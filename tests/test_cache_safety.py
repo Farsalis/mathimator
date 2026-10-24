@@ -30,6 +30,7 @@ from mathimator_worker.document import (
     export_folder_name,
     load_text,
 )
+from mathimator_worker.manim_paths import short_path
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import (
     Supervisor,
@@ -253,7 +254,7 @@ def test_a_render_replaces_a_planted_codegen_folder(tmp_path: Path, monkeypatch:
 def test_startup_resolves_a_short_path_alias(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     folder = tmp_path / "a project folder with a long name"
     folder.mkdir()
-    alias = _short_path(folder)
+    alias = short_path(folder)
     if "~" not in alias.name:
         pytest.skip("this volume does not create 8.3 names")
     supervisor, events = _supervisor(alias, monkeypatch)
@@ -263,7 +264,8 @@ def test_startup_resolves_a_short_path_alias(tmp_path: Path, monkeypatch: pytest
     job = _job("preview")
     with supervisor._doc_lock:
         assert supervisor._prepare_job_locked(job)
-    assert "~" not in job.argv[job.argv.index("--media_dir") + 1]
+    # Manim runs in the long form: the path has no characters that need the alias.
+    assert job.manim_dir == folder / ".mathimator" / "codegen"
 
 
 # Interrupted-run marker (G1.1, G1.2)
@@ -602,17 +604,3 @@ def _import_file(path: Path) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def _short_path(path: Path) -> Path:
-    """The 8.3 alias Windows gives ``path``, or ``path`` itself when the volume has none."""
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    get_short_path = kernel32.GetShortPathNameW
-    get_short_path.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
-    get_short_path.restype = wintypes.DWORD
-    buffer = ctypes.create_unicode_buffer(32768)
-    length = get_short_path(str(path), buffer, len(buffer))
-    return Path(buffer.value) if 0 < length < len(buffer) else path
