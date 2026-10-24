@@ -940,7 +940,7 @@ async fn compile_equation_preview(
 /// Writes the shell-ready marker, only when MATHIMATOR_SHELL_READY_FILE names a file (D32).
 #[tauri::command]
 fn note_shell_ready() -> Result<(), ShellError> {
-    match std::env::var_os("MATHIMATOR_SHELL_READY_FILE").filter(|file| !file.is_empty()) {
+    match std::env::var_os(runtime::SHELL_READY_FILE).filter(|file| !file.is_empty()) {
         Some(file) => write_ready_marker(Path::new(&file)),
         None => Ok(()),
     }

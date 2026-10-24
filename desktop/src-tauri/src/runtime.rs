@@ -22,6 +22,12 @@ use crate::tex;
 const PYTHON_OVERRIDE: &str = "MATHIMATOR_PYTHON";
 const TYPST_OVERRIDE: &str = "MATHIMATOR_TYPST";
 const TINYTEX_OVERRIDE: &str = "MATHIMATOR_TINYTEX_BIN";
+/// The prefix of the shell's and the worker's own variables. A release build ignores every
+/// inherited one but [`SHELL_READY_FILE`] and passes none of them to its children (D30).
+const OVERRIDE_PREFIX: &str = "MATHIMATOR_";
+/// The file that gets the shell-ready marker: the one `MATHIMATOR_*` variable a release build
+/// reads (D32).
+pub const SHELL_READY_FILE: &str = "MATHIMATOR_SHELL_READY_FILE";
 /// The notices scripts/generate_notices.py writes into the bundle, which the installer ships as
 /// runtime/THIRD_PARTY_NOTICES.txt (D75).
 const NOTICES: &str = "THIRD_PARTY_NOTICES.txt";
@@ -81,8 +87,7 @@ struct Manifest {
     tinytex_bin: Option<String>,
 }
 
-/// The `MATHIMATOR_*` tool overrides. Debug builds honour them; release builds ignore them and
-/// say so in shell.log (D30).
+/// The `MATHIMATOR_*` tool overrides, which only debug builds honour (D30).
 #[derive(Default)]
 struct Overrides {
     python: Option<PathBuf>,
@@ -103,26 +108,13 @@ impl Overrides {
             tinytex_bin: path(TINYTEX_OVERRIDE),
         }
     }
-
-    /// The names of the overrides that are set.
-    fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        [
-            (PYTHON_OVERRIDE, &self.python),
-            (TYPST_OVERRIDE, &self.typst),
-            (TINYTEX_OVERRIDE, &self.tinytex_bin),
-        ]
-        .into_iter()
-        .filter(|(_, value)| value.is_some())
-        .map(|(name, _)| name)
-    }
 }
 
 /// Finds the runtime and logs what it found (C9.8). It never fails: a missing part carries the
 /// reason instead (D31).
 pub fn resolve(app: &AppHandle, log: &dyn Fn(&str)) -> Runtime {
-    let overrides = Overrides::from_env();
     let runtime = match repo_root() {
-        Some(repo) => development(&repo, &overrides),
+        Some(repo) => development(&repo, &Overrides::from_env()),
         None => {
             let work_dir = app
                 .path()
@@ -135,7 +127,8 @@ pub fn resolve(app: &AppHandle, log: &dyn Fn(&str)) -> Runtime {
                 .path()
                 .resource_dir()
                 .map(|resources| plain(resources).join("runtime"));
-            installed(bundle, work_dir, &overrides, log)
+            let ignored = ignored_in_release(env::vars_os());
+            installed(bundle, work_dir, &ignored, log)
         }
     };
     log(&runtime.describe());
@@ -219,16 +212,17 @@ fn development(repo: &Path, overrides: &Overrides) -> Runtime {
 
 /// Release builds: only the bundle, as its runtime.json describes it (C9.6, D30, D33). Without a
 /// resource folder there is no bundle: nothing is looked up from the working directory (F124).
-/// The notices need no runtime.json, so they stay readable when the worker cannot start.
+/// The notices need no runtime.json, so they stay readable when the worker cannot start. The
+/// `ignored` variables are only named in shell.log.
 fn installed(
     bundle: tauri::Result<PathBuf>,
     work_dir: PathBuf,
-    overrides: &Overrides,
+    ignored: &[String],
     log: &dyn Fn(&str),
 ) -> Runtime {
-    for name in overrides.names() {
+    for name in ignored {
         log(&format!(
-            "Ignored {name}: release builds use only the installed runtime."
+            "Ignored {name}: release builds neither read it nor pass it to the worker."
         ));
     }
     let notices = NoticesFile {
@@ -294,22 +288,23 @@ impl Runtime {
     }
 
     /// A child with the worker's environment (C9.6, F124): no console window, the fixed working
-    /// directory, the inherited `PYTHON*`, `TEXINPUTS` and `TEXMF*` variables removed, and the
-    /// TinyTeX bin folder first on PATH.
+    /// directory, the inherited `PYTHON*`, `TEXINPUTS` and `TEXMF*` variables removed (in a
+    /// release build the `MATHIMATOR_*` ones too), and the TinyTeX bin folder first on PATH.
     pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
-        self.command_with(program, env::vars_os())
+        self.command_with(program, env::vars_os(), !cfg!(debug_assertions))
     }
 
     fn command_with(
         &self,
         program: impl AsRef<OsStr>,
         inherited: impl IntoIterator<Item = (OsString, OsString)>,
+        release: bool,
     ) -> Command {
         let mut command = hidden_command(program);
         command.current_dir(&self.work_dir);
         let mut path = None;
         for (key, value) in inherited {
-            if is_cleaned(&key) {
+            if is_cleaned(&key, release) {
                 command.env_remove(&key);
             } else if key.eq_ignore_ascii_case("PATH") {
                 path = Some(value);
@@ -396,10 +391,27 @@ pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
 
 /// Whether children lose an inherited variable: the `PYTHON*` ones change how the interpreter
 /// starts, `PYTHONHOME` among them, and `TEXINPUTS` and `TEXMF*` change which files kpathsea
-/// finds (C9.6, F124, G2.6).
-fn is_cleaned(key: &OsStr) -> bool {
+/// finds (C9.6, F124, G2.6). A `release` build drops the `MATHIMATOR_*` ones too, so that no
+/// development switch such as `MATHIMATOR_WIN32_JOBS=0` reaches the worker (D30).
+fn is_cleaned(key: &OsStr, release: bool) -> bool {
     let key = key.to_string_lossy().to_ascii_uppercase();
-    key.starts_with("PYTHON") || key.starts_with("TEXMF") || key == "TEXINPUTS"
+    key.starts_with("PYTHON")
+        || key.starts_with("TEXMF")
+        || key == "TEXINPUTS"
+        || (release && key.starts_with(OVERRIDE_PREFIX))
+}
+
+/// The `inherited` variables a release build ignores: every `MATHIMATOR_*` one but
+/// [`SHELL_READY_FILE`] (D30, D32).
+fn ignored_in_release(inherited: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<String> {
+    inherited
+        .into_iter()
+        .map(|(key, _)| key.to_string_lossy().into_owned())
+        .filter(|key| {
+            let key = key.to_ascii_uppercase();
+            key.starts_with(OVERRIDE_PREFIX) && key != SHELL_READY_FILE
+        })
+        .collect()
 }
 
 /// The platform runtime.json must name, for example `windows-x86_64`.
@@ -542,8 +554,8 @@ mod tests {
         manifest
     }
 
-    fn install(scratch: &Scratch, overrides: &Overrides) -> (Runtime, Vec<String>) {
-        install_from(Ok(scratch.0.clone()), overrides)
+    fn install(scratch: &Scratch) -> (Runtime, Vec<String>) {
+        install_from(Ok(scratch.0.clone()), &[])
     }
 
     /// What an installed runtime knows of its notices before it reads them.
@@ -554,24 +566,18 @@ mod tests {
         }
     }
 
-    fn install_from(
-        bundle: tauri::Result<PathBuf>,
-        overrides: &Overrides,
-    ) -> (Runtime, Vec<String>) {
+    fn install_from(bundle: tauri::Result<PathBuf>, ignored: &[String]) -> (Runtime, Vec<String>) {
         let logs = RefCell::new(Vec::new());
-        let runtime = installed(
-            bundle,
-            PathBuf::from("C:\\work"),
-            overrides,
-            &|line: &str| logs.borrow_mut().push(line.to_owned()),
-        );
+        let runtime = installed(bundle, PathBuf::from("C:\\work"), ignored, &|line: &str| {
+            logs.borrow_mut().push(line.to_owned())
+        });
         (runtime, logs.into_inner())
     }
 
     #[test]
     fn a_complete_bundle_resolves_every_tool_from_runtime_json() {
         let scratch = bundle(&manifest());
-        let (runtime, logs) = install(&scratch, &Overrides::default());
+        let (runtime, logs) = install(&scratch);
         let root = &scratch.0;
         assert_eq!(
             runtime,
@@ -598,7 +604,7 @@ mod tests {
     fn a_missing_required_field_makes_the_worker_unavailable() {
         for field in ["python", "worker", "sample"] {
             let scratch = bundle(&without(field));
-            let (runtime, _) = install(&scratch, &Overrides::default());
+            let (runtime, _) = install(&scratch);
             assert_eq!(runtime.worker, Err(incomplete(field)), "{field}");
             assert!(
                 runtime.typst.is_ok() && runtime.tex_error.is_none(),
@@ -611,16 +617,10 @@ mod tests {
     fn a_required_file_that_is_gone_counts_as_missing() {
         let scratch = bundle(&manifest());
         fs::remove_file(scratch.0.join("python").join("python.exe")).unwrap();
-        assert_eq!(
-            install(&scratch, &Overrides::default()).0.worker,
-            Err(incomplete("python"))
-        );
+        assert_eq!(install(&scratch).0.worker, Err(incomplete("python")));
         let scratch = bundle(&manifest());
         fs::remove_dir(scratch.0.join("worker").join("mathimator_worker")).unwrap();
-        assert_eq!(
-            install(&scratch, &Overrides::default()).0.worker,
-            Err(incomplete("worker"))
-        );
+        assert_eq!(install(&scratch).0.worker, Err(incomplete("worker")));
     }
 
     #[test]
@@ -628,7 +628,7 @@ mod tests {
         let mut other = manifest();
         other["platform"] = json!("linux-x86_64-or-other");
         let scratch = bundle(&other);
-        let (runtime, _) = install(&scratch, &Overrides::default());
+        let (runtime, _) = install(&scratch);
         assert_eq!(
             runtime,
             Runtime::unusable(
@@ -643,19 +643,16 @@ mod tests {
     #[test]
     fn a_missing_or_unreadable_runtime_json_makes_the_bundle_unusable() {
         let scratch = Scratch::new();
-        let (runtime, logs) = install(&scratch, &Overrides::default());
+        let (runtime, logs) = install(&scratch);
         assert_eq!(runtime.worker, Err(incomplete("runtime.json")));
         assert!(logs.is_empty());
         fs::write(scratch.0.join("runtime.json"), b"{\"python\": ").unwrap();
-        assert_eq!(
-            install(&scratch, &Overrides::default()).0.worker,
-            Err(incomplete("runtime.json"))
-        );
+        assert_eq!(install(&scratch).0.worker, Err(incomplete("runtime.json")));
     }
 
     #[test]
     fn without_a_resource_folder_the_bundle_is_unusable() {
-        let (runtime, logs) = install_from(Err(tauri::Error::UnknownPath), &Overrides::default());
+        let (runtime, logs) = install_from(Err(tauri::Error::UnknownPath), &[]);
         assert_eq!(
             runtime,
             Runtime::unusable(
@@ -670,7 +667,7 @@ mod tests {
     #[test]
     fn a_missing_typst_disables_only_the_glyph_preview() {
         let scratch = bundle(&without("typst"));
-        let (runtime, _) = install(&scratch, &Overrides::default());
+        let (runtime, _) = install(&scratch);
         assert_eq!(
             runtime.typst,
             Err("The bundled Typst is missing. Reinstall Mathimator.".to_owned())
@@ -679,14 +676,14 @@ mod tests {
         assert!(runtime.tinytex_bin.is_some() && runtime.tex_error.is_none());
         let scratch = bundle(&manifest());
         fs::remove_file(scratch.0.join("typst").join("typst.exe")).unwrap();
-        assert!(install(&scratch, &Overrides::default()).0.typst.is_err());
+        assert!(install(&scratch).0.typst.is_err());
     }
 
     #[test]
     fn a_missing_tinytex_blocks_tex_with_the_reinstall_message() {
         for scratch in [bundle(&without("tinytexBin")), bundle(&manifest())] {
             fs::remove_dir_all(scratch.0.join("tinytex")).unwrap();
-            let (runtime, _) = install(&scratch, &Overrides::default());
+            let (runtime, _) = install(&scratch);
             assert_eq!(runtime.tinytex_bin, None);
             assert_eq!(runtime.tex_error.as_deref(), Some(tex::MISSING));
             assert!(runtime.worker.is_ok() && runtime.typst.is_ok());
@@ -699,26 +696,34 @@ mod tests {
         extra["tlnetRepository"] = json!("https://example.invalid/tlnet");
         extra["layout"] = json!({"version": 9, "parts": [1, 2]});
         let scratch = bundle(&extra);
-        let (runtime, logs) = install(&scratch, &Overrides::default());
+        let (runtime, logs) = install(&scratch);
         assert!(runtime.worker.is_ok() && runtime.typst.is_ok() && runtime.tex_error.is_none());
         assert!(logs[0].contains("tlnetRepository"), "{logs:?}");
     }
 
     #[test]
-    fn release_ignores_the_overrides_and_logs_them() {
+    fn release_ignores_every_mathimator_variable_but_the_ready_file_and_logs_them() {
+        let inherited = [
+            ("MATHIMATOR_PYTHON", "C:\\elsewhere\\python.exe"),
+            ("MATHIMATOR_SHELL_READY_FILE", "C:\\out\\shell-ready.txt"),
+            ("MATHIMATOR_SKIP_PROCESS_TABLE", "1"),
+            ("Mathimator_Win32_Jobs", "0"),
+            ("Path", "C:\\Windows"),
+        ]
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)));
+        let ignored = ignored_in_release(inherited);
+        let names = [
+            "MATHIMATOR_PYTHON",
+            "MATHIMATOR_SKIP_PROCESS_TABLE",
+            "Mathimator_Win32_Jobs",
+        ];
+        assert_eq!(ignored, names);
         let scratch = bundle(&manifest());
-        let elsewhere = Scratch::new();
-        let overrides = Overrides {
-            python: Some(elsewhere.file("python.exe")),
-            typst: Some(elsewhere.file("typst.exe")),
-            tinytex_bin: Some(elsewhere.folder("tinytex")),
-        };
-        let (runtime, logs) = install(&scratch, &overrides);
-        assert_eq!(runtime, install(&scratch, &Overrides::default()).0);
+        let (_, logs) = install_from(Ok(scratch.0.clone()), &ignored);
         assert_eq!(
             logs[..3],
-            [PYTHON_OVERRIDE, TYPST_OVERRIDE, TINYTEX_OVERRIDE].map(|name| format!(
-                "Ignored {name}: release builds use only the installed runtime."
+            names.map(|name| format!(
+                "Ignored {name}: release builds neither read it nor pass it to the worker."
             ))
         );
     }
@@ -792,7 +797,7 @@ mod tests {
         let text = "Third-party notices for Mathimator 0.1.0\n\nPyAV 19.0.2: BSD-3-Clause [T3]\n";
         fs::write(scratch.0.join(NOTICES), text).unwrap();
         fs::remove_file(scratch.0.join("runtime.json")).unwrap();
-        let (runtime, _) = install(&scratch, &Overrides::default());
+        let (runtime, _) = install(&scratch);
         assert_eq!(runtime.worker, Err(incomplete("runtime.json")));
         assert_eq!(runtime.notices.read().as_deref(), Ok(text));
     }
@@ -801,7 +806,7 @@ mod tests {
     fn missing_installed_notices_ask_for_a_reinstall_and_leave_the_tools_alone() {
         let scratch = bundle(&manifest());
         fs::remove_file(scratch.0.join(NOTICES)).unwrap();
-        let (runtime, _) = install(&scratch, &Overrides::default());
+        let (runtime, _) = install(&scratch);
         assert_eq!(
             runtime.notices.read(),
             Err("The installed runtime is incomplete (THIRD_PARTY_NOTICES.txt). Reinstall Mathimator.".to_owned())
@@ -812,7 +817,7 @@ mod tests {
     #[test]
     fn notices_that_cannot_be_read_say_which_file_failed() {
         let scratch = bundle(&manifest());
-        let (runtime, _) = install(&scratch, &Overrides::default());
+        let (runtime, _) = install(&scratch);
         let file = scratch.0.join(NOTICES);
         fs::write(&file, b"\xFF is not UTF-8").unwrap();
         let message = runtime.notices.read().unwrap_err();
@@ -908,7 +913,7 @@ mod tests {
             ("TEMP", "C:\\Temp"),
         ]
         .map(|(key, value)| (OsString::from(key), OsString::from(value)));
-        let command = runtime.command_with("latex", inherited);
+        let command = runtime.command_with("latex", inherited, false);
         let mut envs = envs(&command);
         envs.sort_by_key(|(key, _)| key.to_ascii_uppercase());
         let expected_path = env::join_paths([
@@ -934,9 +939,52 @@ mod tests {
     }
 
     #[test]
+    fn release_children_also_lose_every_mathimator_variable() {
+        for (key, debug, release) in [
+            ("PYTHONHOME", true, true),
+            ("texmfcnf", true, true),
+            ("TEXINPUTS", true, true),
+            ("MATHIMATOR_WIN32_JOBS", false, true),
+            ("Mathimator_Skip_Process_Table", false, true),
+            ("MATHIMATOR_TEX_ERROR", false, true),
+            ("MATHIMATOR_SHELL_READY_FILE", false, true),
+            ("MATHIMATORS", false, false),
+            ("PATH", false, false),
+        ] {
+            let key = OsStr::new(key);
+            assert_eq!(
+                (is_cleaned(key, false), is_cleaned(key, true)),
+                (debug, release),
+                "{key:?}"
+            );
+        }
+        let inherited = || {
+            [
+                ("MATHIMATOR_WIN32_JOBS", "0"),
+                ("MATHIMATOR_TEX_ERROR", "stale"),
+            ]
+            .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+        };
+        let runtime = runtime(None);
+        assert!(envs(&runtime.command_with("python", inherited(), false)).is_empty());
+        let mut command = runtime.command_with("python", inherited(), true);
+        command.env("MATHIMATOR_TEX_ERROR", "fresh");
+        let mut envs = envs(&command);
+        envs.sort();
+        assert_eq!(
+            envs,
+            [
+                ("MATHIMATOR_TEX_ERROR", Some("fresh")),
+                ("MATHIMATOR_WIN32_JOBS", None),
+            ]
+            .map(|(key, value)| (key.to_owned(), value.map(str::to_owned)))
+        );
+    }
+
+    #[test]
     fn without_tinytex_children_keep_the_inherited_path() {
         let inherited = [(OsString::from("PATH"), OsString::from("C:\\Windows"))];
-        assert!(envs(&runtime(None).command_with("latex", inherited)).is_empty());
+        assert!(envs(&runtime(None).command_with("latex", inherited, false)).is_empty());
     }
 
     #[test]
