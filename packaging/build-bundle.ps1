@@ -427,12 +427,23 @@ if ($LASTEXITCODE -ne 0) {
 $pyFull, $manimFull = $probeLine -split " "
 Write-Log "bundled python $pyFull manim $manimFull"
 
+# The installer puts the runtime under Program Files (D62), where Python run by
+# a standard user cannot save the bytecode it compiles, so every start of the
+# supervisor and of Manim would compile the standard library, the render stack
+# and the worker again. They are compiled here instead, in one process, which
+# makes the bytecode the same on every build. Checked-hash bytecode holds a
+# hash of its source, which Python checks on import, so a stale file never runs
+# in place of its source. -s and -p record each source as runtime\... rather
+# than by its build path, -f replaces the timestamped bytecode that the CPython
+# build ships, and -W ignore keeps third-party SyntaxWarnings out of the log,
+# as CPython's own install does.
+Invoke-Checked $Python @("-I", "-W", "ignore", "-m", "compileall", "-q", "-f", "-s", $Dest, "-p", "runtime", "--invalidation-mode", "checked-hash", $PythonHome, $workerDest)
+
 # Everything in packaging/bundle ships. --prune removes entries outside the
-# bundle layout, such as a crash dump or the venv of an older build, and all
-# bytecode, which names the path of its source. The check then fails if a file
-# names the checkout or the builder's profile. Running the bundled interpreter
-# from this checkout writes such bytecode again, which the check without
-# --prune reports before `tauri build`.
+# bundle layout, such as a crash dump or the venv of an older build, and any
+# bytecode not compiled above, such as another Python version's, copied from
+# the checkout with the worker. The check then fails if a file, bytecode
+# included, names the checkout or the builder's profile.
 Invoke-Checked $Python @("-I", "-B", (Join-Path $Root "scripts\check_bundle.py"), "--prune", $Dest)
 
 $base = [System.IO.Path]::GetFullPath($Dest)

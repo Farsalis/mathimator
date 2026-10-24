@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import compileall
 import contextlib
 import hashlib
+import importlib.util
 import io
 import json
+import marshal
+import os
+import py_compile
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -24,6 +31,51 @@ TLNET_REPOSITORY=https://texlive.info/tlnet-archive/2026/10/23/tlnet
 TYPST_VERSION=0.15.0
 """
 PLATFORM = "windows-x86_64"
+CHECKED_HASH = py_compile.PycInvalidationMode.CHECKED_HASH
+
+
+def compile_args(bundle: str) -> list[str]:
+    """What both build scripts pass the bundled interpreter ahead of the folders it compiles."""
+    return [
+        "-I",
+        "-W",
+        "ignore",
+        "-m",
+        "compileall",
+        "-q",
+        "-f",
+        "-s",
+        bundle,
+        "-p",
+        "runtime",
+        "--invalidation-mode",
+        "checked-hash",
+    ]
+
+
+def compile_bundle(bundle: Path) -> list[Path]:
+    """Compile the bundled Python and the worker as the build scripts do, and return the bytecode."""
+    folders = [str(bundle / "python"), str(bundle / "worker")]
+    subprocess.run([sys.executable, *compile_args(str(bundle)), *folders], check=True)
+    return sorted(bundle.rglob("*.pyc"))
+
+
+def bytecode_of(source: Path, optimization: int | str = "") -> Path:
+    return Path(importlib.util.cache_from_source(str(source), optimization=optimization))
+
+
+def naming(path: Path) -> re.Pattern[bytes]:
+    return re.compile(check_bundle._path_pattern(path), re.IGNORECASE)
+
+
+def link_folder(link: Path, target: Path) -> None:
+    """A link to a folder that any account can make: a junction on Windows, a symbolic link elsewhere."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
 
 
 def write(path: Path, text: str) -> None:
@@ -58,10 +110,11 @@ def sha256(path: Path) -> str:
 
 
 def make_bundle(tmp_path: Path, repo: Path) -> Path:
-    """A bundle built from repo that passes the check."""
+    """A bundle built from repo that passes the check, with its bytecode not compiled yet."""
     bundle = tmp_path / "bundle"
     for name in ("python/python.exe", "typst/typst.exe", "tinytex/bin/windows/latex.exe", ".gitkeep"):
         write(bundle / name, "binary")
+    write(bundle / "python" / "Lib" / "os.py", "import sys\n")
     shutil.copytree(
         repo / "worker" / "mathimator_worker",
         bundle / "worker" / "mathimator_worker",
@@ -220,24 +273,80 @@ def test_the_notices_must_name_the_current_lockfiles(tmp_path: Path) -> None:
     ]
 
 
-def test_unexpected_entries_and_bytecode_fail_until_pruned(tmp_path: Path) -> None:
+def test_the_bytecode_the_build_compiles_passes_and_names_no_build_path(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     bundle = make_bundle(tmp_path, repo)
+    package = bundle / "worker" / "mathimator_worker"
+
+    assert compile_bundle(bundle) == sorted(
+        map(bytecode_of, [bundle / "python" / "Lib" / "os.py", package / "__init__.py", package / "supervisor.py"])
+    )
+    code = marshal.loads(bytecode_of(package / "supervisor.py").read_bytes()[16:])
+    assert code.co_filename == os.path.join("runtime", "worker", "mathimator_worker", "supervisor.py")
+    assert check_bundle.verify(bundle, repo, PLATFORM) == []
+    assert check_bundle.scan(bundle, naming(tmp_path)) == ([], [])
+
+
+def test_the_build_compiles_the_same_bytecode_wherever_it_runs(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    first = compile_bundle(make_bundle(tmp_path / "first", repo))
+    second = compile_bundle(make_bundle(tmp_path / "second", repo))
+
+    assert [path.read_bytes() for path in first] == [path.read_bytes() for path in second]
+
+
+def test_both_build_scripts_compile_the_bundle_this_way() -> None:
+    packaging = check_bundle.REPO / "packaging"
+    powershell = ", ".join(arg if arg == "$Dest" else f'"{arg}"' for arg in compile_args("$Dest"))
+    shell = " ".join(compile_args('"$DEST"'))
+
+    powershell_line = f"Invoke-Checked $Python @({powershell}, $PythonHome, $workerDest)\n"
+    assert powershell_line in (packaging / "build-bundle.ps1").read_text(encoding="utf-8")
+    shell_line = f'"$PY_BIN" {shell} "$PY_HOME" "$DEST/worker"\n'
+    assert shell_line in (packaging / "build-bundle.sh").read_text(encoding="utf-8")
+
+
+def test_unexpected_entries_and_stray_bytecode_fail_until_pruned(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    bundle = make_bundle(tmp_path, repo)
+    compiled = compile_bundle(bundle)
     write(bundle / "crash.dmp", "dump")
     write(bundle / "venv" / "pyvenv.cfg", "")
-    write(bundle / "worker" / "mathimator_worker" / "__pycache__" / "supervisor.cpython-314.pyc", "")
-    write(bundle / "python" / "Lib" / "__pycache__" / "os.cpython-314.pyc", "")
+    site = bundle / "python" / "Lib" / "site.py"
+    supervisor = bundle / "worker" / "mathimator_worker" / "supervisor.py"
+    write(site, "")
+    # What Python writes when it imports a module that has no bytecode, what an
+    # interrupted write leaves, and bytecode that Python never checks.
+    py_compile.compile(str(site), invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+    write(bytecode_of(supervisor).with_suffix(".pyc.2147483647"), "")
+    py_compile.compile(
+        str(supervisor),
+        cfile=str(bytecode_of(supervisor, optimization=1)),
+        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+    )
+    # Checked-hash bytecode that the build does not compile: another Python
+    # version's, and that of a module whose source is gone.
+    another_version = bytecode_of(supervisor).with_name("supervisor.cpython-312.pyc")
+    for stray in (another_version, bytecode_of(site.with_name("gone.py"))):
+        py_compile.compile(str(supervisor), cfile=str(stray), invalidation_mode=CHECKED_HASH)
 
     assert check_bundle.verify(bundle, repo, PLATFORM) == [
         "unexpected bundle entry crash.dmp (run with --prune)",
         "unexpected bundle entry venv (run with --prune)",
-        "2 __pycache__ folders in the bundle (run with --prune)",
+        "5 files in __pycache__ folders were not compiled by the build (run with --prune)",
     ]
     assert (bundle / "crash.dmp").exists()
 
-    check_bundle.prune(bundle)
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        check_bundle.prune(bundle)
+    assert stdout.getvalue().splitlines() == [
+        "removing unexpected bundle entry crash.dmp",
+        "removing unexpected bundle entry venv",
+        "removing 5 files from __pycache__ folders that the build did not compile",
+    ]
     assert sorted(entry.name for entry in bundle.iterdir()) == sorted(check_bundle.LAYOUT)
-    assert not list(bundle.rglob("__pycache__"))
+    assert sorted(path for cache in bundle.rglob("__pycache__") for path in cache.iterdir()) == compiled
     assert check_bundle.verify(bundle, repo, PLATFORM) == []
 
 
@@ -251,7 +360,23 @@ def test_prune_cleans_a_bundle_that_has_no_runtime_json_or_notices_yet(tmp_path:
     with contextlib.redirect_stdout(io.StringIO()):
         assert check_bundle.main(["--prune", str(bundle)]) == 0
     assert not (bundle / "crash.dmp").exists()
-    assert not list(bundle.rglob("__pycache__"))
+    assert not list(bundle.rglob("*.pyc"))
+
+
+def test_prune_removes_links_and_never_what_they_point_at(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path, make_repo(tmp_path))
+    outside = tmp_path / "outside"
+    write(outside / "precious.txt", "keep")
+    cache = bundle / "worker" / "mathimator_worker" / "__pycache__"
+    link_folder(cache, outside)
+    link_folder(bundle / "venv", outside)
+    stderr = io.StringIO()
+
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+        assert check_bundle.main(["--prune", str(bundle)]) == 1
+    assert (outside / "precious.txt").read_text(encoding="utf-8") == "keep"
+    assert not (bundle / "venv").exists(follow_symlinks=False)
+    assert stderr.getvalue().splitlines() == [f"link leaves the bundle: {cache}", f"1 bundle problems in {bundle}"]
 
 
 def test_the_check_changes_nothing_and_points_at_prune(tmp_path: Path) -> None:
@@ -278,10 +403,36 @@ def test_the_scan_reports_files_that_name_the_build_machine(tmp_path: Path) -> N
     repo = make_repo(tmp_path)
     bundle = make_bundle(tmp_path, repo)
     write(bundle / "tinytex" / "texmf-var" / "language.dat", "% made in C:\\Users\\builder\\Mathimator\n")
-    write(bundle / "python" / "Lib" / "__pycache__" / "site.cpython-314.pyc", "C:\\Users\\builder\\Mathimator")
 
-    pattern = re.compile(check_bundle._path_pattern(Path("C:/Users/builder/Mathimator")), re.IGNORECASE)
+    pattern = naming(Path("C:/Users/builder/Mathimator"))
     assert check_bundle.scan(bundle, pattern) == ([], [bundle / "tinytex" / "texmf-var" / "language.dat"])
+
+
+def test_bytecode_that_records_its_build_path_fails_the_scan(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    bundle = make_bundle(tmp_path, repo)
+    package = bundle / "worker" / "mathimator_worker"
+    # Without -s and -p, compileall records each source by the path it was compiled from.
+    compileall.compile_dir(str(bundle / "worker"), quiet=1, invalidation_mode=CHECKED_HASH)
+
+    assert check_bundle.verify(bundle, repo, PLATFORM) == []
+    outside, named = check_bundle.scan(bundle, naming(tmp_path))
+    assert (outside, sorted(named)) == (
+        [],
+        [bytecode_of(package / "__init__.py"), bytecode_of(package / "supervisor.py")],
+    )
+
+
+def test_bytecode_that_records_a_path_in_the_builders_home_fails_the_scan(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    bundle = make_bundle(tmp_path, repo)
+    module = bundle / "python" / "Lib" / "os.py"
+    py_compile.compile(str(module), dfile="/home/builder/cpython/Lib/os.py", invalidation_mode=CHECKED_HASH)
+
+    with mock.patch.object(Path, "home", return_value=Path("/home/builder")):
+        pattern = check_bundle.build_paths()
+    assert check_bundle.verify(bundle, repo, PLATFORM) == []
+    assert check_bundle.scan(bundle, pattern) == ([], [bytecode_of(module)])
 
 
 def test_read_pins_reads_key_value_lines(tmp_path: Path) -> None:

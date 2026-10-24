@@ -18,22 +18,31 @@ changes nothing. Run it right before `tauri build`. It fails unless:
 - THIRD_PARTY_NOTICES.txt names the SHA-256 of this checkout's uv.lock,
   Cargo.lock and package-lock.json, so scripts/generate_notices.py wrote it for
   these dependencies (D75).
-- The bundle holds nothing outside its layout and no bytecode.
+- The bundle holds nothing outside its layout, and its __pycache__ folders
+  hold nothing but the bytecode that the build scripts compile: checked-hash
+  bytecode of a source beside the folder, for the interpreter running this
+  script.
 
     check_bundle.py --prune [BUNDLE]
 
 is what packaging/build-bundle.ps1 and build-bundle.sh run before they write
 runtime.json. It removes top-level entries outside the layout, such as a crash
-dump or the venv of an older build, and every __pycache__ folder (D64), and
-skips the checks that need runtime.json and the notices.
+dump or the venv of an older build (D64), and everything else in a __pycache__
+folder, such as what Python writes on import, another Python version's
+bytecode, or bytecode whose source is gone. It never enters a linked folder:
+a link is removed itself, never what it points at. It skips the checks that
+need runtime.json and the notices.
 
-Both forms fail when a link leaves the bundle, or when a file names the
-checkout or a path inside the builder's home folder, which names the account.
-The installed app compiles its own bytecode under the install path, but a run
-of the bundled interpreter from this checkout, such as the offline tests,
-writes bytecode into the bundle that names the checkout; --prune removes it.
-When the bundled interpreter runs this script, pass -I -B so that the check
-reads no PYTHON* variable and writes no bytecode itself.
+Both forms fail when a link leaves the bundle, or when a file, bytecode
+included, names the checkout or a path inside the builder's home folder, which
+names the account. The Windows installer puts the runtime under Program Files
+(D62), where Python run by a standard user cannot save the bytecode it
+compiles, so the build scripts compile the bundled Python and the worker
+beforehand and record each source as runtime/... rather than by its build
+path. Checked-hash bytecode holds a hash of its source, which Python checks on
+import, so a stale file never runs in place of its source. Run this script
+with the bundled interpreter, whose bytecode it keeps, and pass -I -B so that
+the check reads no PYTHON* variable and writes no bytecode itself.
 
 BUNDLE defaults to packaging/bundle. The exit status is 0 when the bundle
 passes and 1, with one line per problem on stderr, when it does not.
@@ -43,12 +52,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import platform
 import re
 import shutil
 import sys
+from collections.abc import Iterator
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 REPO = Path(__file__).resolve().parents[1]
@@ -66,6 +77,9 @@ PATHS = {"python": False, "worker": True, "sample": False, "typst": False, "tiny
 FIELDS = ("platform", *PATHS, "lockSha256", "pythonVersion", "typstVersion", "tinytexRelease", "tlnetRepository")
 # The lockfiles whose packages the notices list.
 LOCKS = ("uv.lock", "desktop/src-tauri/Cargo.lock", "desktop/package-lock.json")
+# Bytes 4-7 of a checked-hash .pyc, its PEP 552 flags: hash-based, and checked
+# against its source on import.
+CHECKED_HASH = (0b11).to_bytes(4, "little")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,7 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--prune",
         action="store_true",
-        help="remove entries outside the layout and all bytecode, and skip the runtime.json and notices checks",
+        help="remove entries outside the layout and everything in __pycache__ but the bytecode the build"
+        " compiles, and skip the runtime.json and notices checks",
     )
     args = parser.parse_args(argv)
     bundle: Path = args.bundle
@@ -113,23 +128,23 @@ def host_platform() -> str:
 
 
 def prune(bundle: Path) -> None:
-    """Remove top-level entries outside LAYOUT, such as a crash dump, and all bytecode."""
+    """Remove top-level entries outside LAYOUT, such as a crash dump, and bytecode the build did not compile."""
     for entry in _unexpected(bundle):
         print(f"removing unexpected bundle entry {entry.name}")
-        if entry.is_dir() and not entry.is_symlink():
-            shutil.rmtree(entry)
-        else:
-            entry.unlink()
-    for cache in _caches(bundle):
-        shutil.rmtree(cache)
+        _remove(entry)
+    stray = _stray_bytecode(bundle)
+    if stray:
+        print(f"removing {len(stray)} files from __pycache__ folders that the build did not compile")
+    for path in stray:
+        _remove(path)
 
 
 def verify(bundle: Path, repo: Path, expected_platform: str) -> list[str]:
     """Return what keeps the bundle from shipping, built from repo, on expected_platform."""
     problems = [f"unexpected bundle entry {entry.name} (run with --prune)" for entry in _unexpected(bundle)]
-    caches = _caches(bundle)
-    if caches:
-        problems.append(f"{len(caches)} __pycache__ folders in the bundle (run with --prune)")
+    stray = _stray_bytecode(bundle)
+    if stray:
+        problems.append(f"{len(stray)} files in __pycache__ folders were not compiled by the build (run with --prune)")
     try:
         runtime = json.loads((bundle / "runtime.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -229,8 +244,35 @@ def _unexpected(bundle: Path) -> list[Path]:
     return [entry for entry in sorted(bundle.iterdir()) if entry.name not in LAYOUT]
 
 
-def _caches(bundle: Path) -> list[Path]:
-    return sorted(bundle.rglob("__pycache__"))
+def _remove(entry: Path) -> None:
+    """Delete entry; a link is removed itself, never what it points at."""
+    if entry.is_dir() and not _is_link(entry):
+        shutil.rmtree(entry)
+    else:
+        entry.unlink()
+
+
+def _stray_bytecode(bundle: Path) -> list[Path]:
+    """Everything in a __pycache__ folder but the bytecode the build scripts compile."""
+    return [
+        path
+        for folder, _, _ in _walk(bundle)
+        if folder.name == "__pycache__"
+        for path in sorted(folder.iterdir())
+        if not _is_compiled(path)
+    ]
+
+
+def _is_compiled(path: Path) -> bool:
+    """Whether path is checked-hash bytecode that this interpreter compiles for a source beside its folder."""
+    try:
+        source = Path(importlib.util.source_from_cache(path))
+    except ValueError:
+        return False
+    if Path(importlib.util.cache_from_source(source)) != path or not (source.is_file() and path.is_file()):
+        return False
+    with path.open("rb") as file:
+        return file.read(8)[4:] == CHECKED_HASH
 
 
 def _files(root: Path) -> list[tuple[str, bytes]]:
@@ -279,16 +321,14 @@ def scan(bundle: Path, build_path: re.Pattern[bytes]) -> tuple[list[Path], list[
 
     Links are not followed. A link must be relative and stay inside the
     bundle: an absolute target names the build machine, and it breaks once the
-    bundle is installed somewhere else. Bytecode is not read: --prune removes
-    it, and the check reports it.
+    bundle is installed somewhere else. Bytecode is read like any other file:
+    the build scripts record each source in it as runtime/..., so a build path
+    there is a leak.
     """
     resolved = bundle.resolve()
     outside: list[Path] = []
     named: list[Path] = []
-    for top, dirnames, filenames in os.walk(bundle):
-        here = Path(top)
-        linked = [name for name in dirnames if _is_link(here / name)]
-        dirnames[:] = [name for name in dirnames if name not in linked and name != "__pycache__"]
+    for here, linked, filenames in _walk(bundle):
         for name in linked + filenames:
             path = here / name
             if _is_link(path):
@@ -297,6 +337,15 @@ def scan(bundle: Path, build_path: re.Pattern[bytes]) -> tuple[list[Path], list[
             elif build_path.search(path.read_bytes()):
                 named.append(path)
     return outside, named
+
+
+def _walk(bundle: Path) -> Iterator[tuple[Path, list[str], list[str]]]:
+    """Yield each folder of bundle with its linked folders and its files, never entering a link."""
+    for top, dirnames, filenames in os.walk(bundle):
+        here = Path(top)
+        linked = [name for name in dirnames if _is_link(here / name)]
+        dirnames[:] = [name for name in dirnames if name not in linked]
+        yield here, linked, filenames
 
 
 def _is_link(path: Path) -> bool:
