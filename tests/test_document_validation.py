@@ -546,6 +546,8 @@ def test_a_2d_axes_may_be_called_x() -> None:
         (r"x \end{align*} \input{secret}", r"\end{align*}"),
         (r"\begin input", r"\begin"),
         (r"\@input{secret}", r"\@"),
+        # Only \hline draws the rules of an array (D04).
+        (r"\begin{array}{cc} a & b \\ \cline{1-2} c & d \end{array}", r"\cline"),
         ("\\é", "\\é"),
     ],
 )

@@ -4,9 +4,11 @@ A failure is a LaTeX failure only when Manim's own TeX markers are in its
 output: the "LaTeX compilation error:" it logs, or the exception it raises when
 a TeX compiler fails. A project folder, a user name or a formula that merely
 mentions LaTeX or ``.log`` does not make one (F017). A LaTeX failure reads
-"LaTeX failed." followed by TeX's ``!`` error line and the ``l.N`` line that
-names where TeX stopped, both taken from the TeX log on disk, since Rich wraps
-Manim's copy of them to its own width (F016). Any other failure is one line,
+"LaTeX failed." followed by TeX's ``!`` error line, the ``<argument>`` line
+that ends at the bad command when TeX shows one, and the ``l.N`` line that
+names where TeX stopped, which for a formula is MathTex's ``\\end{align*}``
+(D11). They are taken from the TeX log on disk, since Rich wraps Manim's copy
+of them to its own width (F016). Any other failure is one line,
 "manim exited with status N: <ExceptionType: text>", the exception Rich prints
 below its traceback frames (F095). The whole output stays in worker.log.
 """
@@ -44,12 +46,21 @@ def format_render_failure(return_code: int, output: str, tex_log: str | None = N
 
 
 def tex_error_lines(log: str) -> list[str]:
-    """TeX's first ``!`` error line and the ``l.N`` line after it, or none when the log records no error."""
+    """TeX's first ``!`` error line with its ``<argument>`` and ``l.N`` lines, or none when the log records no error.
+
+    TeX shows an error's context after its ``!`` line, down to the ``l.N`` line.
+    Of the lines before ``l.N`` only an ``<argument>`` line is kept, which ends
+    at the command TeX stopped on.
+    """
     lines = [line.rstrip() for line in log.splitlines()]
     for number, line in enumerate(lines):
         if line.startswith("!"):
-            location = next((later for later in lines[number + 1 :] if _TEX_LOCATION.match(later)), None)
-            return [line] if location is None else [line, location]
+            context = lines[number + 1 :]
+            end = next((index for index, later in enumerate(context) if _TEX_LOCATION.match(later)), None)
+            if end is None:
+                return [line]
+            argument = next(([later] for later in context[:end] if later.startswith("<argument>")), [])
+            return [line, *argument, context[end]]
     return []
 
 

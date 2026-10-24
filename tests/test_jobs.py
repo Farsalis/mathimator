@@ -37,6 +37,8 @@ from tests.support import REPO, FakeManim, Stdout, complete_clip, iso_box, video
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 CAPTURES = REPO / "tests" / "fixtures" / "manim"
+# The message for the TeX log in CAPTURES of a formula that misspells \sin (D11).
+UNDEFINED_SINN = "LaTeX failed.\n! Undefined control sequence.\n<argument>  y = \\sinn\nl.8 \\end{align*}"
 QUEUED = {"event": "queued", "code": "stopping_previous", "message": "Waiting for the previous render to stop."}
 CANCELLED = {"event": "error", "code": "cancelled", "message": "cancelled"}
 IN_USE = "The process cannot access the file because it is being used by another process"
@@ -642,17 +644,24 @@ def test_a_folder_is_published_whole_or_not_at_all(tmp_path: Path, monkeypatch: 
 # render_failed (D11, D23, F016, F017, F095)
 
 
-def test_a_tex_error_shows_the_error_line_and_where_tex_stopped() -> None:
+def test_a_tex_error_shows_the_error_line_the_bad_command_and_where_tex_stopped() -> None:
     output = _tex_failure_output("Undefined control sequence.")
     undefined = (CAPTURES / "undefined-control-sequence.log").read_text(encoding="utf-8")
-    assert format_render_failure(1, output, undefined) == (
-        "LaTeX failed.\n! Undefined control sequence.\nl.8 \\end{align*}"
-    )
+    # MathTex wraps the formula in align*, so only the <argument> line names \sinn.
+    assert format_render_failure(1, output, undefined) == UNDEFINED_SINN
+    # A context line other than <argument>, here TeX's <read *>, is left out.
     missing = (CAPTURES / "missing-package.log").read_text(encoding="utf-8")
     assert format_render_failure(1, output, missing) == (
         "LaTeX failed.\n! LaTeX Error: File `qrcode.sty' not found.\nl.6 \\begin"
     )
     assert tex_error_lines("This is pdfTeX\nOutput written on scene.dvi (1 page).\n") == []
+
+
+def test_an_argument_line_counts_only_before_where_tex_stopped() -> None:
+    first = ["! Missing $ inserted.", "<inserted text>", "l.9 \\end{align*}"]
+    later = ["! Undefined control sequence.", "<argument> \\sinn", "l.9 \\end{align*}"]
+    assert tex_error_lines("\n".join(first + later)) == ["! Missing $ inserted.", "l.9 \\end{align*}"]
+    assert tex_error_lines("! Emergency stop.\n<argument> \\sinn \n") == ["! Emergency stop."]
 
 
 def test_a_tex_failure_without_a_log_shows_manims_exception() -> None:
@@ -693,7 +702,7 @@ def test_a_failed_render_reads_the_tex_log_it_wrote(
     _run(supervisor, cmd="render_preview", id="preview-1")
     failed = stdout.of("preview-1")[-1]
     assert (failed["event"], failed["code"]) == ("error", "render_failed")
-    assert failed["message"] == "LaTeX failed.\n! Undefined control sequence.\nl.8 \\end{align*}"
+    assert failed["message"] == UNDEFINED_SINN
     # The details are the last lines Manim wrote; worker.log keeps them all (D23).
     assert failed["details"].splitlines() == output
 

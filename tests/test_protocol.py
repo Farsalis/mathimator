@@ -218,6 +218,26 @@ def test_an_unexpected_failure_is_internal_and_changes_nothing(
     assert "RuntimeError: handler bug" in log
 
 
+def test_an_edit_its_template_would_undo_is_an_invalid_edit_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout
+) -> None:
+    supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
+    saved = supervisor.layout.project_file.read_bytes()
+    # The plot's color belongs to the axes_function template, which this edit now leaves alone (F072).
+    monkeypatch.setattr("mathimator_worker.session._template_plot", lambda *args: None)
+    _send(supervisor, cmd="edit", id="e", edit={"op": "set_object_color", "objectId": "plot_1", "color": "#FF0000"})
+    assert stdout.read() == [
+        {
+            "event": "rejected",
+            "jobId": "e",
+            "code": "invalid_edit",
+            "message": "scene.objects[1].params.color is set by its template, so this edit cannot change it.",
+        }
+    ]
+    assert _undo_depth(supervisor) == 0
+    assert supervisor.layout.project_file.read_bytes() == saved
+
+
 def test_a_change_that_cannot_be_saved_is_not_applied(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout
 ) -> None:

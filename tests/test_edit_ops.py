@@ -3,7 +3,7 @@
 Load rewrites every field a template owns from its template. An edit that
 changes such a field has to change the template too, or reading the edited
 document back would quietly undo it. ``Session.edited`` reads every edit
-back and fails one that changed on the way.
+back and refuses one that changed on the way, naming the field.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import pytest
 from mathimator_worker import session as session_module
 from mathimator_worker.codegen import _ANCHOR_CALL
 from mathimator_worker.document import ANCHORS, Project, dumps_project, empty_project, load_text
+from mathimator_worker.document_error import DocumentError
 from mathimator_worker.session import Session
 from tests.support import REPO
 
@@ -85,13 +86,16 @@ def test_an_edit_survives_reading_the_document_back(start: str, edit: dict[str, 
     assert dumps_project(load_text(saved)) == saved
 
 
-def test_an_edit_that_skips_its_template_fails_and_changes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_edit_that_skips_its_template_is_refused_and_changes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     session = Session(_document("reference"))
     before = dumps_project(session.project)
     # The plot's expression belongs to the axes_function template, which this edit now leaves alone.
     monkeypatch.setattr(session_module, "_template_plot", lambda *args: None)
-    with pytest.raises(RuntimeError, match="set_expression changed a field a template owns"):
+    with pytest.raises(DocumentError) as refused:
         session.edit({"op": "set_expression", "objectId": "plot_1", "expression": "cos(x)"})
+    field = "scene.objects[1].params.expression"
+    assert (refused.value.code, refused.value.field) == ("invalid_edit", None)
+    assert str(refused.value) == f"{field} is set by its template, so this edit cannot change it."
     assert dumps_project(session.project) == before
     assert not session.can_undo()
 

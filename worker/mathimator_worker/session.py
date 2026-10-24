@@ -46,7 +46,7 @@ from mathimator_worker.document import (
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import assert_supported
 from mathimator_worker.identity import beat_cache_keys, scene_stamp
-from mathimator_worker.jsonio import JsonValue
+from mathimator_worker.jsonio import JsonValue, dumps_document
 from mathimator_worker.preview_index import PreviewIndex
 from mathimator_worker.templates import (
     DEFAULT_LATEX,
@@ -96,23 +96,22 @@ class Session:
         The edited document is read back as project.json is, which checks it
         whole. Reading it back must not change it: load rewrites every field
         a template owns from the template, so an edit that changed such a
-        field without its template would be accepted and lost (F072). That is
-        a bug in the edit, and it raises RuntimeError, which the supervisor
-        answers with ``error internal``.
+        field without its template would be accepted and lost (F072). Such an
+        edit is refused with ``invalid_edit``, naming the field's JSON path.
         """
         trial = load_text(dumps_project(self.project))
         try:
             result = apply_edit(trial, raw)
         except DocumentError as exc:
             raise _edit_refusal(exc, exc.field) from exc
-        text = dumps_project(trial)
         try:
-            reloaded = load_text(text)
+            reloaded = load_text(dumps_project(trial))
         except DocumentError as exc:
             # A whole-document rule, such as plot sampling, has no edit field to name.
             raise _edit_refusal(exc, None) from exc
-        if dumps_project(reloaded) != text:
-            raise RuntimeError(f"edit {raw.get('op')} changed a field a template owns without changing the template")
+        owned = _changed_path(project_dict(trial), project_dict(reloaded))
+        if owned is not None:
+            raise DocumentError(f"{owned} is set by its template, so this edit cannot change it.", code="invalid_edit")
         return reloaded, result
 
     def commit(self, project: Project) -> None:
@@ -247,6 +246,17 @@ def _edit_refusal(exc: DocumentError, field: str | None) -> DocumentError:
     """The refusal of an edit: a document rule becomes ``invalid_edit``, and ``field`` is an edit field."""
     code = "invalid_edit" if exc.code == "invalid_document" else exc.code
     return DocumentError(str(exc), code=code, field=field)
+
+
+def _changed_path(edited: JsonValue, reloaded: JsonValue, path: str = "") -> str | None:
+    """The JSON path of the first value of ``edited`` that ``reloaded`` writes differently, or None."""
+    if isinstance(edited, dict) and isinstance(reloaded, dict) and list(edited) == list(reloaded):
+        children = [(item, reloaded[key], f"{path}.{key}" if path else key) for key, item in edited.items()]
+    elif isinstance(edited, list) and isinstance(reloaded, list) and len(edited) == len(reloaded):
+        children = [(item, reloaded[index], f"{path}[{index}]") for index, item in enumerate(edited)]
+    else:
+        return None if dumps_document(edited) == dumps_document(reloaded) else path
+    return next((found for child in children if (found := _changed_path(*child)) is not None), None)
 
 
 def _set_project_name(project: Project, raw: dict[str, object]) -> EditResult:

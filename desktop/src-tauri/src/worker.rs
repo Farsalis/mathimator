@@ -701,15 +701,16 @@ impl Session<'_> {
     }
 
     /// Whether the bound project is a touched temp project (C8.5), while the worker is not
-    /// unavailable.
+    /// unavailable. An unmarked temp folder, such as one a late reply bound, counts as touched:
+    /// pruning may delete it whatever its project.json holds.
     fn is_touched_temp_project(&self) -> bool {
         if matches!(self.status, Status::Unavailable(_)) {
             return false;
         }
         self.shared.project().is_some_and(|folder| {
-            self.shared
-                .temp_marker(&folder)
-                .is_some_and(|marker| marker.is_touched(&folder))
+            self.shared.temp_folder(&folder).is_some_and(|folder| {
+                Marker::read(&folder).is_none_or(|marker| marker.is_touched(&folder))
+            })
         })
     }
 }
@@ -916,19 +917,22 @@ impl Shared {
         }
     }
 
-    /// The marker of `folder` when it is a temp project the shell made (C8.5): a marked
-    /// `mathimator-<digits>-<digits>` folder in the temp root, as pruning requires, so that a copy
-    /// kept elsewhere is never taken for one. The paths are compared in canonical form, so an 8.3
-    /// %TEMP% still matches the long form the worker reports.
-    fn temp_marker(&self, folder: &Path) -> Option<Marker> {
+    /// `folder` in canonical form when it is a temp folder (C8.5): a `mathimator-<digits>-<digits>`
+    /// folder in the temp root, as pruning requires, so that a copy kept elsewhere is never taken
+    /// for one. The paths are compared in canonical form, so an 8.3 %TEMP% still matches the long
+    /// form the worker reports.
+    fn temp_folder(&self, folder: &Path) -> Option<PathBuf> {
         let folder = fs::canonicalize(folder).ok()?;
         let temp_root = fs::canonicalize(&self.temp_root).ok()?;
-        if folder.parent() != Some(temp_root.as_path())
-            || temp_project::created_ms_in_name(&folder).is_none()
-        {
-            return None;
-        }
-        Marker::read(&folder)
+        let is_temp = folder.parent() == Some(temp_root.as_path())
+            && temp_project::created_ms_in_name(&folder).is_some();
+        is_temp.then_some(folder)
+    }
+
+    /// The marker of `folder` when it is a temp project the shell made (C8.5): a marked temp
+    /// folder.
+    fn temp_marker(&self, folder: &Path) -> Option<Marker> {
+        Marker::read(&self.temp_folder(folder)?)
     }
 
     /// Whether `old`, the folder Save As just moved away from, is a temp project the shell may
@@ -2409,6 +2413,22 @@ mod tests {
         let lesson = test.root.join("lesson");
         fs::create_dir(&lesson).unwrap();
         block_on(test.worker.open_project(&lesson)).unwrap();
+        assert!(!block_on(test.worker.is_touched_temp_project()));
+    }
+
+    #[test]
+    fn an_unmarked_temp_folder_asks_before_it_is_left() {
+        // A temp folder bound by a late reply, which the shell never marked. Pruning may delete it
+        // whatever its project.json holds.
+        let test = Test::start(answer);
+        let late = test.root.join("mathimator-1-2");
+        fs::create_dir(&late).unwrap();
+        block_on(test.worker.open_project(&late)).unwrap();
+        assert!(block_on(test.worker.is_touched_temp_project()));
+        // A folder with that name elsewhere is one the user keeps.
+        let kept = test.root.join("lessons").join("mathimator-1-2");
+        fs::create_dir_all(&kept).unwrap();
+        block_on(test.worker.open_project(&kept)).unwrap();
         assert!(!block_on(test.worker.is_touched_temp_project()));
     }
 

@@ -86,10 +86,9 @@ pub fn created_ms_in_name(folder: &Path) -> Option<u64> {
 ///
 /// - A marked folder must be untouched: its project.json still hashes to the seed, and it
 ///   published no export. Its age is the marker's `createdMs`.
-/// - An unmarked folder must come from an older build, and have published no export. Its age
-///   comes from its name. A worker of this build that bound a folder left a lock file there, so
-///   a folder it bound unmarked is never pruned: one bound by a late reply, or one whose marker
-///   could not be written.
+/// - An unmarked folder must have published no export, whatever its project.json holds. Its age
+///   comes from its name. Older builds wrote no marker, and this build leaves a folder unmarked
+///   when a late reply binds it or the marker cannot be written.
 pub fn prune(temp_root: &Path, keep: &[PathBuf], now_ms: u64, log: &dyn Fn(&str)) {
     let Ok(entries) = fs::read_dir(temp_root) else {
         return;
@@ -130,19 +129,13 @@ fn is_prunable(folder: &Path, now_ms: u64) -> bool {
     let is_old = |created_ms: u64| now_ms.saturating_sub(created_ms) >= PRUNE_AGE_MS;
     let unused = match Marker::read(folder) {
         Some(marker) => is_old(marker.created_ms) && !marker.is_touched(folder),
-        None => is_old(named_ms) && !has_exports(folder) && !was_bound(folder),
+        None => is_old(named_ms) && !has_exports(folder),
     };
     unused && !is_locked(folder)
 }
 
 fn lock_file(folder: &Path) -> PathBuf {
     folder.join(".mathimator").join("lock")
-}
-
-/// Whether a worker of this build has bound `folder`: each one creates the lock file (C8.1, D58),
-/// which older builds never made. A lock file that cannot be checked counts as there.
-fn was_bound(folder: &Path) -> bool {
-    lock_file(folder).try_exists().unwrap_or(true)
 }
 
 fn has_exports(folder: &Path) -> bool {
@@ -346,37 +339,47 @@ mod tests {
     }
 
     #[test]
-    fn pruning_deletes_unmarked_folders_from_older_builds_that_published_nothing() {
+    fn pruning_deletes_unmarked_folders_from_24_hours_ago_that_published_nothing() {
         let scratch = Scratch::new();
+        // From an older build, which wrote no marker and no lock file.
         let edited = scratch.project(&named(NOW - PRUNE_AGE_MS));
         fs::write(edited.join("project.json"), b"{\"name\": \"Waves\"}").unwrap();
         let bare = scratch.0.join(named(1));
         fs::create_dir(&bare).unwrap();
+        // Bound by this build through a late reply, or left unmarked when the marker could not be
+        // written. The workers that bound them have exited, so neither lock is held.
+        let bound_edited = scratch.project(&named(2));
+        fs::write(bound_edited.join("project.json"), b"{\"name\": \"Waves\"}").unwrap();
+        File::create(lock_file(&bound_edited)).unwrap();
+        let bound_untouched = scratch.project(&named(3));
+        File::create(lock_file(&bound_untouched)).unwrap();
         let young = scratch.project(&named(NOW - PRUNE_AGE_MS + 1));
-        let exported = scratch.project(&named(2));
+        let exported = scratch.project(&named(4));
+        File::create(lock_file(&exported)).unwrap();
         export_a_movie(&exported);
 
         let mut logs = scratch.prune(&[]);
         logs.sort();
-        let mut expected = [pruned(&edited), pruned(&bare)];
+        let mut expected =
+            [&edited, &bare, &bound_edited, &bound_untouched].map(|folder| pruned(folder));
         expected.sort();
         assert_eq!(logs, expected);
         assert!(young.is_dir() && exported.is_dir());
     }
 
     #[test]
-    fn pruning_keeps_unmarked_folders_a_worker_of_this_build_bound() {
-        // Bound by a late reply, or left unmarked when the marker could not be written. Neither
-        // lock is held: the workers that bound them have exited.
+    fn pruning_keeps_unmarked_folders_that_are_locked_or_kept() {
         let scratch = Scratch::new();
-        let edited = scratch.project(&named(1));
-        fs::write(edited.join("project.json"), b"{\"name\": \"Waves\"}").unwrap();
-        File::create(lock_file(&edited)).unwrap();
-        let untouched = scratch.project(&named(2));
-        File::create(lock_file(&untouched)).unwrap();
+        let locked = scratch.project(&named(1));
+        let lock = File::create(lock_file(&locked)).unwrap();
+        lock.lock().unwrap();
+        // The last project, which no worker has reopened yet.
+        let keep = [scratch.project(&named(2))];
 
-        assert!(scratch.prune(&[]).is_empty());
-        assert!(edited.is_dir() && untouched.is_dir());
+        assert!(scratch.prune(&keep).is_empty());
+        assert!(locked.is_dir() && keep[0].is_dir());
+        drop(lock);
+        assert_eq!(scratch.prune(&keep), [pruned(&locked)]);
     }
 
     #[test]
