@@ -1,4 +1,5 @@
 use std::fs::{self, File, OpenOptions};
+use std::future::Future;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -7,14 +8,19 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{async_runtime, AppHandle, Emitter, Manager, State, Window};
-use tauri_plugin_dialog::{DialogExt, FileDialogBuilder, FilePath};
+use tauri::{async_runtime, AppHandle, Emitter, Manager, State, Window, WindowEvent};
+use tauri_plugin_dialog::{
+    DialogExt, FileDialogBuilder, FilePath, MessageDialogButtons, MessageDialogKind,
+    MessageDialogResult,
+};
 
 mod equation;
 mod protocol;
 mod runtime;
+mod sha256;
+mod temp_project;
 mod tex;
 mod win32_job;
 mod worker;
@@ -22,7 +28,7 @@ mod worker;
 use equation::GlyphPreview;
 use protocol::{ErrorCode, ShellError};
 use runtime::{Runtime, WorkerFiles};
-use worker::{Host, Spawned, Spawner, Worker, WorkerProcess};
+use worker::{event_of, message_of, Host, Spawned, Spawner, Worker, WorkerProcess};
 
 /// The variable that makes the worker refuse formulas with its text (C9.6, C9.7).
 const TEX_ERROR: &str = "MATHIMATOR_TEX_ERROR";
@@ -34,11 +40,21 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn unix_millis() -> u128 {
+fn unix_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
+}
+
+/// Replaces `file` with `bytes` through a temp file beside it, so that no reader sees half of it.
+fn write_atomically(file: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut temp = file.as_os_str().to_owned();
+    temp.push(".tmp");
+    fs::write(&temp, bytes)?;
+    fs::rename(&temp, file).inspect_err(|_| {
+        let _ = fs::remove_file(&temp);
+    })
 }
 
 /// shell.log and supervisor.err go to the repository's out/logs in debug builds and to the app
@@ -247,6 +263,18 @@ impl Shell {
         self.logs.join("supervisor.err")
     }
 
+    /// The `lastProject` of state.json, which the launch reopens (C8.5).
+    fn last_project(&self) -> Option<PathBuf> {
+        let file = self.state_file.as_ref()?;
+        read_last_project(file)
+            .inspect_err(|err| {
+                if err.kind() != io::ErrorKind::NotFound {
+                    self.log(&format!("Could not read {}: {err}", file.display()));
+                }
+            })
+            .ok()
+    }
+
     fn status(&self, unavailable: Option<String>) -> AppStatus {
         AppStatus::new(unavailable, self.tex.status(), &lock(&self.notices))
     }
@@ -447,27 +475,32 @@ impl Notices {
     }
 }
 
+/// `<app_config_dir>\state.json` (C8.5).
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppState {
+    /// The project the next launch reopens.
+    last_project: PathBuf,
+}
+
+fn read_last_project(file: &Path) -> io::Result<PathBuf> {
+    let state: AppState = serde_json::from_slice(&fs::read(file)?)?;
+    Ok(state.last_project)
+}
+
 /// Rewrites state.json with `project` as `lastProject`, atomically (C8.5).
 fn write_last_project(file: &Path, project: &Path) -> io::Result<()> {
-    #[derive(Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct AppState<'a> {
-        last_project: &'a Path,
-    }
-
-    let text = serde_json::to_string(&AppState {
-        last_project: project,
-    })?;
+    let state = AppState {
+        last_project: project.to_owned(),
+    };
     if let Some(folder) = file.parent() {
         fs::create_dir_all(folder)?;
     }
-    let temp = file.with_extension("json.tmp");
-    fs::write(&temp, text)?;
-    fs::rename(&temp, file)
+    write_atomically(file, &serde_json::to_vec(&state)?)
 }
 
 /// One native dialog at a time (F130). A dialog command that arrives while another is pending
-/// is answered `{cancelled: true}`.
+/// is answered `{cancelled: true}`, and a close request leaves the window open.
 #[derive(Default)]
 struct Dialogs(AtomicBool);
 
@@ -506,6 +539,169 @@ fn picked_path(picked: FilePath) -> Result<PathBuf, ShellError> {
 
 fn cancelled() -> Value {
     json!({"cancelled": true})
+}
+
+/// The first line of the warning before a touched temp project is left (C8.5).
+const TEMP_WARNING: &str = "This project is in a temporary folder that Windows may delete.";
+const SAVE_AS: &str = "Save As\u{2026}";
+
+/// What leaves the bound project: quitting (C8.5, C14 Q8), or Open, Sample or New (C14 Q2).
+#[derive(Clone, Copy)]
+enum Leaving {
+    Quit,
+    Switch,
+}
+
+/// What the user picked in the temp-project warning.
+#[derive(Debug, PartialEq)]
+enum Choice {
+    SaveAs,
+    Leave,
+    Stay,
+}
+
+impl Leaving {
+    /// The warning's question, and the label of the button that leaves without saving.
+    fn words(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Quit => ("Save it before quitting?", "Quit"),
+            Self::Switch => ("Save it before switching projects?", "Don't Save"),
+        }
+    }
+
+    /// Reads the warning's result. Closing the warning stays, as Cancel does.
+    fn choice(self, result: &MessageDialogResult) -> Choice {
+        let (_, leave_label) = self.words();
+        match result {
+            MessageDialogResult::Custom(label) if label == SAVE_AS => Choice::SaveAs,
+            MessageDialogResult::Custom(label) if label == leave_label => Choice::Leave,
+            _ => Choice::Stay,
+        }
+    }
+}
+
+/// How leaving the bound project ended.
+enum Left {
+    /// Nothing needed saving, or the user chose not to save it.
+    Unsaved,
+    /// Save As moved the project; its `state` reply.
+    Saved(Value),
+    /// The user stayed. The reply to return instead: `{cancelled: true}`, or a Save As refusal.
+    Stayed(Value),
+}
+
+/// Asks before leaving a touched temp project, with Save As (C8.5, C14 Q2, Q8). An untouched
+/// one is left without a word.
+async fn leave(
+    app: &AppHandle,
+    window: &Window,
+    worker: &Worker,
+    leaving: Leaving,
+) -> Result<Left, ShellError> {
+    if !worker.is_touched_temp_project().await {
+        return Ok(Left::Unsaved);
+    }
+    let (question, leave_label) = leaving.words();
+    let result = app
+        .dialog()
+        .message(format!("{TEMP_WARNING} {question}"))
+        .parent(window)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::YesNoCancelCustom(
+            SAVE_AS.to_owned(),
+            leave_label.to_owned(),
+            "Cancel".to_owned(),
+        ))
+        .blocking_show_with_result();
+    Ok(match leaving.choice(&result) {
+        Choice::Leave => Left::Unsaved,
+        Choice::Stay => Left::Stayed(cancelled()),
+        Choice::SaveAs => {
+            let reply = save_as(app, window, worker).await?;
+            if event_of(&reply) == Some("state") {
+                Left::Saved(reply)
+            } else {
+                Left::Stayed(reply)
+            }
+        }
+    })
+}
+
+/// Save As (C8.5): a parented folder picker, then `save_as`. Returns the reply, or
+/// `{cancelled: true}` when no folder was picked.
+async fn save_as(app: &AppHandle, window: &Window, worker: &Worker) -> Result<Value, ShellError> {
+    let picked = parented(app.dialog().file(), window)
+        .set_title("Save project as")
+        .blocking_pick_folder();
+    let Some(folder) = picked else {
+        return Ok(cancelled());
+    };
+    worker.save_project_as(&picked_path(folder)?).await
+}
+
+/// Open, Sample and New (C14 Q2): asks before a touched temp project is left, then awaits `open`,
+/// which binds another project, or gives `None` when the user picked none. Like every future,
+/// `open` does nothing until it is awaited, so nothing runs when the user stays.
+async fn switch_project(
+    app: &AppHandle,
+    window: &Window,
+    worker: &Worker,
+    host: &dyn Host,
+    open: impl Future<Output = Result<Option<Value>, ShellError>>,
+) -> Result<Value, ShellError> {
+    match leave(app, window, worker, Leaving::Switch).await? {
+        Left::Unsaved => Ok(open.await?.unwrap_or_else(cancelled)),
+        Left::Saved(state) => Ok(after_save_as(host, state, open.await)),
+        Left::Stayed(reply) => Ok(reply),
+    }
+}
+
+/// What Open, Sample or New returns after a Save As in the leave warning, which already moved
+/// the project. When the command binds no other project, the UI gets the Save As state, so that
+/// it follows the move, and why the command failed becomes a notice.
+fn after_save_as(
+    host: &dyn Host,
+    saved: Value,
+    opened: Result<Option<Value>, ShellError>,
+) -> Value {
+    let reason = match opened {
+        Ok(Some(reply)) if event_of(&reply) == Some("state") => return reply,
+        Ok(Some(reply)) => message_of(&reply),
+        Ok(None) => return saved,
+        Err(err) => err.message,
+    };
+    let reason = reason.trim_end_matches('.');
+    host.notice(format!(
+        "The project was saved, but the next project could not be opened: {reason}."
+    ));
+    saved
+}
+
+/// The quit warning (C8.5, C14 Q8), on the window's close request. The window closes unless the
+/// user stays: Cancel, a cancelled picker, or a Save As that failed, whose reason is shown. While
+/// another dialog command runs, the window stays open.
+async fn confirm_quit(window: Window) {
+    let app = window.app_handle();
+    let dialogs = app.state::<Dialogs>();
+    let Some(_turn) = dialogs.begin() else {
+        return;
+    };
+    let reason = match leave(app, &window, &app.state::<Worker>(), Leaving::Quit).await {
+        Ok(Left::Unsaved | Left::Saved(_)) => {
+            let _ = window.destroy();
+            return;
+        }
+        Ok(Left::Stayed(reply)) => match reply.get("message").and_then(Value::as_str) {
+            Some(message) => message.to_owned(),
+            None => return,
+        },
+        Err(err) => err.message,
+    };
+    app.dialog()
+        .message(reason)
+        .parent(&window)
+        .kind(MessageDialogKind::Error)
+        .blocking_show();
 }
 
 #[tauri::command]
@@ -576,20 +772,38 @@ async fn overwrite_project(worker: State<'_, Worker>) -> Result<Value, ShellErro
 }
 
 #[tauri::command]
-async fn new_project(worker: State<'_, Worker>) -> Result<Value, ShellError> {
-    worker.new_project().await
+async fn new_project(
+    app: AppHandle,
+    window: Window,
+    worker: State<'_, Worker>,
+    shell: State<'_, Arc<Shell>>,
+    dialogs: State<'_, Dialogs>,
+) -> Result<Value, ShellError> {
+    let Some(_turn) = dialogs.begin() else {
+        return Ok(cancelled());
+    };
+    let open = async { worker.new_project().await.map(Some) };
+    switch_project(&app, &window, &worker, &**shell, open).await
 }
 
 #[tauri::command]
 async fn open_sample(
+    app: AppHandle,
+    window: Window,
     worker: State<'_, Worker>,
     runtime: State<'_, Runtime>,
+    shell: State<'_, Arc<Shell>>,
+    dialogs: State<'_, Dialogs>,
 ) -> Result<Value, ShellError> {
     let sample = match &runtime.worker {
         Ok(files) => files.sample.clone(),
         Err(reason) => return Err(ShellError::new(ErrorCode::WorkerUnavailable, reason)),
     };
-    worker.open_sample(sample).await
+    let Some(_turn) = dialogs.begin() else {
+        return Ok(cancelled());
+    };
+    let open = async { worker.open_sample(sample).await.map(Some) };
+    switch_project(&app, &window, &worker, &**shell, open).await
 }
 
 #[tauri::command]
@@ -597,18 +811,22 @@ async fn open_project_dialog(
     app: AppHandle,
     window: Window,
     worker: State<'_, Worker>,
+    shell: State<'_, Arc<Shell>>,
     dialogs: State<'_, Dialogs>,
 ) -> Result<Value, ShellError> {
     let Some(_turn) = dialogs.begin() else {
         return Ok(cancelled());
     };
-    let picked = parented(app.dialog().file(), &window)
-        .set_title("Open Mathimator project")
-        .blocking_pick_folder();
-    let Some(folder) = picked else {
-        return Ok(cancelled());
+    let open = async {
+        let picked = parented(app.dialog().file(), &window)
+            .set_title("Open Mathimator project")
+            .blocking_pick_folder();
+        match picked {
+            Some(folder) => worker.open_project(&picked_path(folder)?).await.map(Some),
+            None => Ok(None),
+        }
     };
-    worker.open_project(&picked_path(folder)?).await
+    switch_project(&app, &window, &worker, &**shell, open).await
 }
 
 #[tauri::command]
@@ -621,13 +839,7 @@ async fn save_project_as_dialog(
     let Some(_turn) = dialogs.begin() else {
         return Ok(cancelled());
     };
-    let picked = parented(app.dialog().file(), &window)
-        .set_title("Save project as")
-        .blocking_pick_folder();
-    let Some(folder) = picked else {
-        return Ok(cancelled());
-    };
-    worker.save_project_as(&picked_path(folder)?).await
+    save_as(&app, &window, &worker).await
 }
 
 #[tauri::command]
@@ -805,6 +1017,7 @@ pub fn run() {
                 shell.clone(),
                 spawn,
                 std::env::temp_dir(),
+                shell.last_project(),
                 shell.supervisor_err(),
             );
             app.manage(GlyphPreview::new(runtime.typst.clone()));
@@ -813,7 +1026,17 @@ pub fn run() {
             app.manage(shell);
             app.manage(Dialogs::default());
             async_runtime::spawn(check_tex(handle.clone()));
+            let pruning = handle.clone();
+            async_runtime::spawn(async move {
+                pruning.state::<Worker>().prune_temp_projects().await;
+            });
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                async_runtime::spawn(confirm_quit(window.clone()));
+            }
         })
         .invoke_handler(invoke_handler())
         .run(tauri::generate_context!())
@@ -873,16 +1096,112 @@ mod tests {
 
     #[test]
     fn state_json_round_trips_the_last_project() {
-        let folder =
-            std::env::temp_dir().join(format!("mathimator-state-test-{}", std::process::id()));
+        let folder = scratch("state");
         let file = folder.join("config").join("state.json");
+        assert_eq!(
+            read_last_project(&file).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
         write_last_project(&file, Path::new("C:\\Users\\me\\Lessons\\waves")).unwrap();
         write_last_project(&file, Path::new("C:\\Users\\me\\Lessons\\sine")).unwrap();
         let saved: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        let read = read_last_project(&file).unwrap();
+        let left: Vec<_> = fs::read_dir(file.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
         let _ = fs::remove_dir_all(&folder);
         assert_eq!(
             saved,
             json!({"lastProject": "C:\\Users\\me\\Lessons\\sine"})
+        );
+        assert_eq!(read, Path::new("C:\\Users\\me\\Lessons\\sine"));
+        assert_eq!(left, ["state.json"], "a temp file was left");
+    }
+
+    #[test]
+    fn a_state_json_without_a_last_project_is_an_error() {
+        let folder = scratch("state-invalid");
+        let file = folder.join("state.json");
+        let refused = ["{", "{}", "{\"lastProject\": 3}"].map(|text| {
+            fs::write(&file, text).unwrap();
+            read_last_project(&file).is_err()
+        });
+        let _ = fs::remove_dir_all(&folder);
+        assert_eq!(refused, [true; 3]);
+    }
+
+    #[test]
+    fn the_temp_project_warning_reads_its_buttons() {
+        let custom = |label: &str| MessageDialogResult::Custom(label.to_owned());
+        for leaving in [Leaving::Quit, Leaving::Switch] {
+            let (_, leave_label) = leaving.words();
+            assert_eq!(leaving.choice(&custom(SAVE_AS)), Choice::SaveAs);
+            assert_eq!(leaving.choice(&custom(leave_label)), Choice::Leave);
+            assert_eq!(leaving.choice(&custom("Cancel")), Choice::Stay);
+            assert_eq!(leaving.choice(&MessageDialogResult::Cancel), Choice::Stay);
+        }
+        assert_eq!(Leaving::Quit.choice(&custom("Don't Save")), Choice::Stay);
+        assert_eq!(Leaving::Switch.choice(&custom("Quit")), Choice::Stay);
+    }
+
+    /// Keeps the notices the shell is asked to add.
+    #[derive(Default)]
+    struct Notified(Mutex<Vec<String>>);
+
+    impl Host for Notified {
+        fn emit(&self, _event: Value) {}
+
+        fn bind(&self, _project: &Path) {}
+
+        fn log(&self, _message: &str) {}
+
+        fn notice(&self, message: String) {
+            lock(&self.0).push(message);
+        }
+    }
+
+    fn saved_state() -> Value {
+        json!({"event": "state", "jobId": "rpc-3", "projectPath": "C:\\Lessons\\waves"})
+    }
+
+    #[test]
+    fn a_switch_after_save_as_returns_its_own_state_or_the_saved_one_when_cancelled() {
+        let opened =
+            json!({"event": "state", "jobId": "rpc-4", "projectPath": "C:\\Lessons\\sine"});
+        let host = Notified::default();
+        assert_eq!(
+            after_save_as(&host, saved_state(), Ok(Some(opened.clone()))),
+            opened
+        );
+        assert_eq!(after_save_as(&host, saved_state(), Ok(None)), saved_state());
+        assert!(lock(&host.0).is_empty());
+    }
+
+    #[test]
+    fn a_switch_that_fails_after_save_as_returns_the_saved_state_and_a_notice() {
+        let refused = json!({
+            "event": "rejected",
+            "jobId": "rpc-4",
+            "code": "not_a_project",
+            "message": "That folder is not a Mathimator project.",
+        });
+        let failed = ShellError::new(ErrorCode::Timeout, "The worker did not answer in time.");
+        let host = Notified::default();
+        assert_eq!(
+            after_save_as(&host, saved_state(), Ok(Some(refused))),
+            saved_state()
+        );
+        assert_eq!(
+            after_save_as(&host, saved_state(), Err(failed)),
+            saved_state()
+        );
+        assert_eq!(
+            *lock(&host.0),
+            [
+                "The project was saved, but the next project could not be opened: That folder is not a Mathimator project.",
+                "The project was saved, but the next project could not be opened: The worker did not answer in time.",
+            ]
         );
     }
 

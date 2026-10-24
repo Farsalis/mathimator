@@ -1,7 +1,7 @@
 //! The worker as the shell runs it: start and handshake (contract C6), the request gate and the
 //! per-generation pending replies (C9.1, C9.2), routing worker stdout (C9.4), exit and respawn
-//! (C8.6), and the status the UI starts from (C9.5). Every worker-bound command of C9.1 has a
-//! method on [`Worker`].
+//! (C8.6), the temp projects it is started on (C8.5), and the status the UI starts from (C9.5).
+//! Every worker-bound command of C9.1 has a method on [`Worker`].
 
 use std::collections::HashMap;
 use std::fs;
@@ -18,7 +18,8 @@ use serde_json::{json, Value};
 use tauri::async_runtime;
 
 use crate::protocol::{ErrorCode, Request, ShellError, PROTOCOL_VERSION};
-use crate::{lock, unix_millis};
+use crate::temp_project::{self, Marker};
+use crate::{lock, sha256, unix_millis};
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const CLEAR_CACHE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -106,11 +107,14 @@ struct Process {
     stopping: AtomicBool,
 }
 
+/// Where a worker starts (C8.5 launch step 2, C8.6 step 5).
 #[derive(Clone, Copy)]
 enum Start {
-    /// The first worker, on a new temp project (C8.5).
-    Launch,
-    /// After an exit, on the bound folder (C8.6).
+    /// The first worker, on the last project of the previous run.
+    Reopen,
+    /// On a new temp project, the only start with `--init`.
+    New,
+    /// After an exit, on the bound folder.
     Respawn,
 }
 
@@ -120,6 +124,8 @@ struct Shared {
     spawn: Result<Spawner, String>,
     /// Where temp projects are created.
     temp_root: PathBuf,
+    /// The last project of the previous run, until the first worker takes it (C8.5).
+    reopen: Mutex<Option<PathBuf>>,
     /// supervisor.err, which the "stopped during startup" reason points to.
     stderr_log: PathBuf,
     /// The one counter behind every request and job id (C2).
@@ -208,19 +214,22 @@ impl Gate {
 }
 
 impl Worker {
-    /// Starts the first worker in the background, on a new temp project in `temp_root`. Every
-    /// worker-bound command waits until its handshake is done (C6). Without a spawner, every
-    /// command fails with `worker_unavailable` and the reason (D31).
+    /// Starts the first worker in the background: on `last_project` when it is still a project
+    /// folder, else on a new temp project in `temp_root` (C8.5). Every worker-bound command waits
+    /// until its handshake is done (C6). Without a spawner, every command fails with
+    /// `worker_unavailable` and the reason (D31).
     pub fn launch(
         host: Arc<dyn Host>,
         spawn: Result<Spawner, String>,
         temp_root: PathBuf,
+        last_project: Option<PathBuf>,
         stderr_log: PathBuf,
     ) -> Self {
         let shared = Arc::new(Shared {
             host,
             spawn,
             temp_root,
+            reopen: Mutex::new(last_project),
             stderr_log,
             next_id: AtomicU64::new(1),
             next_generation: AtomicU64::new(1),
@@ -293,6 +302,32 @@ impl Worker {
             Ok(())
         })
         .await
+    }
+
+    /// Whether leaving the bound project asks first: it is a touched temp project, and a worker
+    /// can still save it elsewhere (C8.5, C14 Q2, Q8). The check holds the request gate, so it
+    /// sees what the request in flight wrote, but it starts no worker.
+    pub async fn is_touched_temp_project(&self) -> bool {
+        self.hold(|session| Ok(session.is_touched_temp_project()))
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Deletes the temp projects that pruning allows, once the launch is done (C8.5 launch step
+    /// 5). The bound project is kept, and so is a last project no worker has taken yet.
+    pub async fn prune_temp_projects(&self) {
+        self.launched().await;
+        let shared = Arc::clone(&self.shared);
+        let _ = async_runtime::spawn_blocking(move || {
+            let keep: Vec<PathBuf> = [shared.project(), lock(&shared.reopen).clone()]
+                .into_iter()
+                .flatten()
+                .collect();
+            temp_project::prune(&shared.temp_root, &keep, unix_millis(), &|line| {
+                shared.host.log(line);
+            });
+        })
+        .await;
     }
 
     pub async fn get_state(&self) -> Result<Value, ShellError> {
@@ -416,36 +451,49 @@ impl Session<'_> {
         })
     }
 
-    /// Ends the old worker, then starts one on the bound folder, or at launch on a new temp
-    /// project, and runs the handshake (C6). Returns the reason the worker is unavailable.
+    /// Ends the old worker, then starts one and runs the handshake (C6). The worker starts on the
+    /// bound folder after an exit (C8.6), on the last project at launch, and otherwise on a new
+    /// temp project (C8.5). Returns the reason the worker is unavailable.
     fn start(&mut self) -> Result<(), String> {
         self.stop()?;
         let shared = self.shared;
         let spawn = shared.spawn.as_ref().map_err(String::clone)?;
         let (folder, start) = match shared.project() {
             Some(folder) => (folder, Start::Respawn),
-            None => (
-                shared.create_temp_project().map_err(|err| err.message)?,
-                Start::Launch,
-            ),
+            None => match shared.take_reopen() {
+                Some(folder) => (folder, Start::Reopen),
+                None => (
+                    shared.create_temp_project().map_err(|err| err.message)?,
+                    Start::New,
+                ),
+            },
         };
-        let init = matches!(start, Start::Launch);
+        let init = matches!(start, Start::New);
+        // Bound before the spawn: a folder the worker could not start on stays bound, so a retry
+        // starts there again, unless it is a new one, which is abandoned.
+        shared.set_project(&folder);
         let spawned = spawn(&folder, init).map_err(|err| {
             if init {
-                shared.remove_folder(&folder);
+                shared.abandon(&folder);
             }
             format!("Could not start the worker: {err}.")
         })?;
         shared
             .host
             .log(&format!("Started a worker on {}.", folder.display()));
-        shared.set_project(&folder);
         *self.status = Status::Running(shared.connect(spawned));
         let started = self
             .handshake()
             .and_then(|startup_error| match startup_error {
                 Some(error) => self.recover(&folder, &error, start),
-                None => Ok(()),
+                None => {
+                    // C8.5 launch step 4, before the commands waiting for the launch go on.
+                    if init {
+                        shared.mark(&folder, temp_project::seed_of(&folder));
+                    }
+                    shared.report(&folder);
+                    Ok(())
+                }
             });
         if started.is_err() {
             if let Err(reason) = self.stop() {
@@ -517,7 +565,8 @@ impl Session<'_> {
     }
 
     /// Opens a new temp project when the worker could not bind its folder (C8.5 launch step 3,
-    /// C8.6 step 5), and tells the user why.
+    /// C8.6 step 5), and tells the user why. A new temp folder it could not bind held no work:
+    /// it is deleted, and only shell.log hears of it.
     fn recover(
         &mut self,
         folder: &Path,
@@ -530,13 +579,22 @@ impl Session<'_> {
         }
         let reason = message_of(startup_error);
         let reason = reason.trim_end_matches('.');
-        let folder = folder.display();
-        self.shared.host.notice(match start {
-            Start::Launch => format!("Could not reopen {folder}: {reason}. A new project was started."),
-            Start::Respawn => format!(
-                "Could not reopen {folder} after the worker restarted: {reason}. A new project was started."
-            ),
-        });
+        let shown = folder.display();
+        let host = &self.shared.host;
+        match start {
+            Start::Reopen => host.notice(format!(
+                "Could not reopen {shown}: {reason}. A new project was started."
+            )),
+            Start::Respawn => host.notice(format!(
+                "Could not reopen {shown} after the worker restarted: {reason}. A new project was started."
+            )),
+            Start::New => {
+                host.log(&format!(
+                    "The worker could not start a project in {shown}: {reason}."
+                ));
+                self.shared.remove_folder(folder);
+            }
+        }
         Ok(())
     }
 
@@ -582,32 +640,50 @@ impl Session<'_> {
             .map_err(Failure::Write)
     }
 
-    /// New (C8.5): opens a new temp project.
+    /// New (C8.5): opens a new temp project, which the worker fills with an empty project.
     fn open_new_project(&mut self) -> Result<Value, ShellError> {
         let folder = self.shared.create_temp_project()?;
-        self.open_temp_project(&folder, true)
+        self.open_temp_project(&folder, None)
     }
 
     /// Sample (C8.5): opens a temp copy of the bundled sample.
     fn open_sample(&mut self, sample: &Path) -> Result<Value, ShellError> {
         let folder = self.shared.create_temp_project()?;
-        if let Err(err) = fs::copy(sample, folder.join("project.json")) {
-            self.shared.remove_folder(&folder);
-            return Err(ShellError::new(
-                ErrorCode::Io,
-                format!("Could not copy the sample project: {err}."),
-            ));
+        let copied = fs::read(sample).and_then(|bytes| {
+            fs::write(folder.join("project.json"), &bytes)?;
+            Ok(sha256::hex_digest(&bytes))
+        });
+        match copied {
+            Ok(seed) => self.open_temp_project(&folder, Some(seed)),
+            Err(err) => {
+                self.shared.remove_folder(&folder);
+                Err(ShellError::new(
+                    ErrorCode::Io,
+                    format!("Could not copy the sample project: {err}."),
+                ))
+            }
         }
-        self.open_temp_project(&folder, false)
     }
 
-    /// Opens a temp folder this session created. A refusal deletes the folder. A shell failure
-    /// keeps it, because a late reply may still bind it (C8.5).
-    fn open_temp_project(&mut self, folder: &Path, init: bool) -> Result<Value, ShellError> {
+    /// Opens a temp folder this session created (C8.5). `seed` is the SHA-256 of the project.json
+    /// copied into it. Without one, the worker writes an empty project there (`init`), and the
+    /// seed is read from that. Once the reply confirms the bind, the folder is marked. A refusal
+    /// deletes it. A shell failure keeps it unmarked, because a late reply may still bind it.
+    fn open_temp_project(
+        &mut self,
+        folder: &Path,
+        seed: Option<String>,
+    ) -> Result<Value, ShellError> {
         let path = path_text(folder)?;
+        let init = seed.is_none();
         let reply = self.rpc(&Request::OpenProject { path, init }, RPC_TIMEOUT)?;
-        if event_of(&reply) == Some("rejected") {
-            self.shared.remove_folder(folder);
+        match event_of(&reply) {
+            Some("state") => {
+                let seed = seed.map_or_else(|| temp_project::seed_of(folder), Ok);
+                self.shared.mark(folder, seed);
+            }
+            Some("rejected") => self.shared.remove_folder(folder),
+            _ => {}
         }
         Ok(reply)
     }
@@ -627,6 +703,19 @@ impl Session<'_> {
             }
         }
         Ok(reply)
+    }
+
+    /// Whether the bound project is a touched temp project (C8.5), while the worker is not
+    /// unavailable.
+    fn is_touched_temp_project(&self) -> bool {
+        if matches!(self.status, Status::Unavailable(_)) {
+            return false;
+        }
+        self.shared.project().is_some_and(|folder| {
+            self.shared
+                .temp_marker(&folder)
+                .is_some_and(|marker| marker.is_touched(&folder))
+        })
     }
 }
 
@@ -812,22 +901,48 @@ impl Shared {
         }
     }
 
+    /// The last project, when it is still a folder with project.json (C8.5 launch step 2). Only
+    /// the first start is offered it.
+    fn take_reopen(&self) -> Option<PathBuf> {
+        lock(&self.reopen)
+            .take()
+            .filter(|folder| folder.join("project.json").is_file())
+    }
+
+    /// Marks a temp folder the worker has just bound (C8.5), with `seed`, the SHA-256 of the
+    /// project.json it started from.
+    fn mark(&self, folder: &Path, seed: io::Result<String>) {
+        let marked = seed.and_then(|seed| Marker::new(seed, unix_millis()).write(folder));
+        if let Err(err) = marked {
+            self.host.log(&format!(
+                "Could not mark {} as a temp project: {err}.",
+                folder.display()
+            ));
+        }
+    }
+
+    /// The marker of `folder` when it is a temp project the shell made (C8.5): a marked
+    /// `mathimator-<digits>-<digits>` folder in the temp root, as pruning requires, so that a copy
+    /// kept elsewhere is never taken for one. The paths are compared in canonical form, so an 8.3
+    /// %TEMP% still matches the long form the worker reports.
+    fn temp_marker(&self, folder: &Path) -> Option<Marker> {
+        let folder = fs::canonicalize(folder).ok()?;
+        let temp_root = fs::canonicalize(&self.temp_root).ok()?;
+        if folder.parent() != Some(temp_root.as_path())
+            || temp_project::created_ms_in_name(&folder).is_none()
+        {
+            return None;
+        }
+        Marker::read(&folder)
+    }
+
     /// Whether `old`, the folder Save As just moved away from, is a temp project the shell may
-    /// delete (C8.5): a marked `<temp>/mathimator-<digits>-<digits>` folder, as pruning requires,
-    /// that does not hold `target`. The paths are compared in canonical form, so an 8.3 %TEMP%
-    /// still matches the long form the worker reports.
+    /// delete (C8.5): one that does not hold `target`.
     fn is_left_temp_project(&self, old: &Path, target: &Path) -> bool {
-        let (Ok(old), Ok(target), Ok(temp_root)) = (
-            fs::canonicalize(old),
-            fs::canonicalize(target),
-            fs::canonicalize(&self.temp_root),
-        ) else {
+        let (Ok(old), Ok(target)) = (fs::canonicalize(old), fs::canonicalize(target)) else {
             return false;
         };
-        old.parent() == Some(temp_root.as_path())
-            && has_temp_name(&old)
-            && !target.starts_with(&old)
-            && is_temp_project(&old)
+        !target.starts_with(&old) && self.temp_marker(&old).is_some()
     }
 
     /// Forgets a launch folder that no worker took, and deletes it.
@@ -889,11 +1004,11 @@ fn unavailable(reason: &str) -> ShellError {
     ShellError::new(ErrorCode::WorkerUnavailable, reason)
 }
 
-fn event_of(line: &Value) -> Option<&str> {
+pub fn event_of(line: &Value) -> Option<&str> {
     line.get("event").and_then(Value::as_str)
 }
 
-fn message_of(line: &Value) -> String {
+pub fn message_of(line: &Value) -> String {
     line.get("message")
         .and_then(Value::as_str)
         .unwrap_or("The worker gave no reason.")
@@ -910,30 +1025,11 @@ fn path_text(path: &Path) -> Result<String, ShellError> {
     })
 }
 
-/// Whether a folder has the name the shell gives temp folders, `mathimator-<digits>-<digits>`
-/// (C8.5).
-fn has_temp_name(folder: &Path) -> bool {
-    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
-    folder
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix("mathimator-"))
-        .and_then(|rest| rest.split_once('-'))
-        .is_some_and(|(pid, millis)| digits(pid) && digits(millis))
-}
-
-/// A temp project is a folder with the shell's marker (C8.5).
-fn is_temp_project(folder: &Path) -> bool {
-    fs::read(folder.join(".mathimator").join("temp-project.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .is_some_and(|marker| marker.get("kind").and_then(Value::as_str) == Some("mathimator-temp"))
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::pipe;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::OnceLock;
     use std::time::Instant;
 
     use tauri::async_runtime::block_on;
@@ -996,16 +1092,28 @@ mod tests {
             exit: Exit,
             answer: impl Fn(&Value) -> Option<Vec<String>> + Send + Sync + 'static,
         ) -> Self {
-            Self::launch(exit, answer, |fake| {
-                Ok(Box::new(move |folder: &Path, init: bool| {
-                    fake.spawn(folder, init)
-                }))
-            })
+            Self::launch(exit, answer, fake_spawner)
         }
 
         /// A worker whose runtime could not be resolved, so it has no spawner.
         fn without_runtime(reason: &str) -> Self {
             Self::launch(Exit::WithStdout, answer, |_| Err(reason.to_owned()))
+        }
+
+        /// A worker launched with the folder `name` in its root as the last project. The folder
+        /// holds `project` as project.json, when there is one.
+        fn reopening(
+            name: &str,
+            project: Option<&[u8]>,
+            answer: impl Fn(&Value) -> Option<Vec<String>> + Send + Sync + 'static,
+        ) -> Self {
+            let root = scratch_root();
+            let last = root.join(name);
+            fs::create_dir(&last).unwrap();
+            if let Some(project) = project {
+                fs::write(last.join("project.json"), project).unwrap();
+            }
+            Self::launch_in(root, Some(last), Exit::WithStdout, answer, fake_spawner)
         }
 
         /// A worker whose spawner `spawner` makes from the fake.
@@ -1014,13 +1122,17 @@ mod tests {
             answer: impl Fn(&Value) -> Option<Vec<String>> + Send + Sync + 'static,
             spawner: impl FnOnce(Fake) -> Result<Spawner, String>,
         ) -> Self {
-            static NEXT: AtomicUsize = AtomicUsize::new(0);
-            let root = std::env::temp_dir().join(format!(
-                "mathimator-shell-test-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir_all(&root).unwrap();
+            Self::launch_in(scratch_root(), None, exit, answer, spawner)
+        }
+
+        /// A worker with `root` as its temp folder and `last_project` as the last project.
+        fn launch_in(
+            root: PathBuf,
+            last_project: Option<PathBuf>,
+            exit: Exit,
+            answer: impl Fn(&Value) -> Option<Vec<String>> + Send + Sync + 'static,
+            spawner: impl FnOnce(Fake) -> Result<Spawner, String>,
+        ) -> Self {
             let host = Arc::new(Recorder::default());
             let fake = Fake {
                 answer: Arc::new(answer),
@@ -1038,6 +1150,7 @@ mod tests {
                 host.clone(),
                 spawner(fake),
                 root.clone(),
+                last_project,
                 root.join("supervisor.err"),
             );
             Self {
@@ -1073,6 +1186,46 @@ mod tests {
         fn launch_folder(&self) -> PathBuf {
             wait_for(|| lock(&self.spawns).first().map(|(folder, _)| folder.clone()))
         }
+
+        fn binds(&self) -> Vec<PathBuf> {
+            lock(&self.host.binds).clone()
+        }
+
+        fn notices(&self) -> Vec<String> {
+            lock(&self.host.notices).clone()
+        }
+    }
+
+    /// A scratch folder that stands in for %TEMP%.
+    fn scratch_root() -> PathBuf {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "mathimator-shell-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn fake_spawner(fake: Fake) -> Result<Spawner, String> {
+        Ok(Box::new(move |folder: &Path, init: bool| {
+            fake.spawn(folder, init)
+        }))
+    }
+
+    /// The project.json a fake worker writes for `init`.
+    const EMPTY_PROJECT: &[u8] = b"{\"name\": \"Untitled\"}";
+
+    /// Leaves in `folder` what a worker that binds it leaves: `.mathimator`, and with `init` an
+    /// empty project. A folder that does not exist is left alone.
+    fn bind(folder: &Path, init: bool) {
+        if folder.is_dir() {
+            fs::create_dir_all(folder.join(".mathimator")).unwrap();
+            if init {
+                fs::write(folder.join("project.json"), EMPTY_PROJECT).unwrap();
+            }
+        }
     }
 
     impl Drop for Test {
@@ -1105,6 +1258,7 @@ mod tests {
         /// A fake worker: one thread reads requests as they arrive, another answers them, so a
         /// slow answer never delays reading the next request.
         fn spawn(&self, folder: &Path, init: bool) -> io::Result<Spawned> {
+            bind(folder, init);
             lock(&self.spawns).push((folder.to_owned(), init));
             lock(&self.history).push("spawn".to_owned());
             let (stdin, stdin_writer) = pipe()?;
@@ -1256,11 +1410,19 @@ mod tests {
             .to_string()
     }
 
-    /// Protocol 2 to `status`, `state` to every RPC, and nothing to job commands.
+    /// Protocol 2 to `status`, `state` to every RPC, and nothing to job commands. `open_project`
+    /// binds its folder first.
     fn answer(request: &Value) -> Option<Vec<String>> {
         Some(match cmd(request) {
             "status" => vec![ready_line(request)],
             "render_preview" | "export" | "cancel" => vec![],
+            "open_project" => {
+                bind(
+                    Path::new(request["path"].as_str().unwrap()),
+                    request["init"] == true,
+                );
+                vec![state_line(request)]
+            }
             _ => vec![state_line(request)],
         })
     }
@@ -1277,12 +1439,12 @@ mod tests {
     /// Writes the temp-project marker into `folder`, creating the folder (C8.5).
     fn mark_temp(folder: &Path) {
         fs::create_dir_all(folder.join(".mathimator")).unwrap();
-        fs::write(
-            folder.join(".mathimator").join("temp-project.json"),
-            json!({"kind": "mathimator-temp", "seedSha256": "0".repeat(64), "createdMs": 1})
-                .to_string(),
-        )
-        .unwrap();
+        Marker::new("0".repeat(64), 1).write(folder).unwrap();
+    }
+
+    /// Whether `folder` has a marker whose seed is its project.json as it is now.
+    fn is_marked_untouched(folder: &Path) -> bool {
+        Marker::read(folder).is_some_and(|marker| !marker.is_touched(folder))
     }
 
     fn launch_with_ready(ready: Value) -> (Test, ShellError) {
@@ -1370,7 +1532,74 @@ mod tests {
     }
 
     #[test]
-    fn startup_error_at_launch_opens_a_new_temp_project_with_a_notice() {
+    fn launch_marks_its_new_temp_project_before_commands_go_on() {
+        let test = Test::start(answer);
+        assert_eq!(block_on(test.worker.unavailable()), None);
+        let folder = test.launch_folder();
+        assert_eq!(lock(&test.spawns).as_slice(), [(folder.clone(), true)]);
+        assert!(is_marked_untouched(&folder));
+        assert_eq!(test.binds(), std::slice::from_ref(&folder));
+        fs::write(folder.join("project.json"), b"{\"name\": \"Waves\"}").unwrap();
+        assert!(!is_marked_untouched(&folder));
+    }
+
+    #[test]
+    fn launch_reopens_the_last_project_without_init() {
+        let test = Test::reopening("lesson", Some(b"{}"), answer);
+        block_on(test.worker.get_state()).unwrap();
+        let lesson = test.root.join("lesson");
+        assert_eq!(lock(&test.spawns).as_slice(), [(lesson.clone(), false)]);
+        assert_eq!(test.worker.project(), Some(lesson.clone()));
+        assert_eq!(test.binds(), std::slice::from_ref(&lesson));
+        assert_eq!(Marker::read(&lesson), None);
+        assert!(test.notices().is_empty());
+    }
+
+    #[test]
+    fn launch_starts_a_new_project_when_the_last_one_has_no_project_json() {
+        let test = Test::reopening("lesson", None, answer);
+        block_on(test.worker.get_state()).unwrap();
+        let spawns = lock(&test.spawns).clone();
+        let [(folder, true)] = spawns.as_slice() else {
+            panic!("{spawns:?}");
+        };
+        assert_eq!(folder.parent(), Some(test.root.as_path()));
+        assert_ne!(folder, &test.root.join("lesson"));
+        assert!(test.notices().is_empty());
+    }
+
+    #[test]
+    fn a_last_project_the_worker_cannot_bind_gives_way_to_a_new_one_with_a_notice() {
+        let test = Test::reopening("lesson", Some(b"{}"), |request| match cmd(request) {
+            "status" => Some(vec![unbound_ready_line(request)]),
+            _ => answer(request),
+        });
+        block_on(test.worker.get_state()).unwrap();
+        let lesson = test.root.join("lesson");
+        let opened = test.request(1);
+        assert_eq!(
+            opened,
+            json!({"cmd": "open_project", "id": "rpc-2", "path": opened["path"], "init": true})
+        );
+        let folder = PathBuf::from(opened["path"].as_str().unwrap());
+        assert_eq!(folder.parent(), Some(test.root.as_path()));
+        assert_eq!(test.worker.project(), Some(folder.clone()));
+        assert!(is_marked_untouched(&folder));
+        assert!(
+            lesson.join("project.json").is_file(),
+            "the last project was changed"
+        );
+        assert_eq!(
+            test.notices(),
+            [format!(
+                "Could not reopen {}: That folder is not a Mathimator project. A new project was started.",
+                lesson.display()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_new_launch_folder_the_worker_cannot_bind_gives_way_without_a_notice() {
         let test = Test::start(|request| match cmd(request) {
             "status" => Some(vec![unbound_ready_line(request)]),
             _ => answer(request),
@@ -1378,21 +1607,20 @@ mod tests {
         block_on(test.worker.get_state()).unwrap();
         let launched = test.launch_folder();
         let opened = test.request(1);
-        let folder = PathBuf::from(opened["path"].as_str().unwrap());
         assert_eq!(
             opened,
             json!({"cmd": "open_project", "id": "rpc-2", "path": opened["path"], "init": true})
         );
+        let folder = PathBuf::from(opened["path"].as_str().unwrap());
         assert_ne!(folder, launched);
         assert!(folder.starts_with(&test.root) && folder.is_dir());
         assert_eq!(test.worker.project(), Some(folder));
-        assert_eq!(
-            lock(&test.host.notices).as_slice(),
-            [format!(
-                "Could not reopen {}: That folder is not a Mathimator project. A new project was started.",
-                launched.display()
-            )]
-        );
+        assert!(!launched.exists(), "the refused launch folder was kept");
+        assert!(test.notices().is_empty());
+        assert!(lock(&test.host.logs).contains(&format!(
+            "The worker could not start a project in {}: That folder is not a Mathimator project.",
+            launched.display()
+        )));
     }
 
     #[test]
@@ -1412,9 +1640,16 @@ mod tests {
         );
         let folder = PathBuf::from(opened["path"].as_str().unwrap());
         assert_ne!(folder, launched);
-        assert_eq!(test.worker.project(), Some(folder));
+        assert_eq!(test.worker.project(), Some(folder.clone()));
+        assert!(is_marked_untouched(&folder));
+        assert!(launched.is_dir(), "the folder the worker lost was deleted");
+        let spawns = lock(&test.spawns).clone();
         assert_eq!(
-            lock(&test.host.notices).as_slice(),
+            spawns,
+            [(launched.clone(), true), (launched.clone(), false)]
+        );
+        assert_eq!(
+            test.notices(),
             [format!(
                 "Could not reopen {} after the worker restarted: That folder is not a Mathimator project. A new project was started.",
                 launched.display()
@@ -1663,13 +1898,14 @@ mod tests {
         });
         block_on(test.worker.get_state()).unwrap();
         block_on(test.worker.get_state()).unwrap();
-        assert_eq!(lock(&test.host.binds).as_slice(), [PathBuf::from("C:/a")]);
+        let launched = test.launch_folder();
+        assert_eq!(test.binds(), [launched.clone(), PathBuf::from("C:/a")]);
         block_on(test.worker.render_preview("preview-4".to_owned())).unwrap();
         let late = wait_for(|| test.events().into_iter().next());
         assert_eq!(late["jobId"], "rpc-99");
         assert_eq!(
-            lock(&test.host.binds).as_slice(),
-            [PathBuf::from("C:/a"), PathBuf::from("C:/b")]
+            test.binds(),
+            [launched, PathBuf::from("C:/a"), PathBuf::from("C:/b")]
         );
         assert_eq!(test.worker.project(), Some(PathBuf::from("C:/b")));
     }
@@ -1701,6 +1937,7 @@ mod tests {
             host: Arc::new(Recorder::default()),
             spawn: Err("no spawn".to_owned()),
             temp_root: root.clone(),
+            reopen: Mutex::default(),
             stderr_log: root,
             next_id: AtomicU64::new(1),
             next_generation: AtomicU64::new(1),
@@ -2078,7 +2315,136 @@ mod tests {
         assert_eq!(error.code, ErrorCode::WorkerExited);
         let folder = PathBuf::from(test.request(1)["path"].as_str().unwrap());
         assert!(folder.is_dir());
-        assert!(!is_temp_project(&folder));
+        assert_eq!(Marker::read(&folder), None);
+    }
+
+    #[test]
+    fn new_project_marks_its_folder_with_the_project_the_worker_wrote() {
+        let test = Test::start(answer);
+        let reply = block_on(test.worker.new_project()).unwrap();
+        let folder = PathBuf::from(reply["projectPath"].as_str().unwrap());
+        assert_eq!(
+            fs::read(folder.join("project.json")).unwrap(),
+            EMPTY_PROJECT
+        );
+        assert!(is_marked_untouched(&folder));
+    }
+
+    #[test]
+    fn open_sample_marks_its_copy_with_the_sample_as_the_seed() {
+        let test = Test::start(answer);
+        let sample = test.root.join("sample.json");
+        fs::write(&sample, b"{\"name\": \"sample\"}").unwrap();
+        let reply = block_on(test.worker.open_sample(sample)).unwrap();
+        let folder = PathBuf::from(reply["projectPath"].as_str().unwrap());
+        assert!(is_marked_untouched(&folder));
+    }
+
+    #[test]
+    fn open_sample_keeps_its_folder_unmarked_when_the_worker_stops() {
+        let test = Test::start(|request| {
+            if cmd(request) == "open_project" {
+                None
+            } else {
+                answer(request)
+            }
+        });
+        let sample = test.root.join("sample.json");
+        fs::write(&sample, b"{}").unwrap();
+        let error = block_on(test.worker.open_sample(sample)).unwrap_err();
+        assert_eq!(error.code, ErrorCode::WorkerExited);
+        let folder = PathBuf::from(test.request(1)["path"].as_str().unwrap());
+        assert!(folder.join("project.json").is_file());
+        assert_eq!(Marker::read(&folder), None);
+    }
+
+    #[test]
+    fn only_a_touched_temp_project_asks_before_it_is_left() {
+        let test = Test::start(answer);
+        block_on(test.worker.unavailable());
+        assert!(!block_on(test.worker.is_touched_temp_project()));
+        let folder = test.launch_folder();
+        fs::write(folder.join("project.json"), b"{\"name\": \"Waves\"}").unwrap();
+        assert!(block_on(test.worker.is_touched_temp_project()));
+        // A project the user opened is never a temp project, whatever it holds.
+        let lesson = test.root.join("lesson");
+        fs::create_dir(&lesson).unwrap();
+        block_on(test.worker.open_project(&lesson)).unwrap();
+        assert!(!block_on(test.worker.is_touched_temp_project()));
+    }
+
+    #[test]
+    fn an_unavailable_worker_never_asks_before_its_project_is_left() {
+        // The worker does not stop when it is retired, which leaves it unavailable.
+        let test = Test::start_with_exit(Exit::Never, answer);
+        block_on(test.worker.unavailable());
+        fs::write(test.launch_folder().join("project.json"), b"{}").unwrap();
+        assert!(block_on(test.worker.is_touched_temp_project()));
+        block_on(test.worker.retire("Restarted.".to_owned())).unwrap();
+        assert!(block_on(test.worker.unavailable()).is_some());
+        assert!(!block_on(test.worker.is_touched_temp_project()));
+    }
+
+    #[test]
+    fn the_touched_check_sees_the_edit_in_flight() {
+        // The worker saves an edit a moment after it has read it.
+        let launched = Arc::new(OnceLock::<PathBuf>::new());
+        let folder = Arc::clone(&launched);
+        let test = Test::start(move |request| {
+            if cmd(request) == "edit" {
+                thread::sleep(Duration::from_millis(200));
+                let project = folder.get().unwrap().join("project.json");
+                fs::write(project, b"{\"name\": \"Waves\"}").unwrap();
+            }
+            answer(request)
+        });
+        launched.set(test.launch_folder()).unwrap();
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let edit = json!({"op": "set_project_name", "name": "Waves"});
+                block_on(test.worker.edit_document(edit)).unwrap()
+            });
+            wait_for(|| test.history().contains(&"in edit".to_owned()).then_some(()));
+            assert!(block_on(test.worker.is_touched_temp_project()));
+        });
+    }
+
+    /// Makes `folder` an untouched temp project created long ago, which pruning may delete.
+    fn mark_old(folder: &Path) {
+        fs::create_dir_all(folder.join(".mathimator")).unwrap();
+        fs::write(folder.join("project.json"), EMPTY_PROJECT).unwrap();
+        let seed = temp_project::seed_of(folder).unwrap();
+        Marker::new(seed, 1).write(folder).unwrap();
+    }
+
+    #[test]
+    fn pruning_keeps_the_bound_project() {
+        let test = Test::start(answer);
+        block_on(test.worker.unavailable());
+        let bound = test.launch_folder();
+        mark_old(&bound);
+        let stale = test.root.join("mathimator-1-1");
+        mark_old(&stale);
+        block_on(test.worker.prune_temp_projects());
+        assert!(bound.is_dir());
+        assert!(!stale.exists());
+        let pruned = format!("Pruned the temp project {}.", stale.display());
+        assert!(lock(&test.host.logs).contains(&pruned));
+    }
+
+    #[test]
+    fn pruning_keeps_a_last_project_no_worker_has_reopened() {
+        let root = scratch_root();
+        let last = root.join("mathimator-1-1");
+        mark_old(&last);
+        let stale = root.join("mathimator-1-2");
+        mark_old(&stale);
+        let test = Test::launch_in(root, Some(last.clone()), Exit::WithStdout, answer, |_| {
+            Err("No runtime.".to_owned())
+        });
+        block_on(test.worker.prune_temp_projects());
+        assert!(last.is_dir());
+        assert!(!stale.exists());
     }
 
     #[test]
@@ -2098,7 +2464,6 @@ mod tests {
     fn save_as_deletes_the_old_folder_of_a_temp_project() {
         let test = Test::start(answer);
         let old = test.launch_folder();
-        mark_temp(&old);
         let target = test.root.join("saved");
         fs::create_dir(&target).unwrap();
         let reply = block_on(test.worker.save_project_as(&target)).unwrap();
@@ -2108,9 +2473,32 @@ mod tests {
     }
 
     #[test]
-    fn save_as_keeps_the_old_folder_of_a_saved_project() {
+    fn a_refused_save_as_keeps_the_temp_project_and_its_binding() {
+        for code in ["export_running", "save_as_failed"] {
+            let test = Test::start(move |request| match cmd(request) {
+                "save_as" => Some(vec![rejected_line(request, code)]),
+                _ => answer(request),
+            });
+            let old = test.launch_folder();
+            let target = test.root.join("saved");
+            fs::create_dir(&target).unwrap();
+            let reply = block_on(test.worker.save_project_as(&target)).unwrap();
+            assert_eq!(
+                reply,
+                json!({"event": "rejected", "jobId": "rpc-2", "code": code, "message": "Refused."})
+            );
+            assert!(is_marked_untouched(&old), "{code}");
+            assert_eq!(test.worker.project(), Some(old));
+        }
+    }
+
+    #[test]
+    fn save_as_keeps_an_unmarked_old_folder() {
+        // A temp folder bound by a late reply, which the shell never marked.
         let test = Test::start(answer);
-        let old = test.launch_folder();
+        let old = test.root.join("mathimator-1-2");
+        fs::create_dir(&old).unwrap();
+        block_on(test.worker.open_project(&old)).unwrap();
         let target = test.root.join("saved");
         fs::create_dir(&target).unwrap();
         block_on(test.worker.save_project_as(&target)).unwrap();
@@ -2121,7 +2509,6 @@ mod tests {
     fn save_as_into_a_folder_inside_the_temp_project_keeps_both() {
         let test = Test::start(answer);
         let old = test.launch_folder();
-        mark_temp(&old);
         let target = old.join("saved");
         fs::create_dir(&target).unwrap();
         block_on(test.worker.save_project_as(&target)).unwrap();
@@ -2144,24 +2531,6 @@ mod tests {
             fs::create_dir(&target).unwrap();
             block_on(test.worker.save_project_as(&target)).unwrap();
             assert!(old.is_dir(), "{} was deleted", old.display());
-        }
-    }
-
-    #[test]
-    fn temp_folder_names_are_mathimator_digits_digits() {
-        for name in ["mathimator-1-2", "mathimator-4321-1761234567890"] {
-            assert!(has_temp_name(Path::new(name)), "{name}");
-        }
-        for name in [
-            "mathimator-1-2 - Copy",
-            "mathimator-1-2-3",
-            "mathimator-shell-test-1-2",
-            "mathimator--2",
-            "mathimator-1-",
-            "mathimator-12",
-            "Mathimator-1-2",
-        ] {
-            assert!(!has_temp_name(Path::new(name)), "{name}");
         }
     }
 }
