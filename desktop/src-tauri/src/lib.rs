@@ -3,7 +3,7 @@ use std::future::Future;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -307,7 +307,9 @@ impl Host for Shell {
     }
 
     fn notice(&self, message: String) {
-        let notice = lock(&self.notices).add(message);
+        let Some(notice) = lock(&self.notices).add(message) else {
+            return;
+        };
         self.emit(json!({
             "event": "notice",
             "jobId": null,
@@ -462,14 +464,19 @@ struct Notice {
 }
 
 impl Notices {
-    fn add(&mut self, message: String) -> Notice {
+    /// Adds a notice, unless one with the same message is still open, so that a close request
+    /// repeated while a dialog command runs shows one notice.
+    fn add(&mut self, message: String) -> Option<Notice> {
+        if self.open.iter().any(|notice| notice.message == message) {
+            return None;
+        }
         self.last_id += 1;
         let notice = Notice {
             id: self.last_id,
             message,
         };
         self.open.push(notice.clone());
-        notice
+        Some(notice)
     }
 
     fn dismiss(&mut self, id: u64) {
@@ -501,22 +508,53 @@ fn write_last_project(file: &Path, project: &Path) -> io::Result<()> {
     write_atomically(file, &serde_json::to_vec(&state)?)
 }
 
-/// One native dialog at a time (F130). A dialog command that arrives while another is pending
-/// is answered `{cancelled: true}`, and a close request leaves the window open.
-#[derive(Default)]
-struct Dialogs(AtomicBool);
+/// The notice for a close request that left the window open while a dialog command runs.
+const CLOSE_IGNORED: &str = "The window stays open while a dialog or a Save As is still running. Close the window again once that is done.";
 
-struct DialogTurn<'a>(&'a AtomicBool);
+/// One native dialog at a time (F130), and who holds the turn: no one, a dialog command, or the
+/// quit warning. A dialog command that arrives while the turn is held is answered
+/// `{cancelled: true}`, and a close request leaves the window open, with a notice when a dialog
+/// command holds the turn.
+#[derive(Default)]
+struct Dialogs(AtomicU8);
+
+struct DialogTurn<'a>(&'a AtomicU8);
 
 impl Dialogs {
+    const FREE: u8 = 0;
+    const COMMAND: u8 = 1;
+    const QUIT: u8 = 2;
+
     fn begin(&self) -> Option<DialogTurn<'_>> {
-        (!self.0.swap(true, Ordering::SeqCst)).then_some(DialogTurn(&self.0))
+        self.take(Self::COMMAND).ok()
+    }
+
+    /// The turn of a close request, or `None` while the turn is held, which keeps the window
+    /// open. While a dialog command holds it, a notice says why. While the quit warning holds it,
+    /// nothing is said: that warning closes the window itself unless the user stays.
+    fn begin_close(&self, host: &dyn Host) -> Option<DialogTurn<'_>> {
+        match self.take(Self::QUIT) {
+            Ok(turn) => Some(turn),
+            Err(holder) => {
+                if holder == Self::COMMAND {
+                    host.notice(CLOSE_IGNORED.to_owned());
+                }
+                None
+            }
+        }
+    }
+
+    /// The turn for `holder`, or who holds it now.
+    fn take(&self, holder: u8) -> Result<DialogTurn<'_>, u8> {
+        self.0
+            .compare_exchange(Self::FREE, holder, Ordering::SeqCst, Ordering::SeqCst)
+            .map(|_| DialogTurn(&self.0))
     }
 }
 
 impl Drop for DialogTurn<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        self.0.store(Dialogs::FREE, Ordering::SeqCst);
     }
 }
 
@@ -682,11 +720,12 @@ fn after_save_as(
 
 /// The quit warning (C8.5, C14 Q8), on the window's close request. The window closes unless the
 /// user stays: Cancel, a cancelled picker, or a Save As that failed, whose reason is shown. While
-/// another dialog command runs, the window stays open.
+/// another dialog command runs, the window stays open, and a notice says why; a close request
+/// repeated while this one runs is ignored.
 async fn confirm_quit(window: Window) {
     let app = window.app_handle();
     let dialogs = app.state::<Dialogs>();
-    let Some(_turn) = dialogs.begin() else {
+    let Some(_turn) = dialogs.begin_close(&**app.state::<Arc<Shell>>()) else {
         return;
     };
     let reason = match leave(app, &window, &app.state::<Worker>(), Leaving::Quit).await {
@@ -1250,8 +1289,8 @@ mod tests {
     #[test]
     fn notices_stay_until_dismissed() {
         let mut notices = Notices::default();
-        let first = notices.add("Could not reopen C:\\a.".to_owned());
-        let second = notices.add("Could not reopen C:\\b.".to_owned());
+        let first = notices.add("Could not reopen C:\\a.".to_owned()).unwrap();
+        let second = notices.add("Could not reopen C:\\b.".to_owned()).unwrap();
         assert_eq!((first.id, second.id), (1, 2));
         notices.dismiss(7);
         assert_eq!(notices.open.len(), 2);
@@ -1262,6 +1301,18 @@ mod tests {
             .map(|notice| (notice.id, notice.message.as_str()))
             .collect();
         assert_eq!(open, [(2, "Could not reopen C:\\b.")]);
+    }
+
+    #[test]
+    fn a_notice_still_open_is_not_added_twice() {
+        let mut notices = Notices::default();
+        let first = notices.add(CLOSE_IGNORED.to_owned()).unwrap();
+        assert_eq!(notices.add(CLOSE_IGNORED.to_owned()), None);
+        assert_eq!(notices.open, std::slice::from_ref(&first));
+        notices.dismiss(first.id);
+        let again = notices.add(CLOSE_IGNORED.to_owned()).unwrap();
+        assert_eq!(again.id, 2);
+        assert_eq!(notices.open, [again]);
     }
 
     #[test]
@@ -1378,7 +1429,9 @@ mod tests {
     #[test]
     fn app_status_keeps_a_notice_until_it_is_dismissed() {
         let mut notices = Notices::default();
-        let notice = notices.add("Could not reopen C:\\a. A new project was started.".to_owned());
+        let notice = notices
+            .add("Could not reopen C:\\a. A new project was started.".to_owned())
+            .unwrap();
         let checking = TexStatus::at_launch(None);
         let first = AppStatus::new(None, checking.clone(), &notices);
         assert_eq!(
@@ -1617,6 +1670,35 @@ mod tests {
         assert!(turn.is_some());
         assert!(dialogs.begin().is_none());
         drop(turn);
+        assert!(dialogs.begin().is_some());
+    }
+
+    #[test]
+    fn a_close_request_while_a_dialog_runs_keeps_the_window_with_a_notice() {
+        let dialogs = Dialogs::default();
+        let host = Notified::default();
+        let turn = dialogs.begin();
+        assert!(dialogs.begin_close(&host).is_none());
+        assert_eq!(
+            *lock(&host.0),
+            ["The window stays open while a dialog or a Save As is still running. Close the window again once that is done."]
+        );
+        drop(turn);
+        let quit = dialogs.begin_close(&host);
+        assert!(quit.is_some());
+        assert!(dialogs.begin().is_none(), "the quit warning holds the turn");
+        assert_eq!(lock(&host.0).len(), 1);
+    }
+
+    #[test]
+    fn a_close_request_while_the_quit_warning_runs_is_ignored_without_a_notice() {
+        let dialogs = Dialogs::default();
+        let host = Notified::default();
+        let quit = dialogs.begin_close(&host);
+        assert!(quit.is_some());
+        assert!(dialogs.begin_close(&host).is_none());
+        assert!(lock(&host.0).is_empty());
+        drop(quit);
         assert!(dialogs.begin().is_some());
     }
 }

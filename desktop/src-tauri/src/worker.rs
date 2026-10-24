@@ -29,8 +29,10 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const EXIT_CODE_WAIT: Duration = Duration::from_secs(1);
 /// How long the shell waits for a worker it ended to exit (C8.6).
 const STOP_WAIT: Duration = Duration::from_secs(5);
-/// Why no worker starts while an ended one is still alive (C8.6 step 4).
-const STUCK: &str = "The previous worker did not stop. Restart Mathimator.";
+/// Why no worker starts while an ended one is still alive (C8.6 step 4). Retry ends it again, and
+/// starts a worker once it has exited.
+const STUCK: &str =
+    "The previous worker did not stop. Choose Retry to try again, or restart Mathimator.";
 
 /// What the shell does with what the worker reports (C9.4, C9.5).
 pub trait Host: Send + Sync + 'static {
@@ -124,7 +126,8 @@ struct Shared {
     spawn: Result<Spawner, String>,
     /// Where temp projects are created.
     temp_root: PathBuf,
-    /// The last project of the previous run, until the first worker takes it (C8.5).
+    /// The last project of the previous run, until a worker takes it or, when it is missing, until
+    /// a worker has started in its place (C8.5).
     reopen: Mutex<Option<PathBuf>>,
     /// supervisor.err, which the "stopped during startup" reason points to.
     stderr_log: PathBuf,
@@ -215,9 +218,9 @@ impl Gate {
 
 impl Worker {
     /// Starts the first worker in the background: on `last_project` when it is still a project
-    /// folder, else on a new temp project in `temp_root` (C8.5). Every worker-bound command waits
-    /// until its handshake is done (C6). Without a spawner, every command fails with
-    /// `worker_unavailable` and the reason (D31).
+    /// folder, else on a new temp project in `temp_root`, with a notice when the last project is
+    /// missing (C8.5). Every worker-bound command waits until its handshake is done (C6). Without
+    /// a spawner, every command fails with `worker_unavailable` and the reason (D31).
     pub fn launch(
         host: Arc<dyn Host>,
         spawn: Result<Spawner, String>,
@@ -500,7 +503,9 @@ impl Session<'_> {
                     Ok(())
                 }
             });
-        if started.is_err() {
+        if started.is_ok() {
+            shared.report_missing_last_project();
+        } else {
             if let Err(reason) = self.stop() {
                 shared.host.log(&reason);
             }
@@ -898,11 +903,21 @@ impl Shared {
     }
 
     /// The last project, when it is still a folder with project.json (C8.5 launch step 2). Only
-    /// the first start is offered it.
+    /// the first start is offered it. A missing one stays until a worker has started in its place.
     fn take_reopen(&self) -> Option<PathBuf> {
-        lock(&self.reopen)
-            .take()
-            .filter(|folder| folder.join("project.json").is_file())
+        lock(&self.reopen).take_if(|folder| folder.join("project.json").is_file())
+    }
+
+    /// Tells the user, once a worker has started in its place, that the last project was missing
+    /// at launch (C8.5 launch step 2). A launch that fails tells it after the start that succeeds.
+    fn report_missing_last_project(&self) {
+        let missing = lock(&self.reopen).take();
+        if let Some(missing) = missing {
+            self.host.notice(format!(
+                "Could not reopen {}: The folder or its project.json is missing. A new project was started.",
+                missing.display()
+            ));
+        }
     }
 
     /// Marks a temp folder the worker has just bound (C8.5), with `seed`, the SHA-256 of the
@@ -1436,6 +1451,17 @@ mod tests {
         }
     }
 
+    /// Like `answer`, but the first worker is out of date: its `ready` has no protocol. The one a
+    /// retry starts is not.
+    fn out_of_date_first(request: &Value) -> Option<Vec<String>> {
+        match cmd(request) {
+            "status" if request["id"] == "status-1" => Some(vec![
+                json!({"event": "ready", "jobId": request["id"]}).to_string(),
+            ]),
+            _ => answer(request),
+        }
+    }
+
     /// Writes the temp-project marker into `folder`, creating the folder (C8.5).
     fn mark_temp(folder: &Path) {
         fs::create_dir_all(folder.join(".mathimator")).unwrap();
@@ -1555,17 +1581,53 @@ mod tests {
         assert!(test.notices().is_empty());
     }
 
+    /// The notice for a last project that is missing at launch.
+    fn missing_notice(folder: &Path) -> String {
+        format!(
+            "Could not reopen {}: The folder or its project.json is missing. A new project was started.",
+            folder.display()
+        )
+    }
+
     #[test]
-    fn launch_starts_a_new_project_when_the_last_one_has_no_project_json() {
+    fn launch_starts_a_new_project_with_a_notice_when_the_last_one_has_no_project_json() {
         let test = Test::reopening("lesson", None, answer);
-        block_on(test.worker.get_state()).unwrap();
+        // The notice is there before the commands waiting for the launch go on.
+        assert_eq!(block_on(test.worker.unavailable()), None);
+        let lesson = test.root.join("lesson");
+        assert_eq!(test.notices(), [missing_notice(&lesson)]);
         let spawns = lock(&test.spawns).clone();
         let [(folder, true)] = spawns.as_slice() else {
             panic!("{spawns:?}");
         };
         assert_eq!(folder.parent(), Some(test.root.as_path()));
-        assert_ne!(folder, &test.root.join("lesson"));
-        assert!(test.notices().is_empty());
+        assert_ne!(folder, &lesson);
+        assert!(is_marked_untouched(folder));
+    }
+
+    #[test]
+    fn launch_starts_a_new_project_with_a_notice_when_the_last_folder_is_gone() {
+        let root = scratch_root();
+        let gone = root.join("lesson");
+        let last = Some(gone.clone());
+        let test = Test::launch_in(root, last, Exit::WithStdout, answer, fake_spawner);
+        assert_eq!(block_on(test.worker.unavailable()), None);
+        assert_eq!(test.notices(), [missing_notice(&gone)]);
+        let spawns = lock(&test.spawns).clone();
+        let [(folder, true)] = spawns.as_slice() else {
+            panic!("{spawns:?}");
+        };
+        assert_eq!(folder.parent(), Some(test.root.as_path()));
+        assert!(!gone.exists(), "the missing folder was made");
+    }
+
+    #[test]
+    fn a_missing_last_project_is_told_once_a_retry_has_started_a_new_one() {
+        let test = Test::reopening("lesson", None, out_of_date_first);
+        assert!(block_on(test.worker.unavailable()).is_some());
+        assert!(test.notices().is_empty(), "no new project was started");
+        assert_eq!(block_on(test.worker.restart()).unwrap(), None);
+        assert_eq!(test.notices(), [missing_notice(&test.root.join("lesson"))]);
     }
 
     #[test]
@@ -1696,13 +1758,7 @@ mod tests {
 
     #[test]
     fn restart_retries_an_unavailable_worker_on_a_new_launch_folder() {
-        // The first worker is out of date; the one the retry starts is not.
-        let test = Test::start(|request| match cmd(request) {
-            "status" if request["id"] == "status-1" => Some(vec![
-                json!({"event": "ready", "jobId": request["id"]}).to_string(),
-            ]),
-            _ => answer(request),
-        });
+        let test = Test::start(out_of_date_first);
         let reason = block_on(test.worker.unavailable()).unwrap();
         assert!(reason.starts_with("The worker is out of date"), "{reason}");
         assert_eq!(block_on(test.worker.restart()).unwrap(), None);
@@ -2026,7 +2082,7 @@ mod tests {
             error,
             ShellError::new(
                 ErrorCode::WorkerUnavailable,
-                "The previous worker did not stop. Restart Mathimator."
+                "The previous worker did not stop. Choose Retry to try again, or restart Mathimator."
             )
         );
         assert_eq!(
@@ -2039,12 +2095,7 @@ mod tests {
     #[test]
     fn restart_starts_a_worker_once_the_one_that_did_not_stop_has_exited() {
         // The first worker is out of date, and still runs when the shell gives up ending it.
-        let test = Test::start_with_exit(Exit::Late, |request| match cmd(request) {
-            "status" if request["id"] == "status-1" => Some(vec![
-                json!({"event": "ready", "jobId": request["id"]}).to_string(),
-            ]),
-            _ => answer(request),
-        });
+        let test = Test::start_with_exit(Exit::Late, out_of_date_first);
         assert!(block_on(test.worker.unavailable()).is_some());
         assert!(lock(&test.host.logs).contains(&STUCK.to_owned()));
         assert_eq!(block_on(test.worker.restart()).unwrap(), None);
