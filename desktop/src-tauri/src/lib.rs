@@ -127,11 +127,12 @@ where
 }
 
 /// Starts the supervisor in a kill-on-close Job Object, with its stderr appended to
-/// supervisor.err (C9.6, C9.8).
+/// `stderr_log`, supervisor.err (C9.6, C9.8).
 fn spawn_supervisor(
     runtime: &Runtime,
     files: &WorkerFiles,
-    shell: &Shell,
+    host: &dyn Host,
+    stderr_log: &Path,
     project: &Path,
     init: bool,
     tex_error: Option<&str>,
@@ -143,7 +144,7 @@ fn spawn_supervisor(
         .stderr(Stdio::piped())
         .spawn()?;
     let job = win32_job::assign_supervisor(&child).unwrap_or_else(|err| {
-        shell.log(&format!("Could not put the worker in a Job Object: {err}."));
+        host.log(&format!("Could not put the worker in a Job Object: {err}."));
         None
     });
     let (Some(stdin), Some(stdout), Some(stderr)) =
@@ -151,9 +152,8 @@ fn spawn_supervisor(
     else {
         return Err(io::Error::other("the supervisor pipes were not set up"));
     };
-    let stderr_log = shell.supervisor_err();
-    let log = open_stderr_log(&stderr_log, child.id(), &|line| shell.log(line))
-        .inspect_err(|err| shell.log(&format!("Could not open {}: {err}.", stderr_log.display())))
+    let log = open_stderr_log(stderr_log, child.id(), &|line| host.log(line))
+        .inspect_err(|err| host.log(&format!("Could not open {}: {err}.", stderr_log.display())))
         .ok();
     thread::spawn(move || drain_stderr(log, stderr));
     Ok(Spawned {
@@ -1080,7 +1080,15 @@ pub fn run() {
                 spawner(
                     tex,
                     move |project: &Path, init: bool, tex_error: Option<&str>| {
-                        spawn_supervisor(&runtime, &files, &shell, project, init, tex_error)
+                        spawn_supervisor(
+                            &runtime,
+                            &files,
+                            &*shell,
+                            &shell.supervisor_err(),
+                            project,
+                            init,
+                            tex_error,
+                        )
                     },
                 )
             });
@@ -1700,5 +1708,188 @@ mod tests {
         assert!(lock(&host.0).is_empty());
         drop(quit);
         assert!(dialogs.begin().is_some());
+    }
+
+    /// The shell against the repository's worker, started as a debug build starts it (PR1 D,
+    /// TR24). Only Windows probes a project lock without taking it, so the test is Windows only,
+    /// and it runs only under `--ignored` with `MATHIMATOR_REAL_WORKER_TESTS=1`.
+    #[cfg(windows)]
+    mod real_worker {
+        use std::sync::atomic::AtomicBool;
+
+        use tauri::async_runtime::block_on;
+
+        use super::*;
+
+        /// Keeps what a real worker's shell is told. Notices arrive as `notice` events, as the
+        /// shell's own do.
+        #[derive(Default)]
+        struct Recorder {
+            events: Mutex<Vec<Value>>,
+            logs: Mutex<Vec<String>>,
+        }
+
+        impl Host for Recorder {
+            fn emit(&self, event: Value) {
+                lock(&self.events).push(event);
+            }
+
+            fn bind(&self, _project: &Path) {}
+
+            fn log(&self, message: &str) {
+                lock(&self.logs).push(message.to_owned());
+            }
+
+            fn notice(&self, message: String) {
+                self.emit(json!({"event": "notice", "jobId": null, "message": message}));
+            }
+        }
+
+        impl Recorder {
+            /// The first `event` line, once the shell has been told it.
+            fn wait_for(&self, event: &str) -> Value {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    if let Some(line) = lock(&self.events)
+                        .iter()
+                        .find(|line| line["event"] == event)
+                    {
+                        return line.clone();
+                    }
+                    assert!(Instant::now() < deadline, "no {event} line");
+                    thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+
+        /// How many times the test binds each of two folders while pruning probes them.
+        const SWITCHES: usize = 25;
+
+        /// Tests the project locks of `folders` as pruning does, over and over, until `done` is
+        /// set.
+        fn probe_locks(folders: &[&Path], done: &AtomicBool) {
+            while !done.load(Ordering::Relaxed) {
+                for folder in folders {
+                    temp_project::is_locked(folder);
+                }
+            }
+        }
+
+        /// The handshake, replies to the shell's request lines, a refusal passed through,
+        /// `set_tex_error`, and the project lock, which pruning sees and whose probe never refuses
+        /// a worker's bind.
+        #[test]
+        #[ignore = "starts the repository's Python worker; needs MATHIMATOR_REAL_WORKER_TESTS=1"]
+        fn answers_the_shell_and_its_project_lock_is_seen() {
+            if std::env::var("MATHIMATOR_REAL_WORKER_TESTS").as_deref() != Ok("1") {
+                return;
+            }
+            let repo = runtime::repo_root().expect("debug builds run the repository's worker");
+            let runtime = runtime::development(&repo, &runtime::Overrides::from_env());
+            let files = runtime.worker.clone().expect("the repository's worker");
+            let sample = files.sample.clone();
+            let root = scratch("real-worker");
+            let stderr_log = root.join("supervisor.err");
+            let host = Arc::new(Recorder::default());
+            let tex = Arc::new(Tex::new(TexStatus::at_launch(None)));
+            let spawn = {
+                let (host, stderr_log) = (Arc::clone(&host), stderr_log.clone());
+                spawner(
+                    Arc::clone(&tex),
+                    move |project: &Path, init: bool, tex_error: Option<&str>| {
+                        spawn_supervisor(
+                            &runtime,
+                            &files,
+                            &*host,
+                            &stderr_log,
+                            project,
+                            init,
+                            tex_error,
+                        )
+                    },
+                )
+            };
+            let worker = Worker::launch(host.clone(), Ok(spawn), root.clone(), None, stderr_log);
+
+            // The launch: a new temp project, bound once the handshake found protocol 2, and
+            // marked.
+            let state = block_on(worker.get_state()).unwrap();
+            let bound = worker.project().unwrap();
+            assert_eq!(state["projectPath"], bound.to_str().unwrap());
+            assert_eq!(state["derived"]["canUndo"], false);
+            assert_eq!(
+                fs::canonicalize(bound.parent().unwrap()).unwrap(),
+                fs::canonicalize(&root).unwrap()
+            );
+            assert!(temp_project::Marker::read(&bound).is_some(), "no marker");
+
+            let add = json!({"op": "add_formula", "afterBeatId": null});
+            let added = block_on(worker.edit_document(add)).unwrap();
+            assert_eq!(added["changed"], true, "{added}");
+            let formula = &added["focus"]["objectId"];
+            let untrusted =
+                json!({"op": "set_latex", "objectId": formula, "latex": "\\csname x\\endcsname"});
+            // A refusal is the command's reply, not a shell error, and is not broadcast (D46).
+            let refused = block_on(worker.edit_document(untrusted)).unwrap();
+            assert_eq!(refused["event"], "rejected", "{refused}");
+            assert_eq!(refused["code"], "untrusted_latex");
+            assert_eq!(refused["field"], "latex");
+
+            // A failed TeX self-test reaches the running worker, which keeps the document's
+            // history.
+            let failed = "Formulas and axis labels cannot render on this PC: latex failed (exit code: 1). Reinstall Mathimator for all users.";
+            block_on(tex_checked(&worker, &tex, &*host, Err(failed.to_owned())));
+            let undone = block_on(worker.undo_document()).unwrap();
+            assert_eq!(undone["derived"]["canUndo"], false, "{undone}");
+            assert_eq!(undone["derived"]["canRedo"], true);
+            let cleared = block_on(worker.clear_cache()).unwrap();
+            assert_eq!(cleared["projectPath"], bound.to_str().unwrap(), "{cleared}");
+            assert!(
+                temp_project::is_locked(&bound),
+                "the worker's lock was not seen"
+            );
+
+            // Binds while pruning probes both folders: a probe never makes a bind `project_locked`.
+            let lesson = root.join("lesson");
+            fs::create_dir(&lesson).unwrap();
+            fs::copy(&sample, lesson.join("project.json")).unwrap();
+            let done = AtomicBool::new(false);
+            let replies: Vec<Result<Value, ShellError>> = thread::scope(|scope| {
+                scope.spawn(|| probe_locks(&[&bound, &lesson], &done));
+                let replies = (0..SWITCHES)
+                    .flat_map(|_| [&lesson, &bound])
+                    .map(|folder| block_on(worker.open_project(folder)))
+                    .collect();
+                done.store(true, Ordering::Relaxed);
+                replies
+            });
+            let refused: Vec<_> = replies
+                .iter()
+                .filter(|reply| !reply.as_ref().is_ok_and(|reply| reply["event"] == "state"))
+                .collect();
+            assert!(refused.is_empty(), "{} refused: {refused:?}", refused.len());
+            assert!(
+                temp_project::is_locked(&bound) && !temp_project::is_locked(&lesson),
+                "the lock did not follow the last bind"
+            );
+
+            // Closing its stdin ends the worker, at once and cleanly.
+            drop(worker);
+            let exited = host.wait_for("worker_exited");
+            let events = lock(&host.events).clone();
+            let logs = lock(&host.logs).clone();
+            let _ = fs::remove_dir_all(&root);
+            assert_eq!(exited["exitCode"], 0, "{exited}");
+            let kinds: Vec<&Value> = events.iter().map(|line| &line["event"]).collect();
+            assert_eq!(kinds, ["tex_status", "worker_exited"], "{events:?}");
+            let started = logs
+                .iter()
+                .filter(|line| line.starts_with("Started a worker on "));
+            assert_eq!(started.count(), 1, "{logs:?}");
+            assert!(
+                !logs.iter().any(|line| line.contains("not JSON")),
+                "{logs:?}"
+            );
+        }
     }
 }

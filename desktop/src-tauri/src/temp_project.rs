@@ -160,13 +160,32 @@ fn holds_files(folder: &Path) -> bool {
     })
 }
 
-/// Whether a worker holds the project lock of `folder` (C8.1). The shell takes the lock only to
-/// test it, and releases it at once. A lock file that cannot be opened counts as held.
-fn is_locked(folder: &Path) -> bool {
+/// Whether a worker holds the project lock of `folder` (C8.1). A lock file that cannot be opened
+/// counts as held.
+pub(crate) fn is_locked(folder: &Path) -> bool {
     match File::open(lock_file(folder)) {
-        Ok(file) => file.try_lock().is_err(),
+        Ok(file) => is_held(file),
         Err(err) => err.kind() != io::ErrorKind::NotFound,
     }
+}
+
+/// Whether another process holds the lock on `file`, whose first byte the worker locks. Windows
+/// refuses to read a locked byte, so the shell reads that byte and takes no lock: a probe that took
+/// the lock, however briefly, would refuse a worker that binds the folder at that moment with
+/// `project_locked`. A read that fails for any other reason counts as held too.
+#[cfg(windows)]
+fn is_held(mut file: File) -> bool {
+    use std::io::Read;
+    file.read(&mut [0]).is_err()
+}
+
+/// Whether another process holds the lock on `file`. Elsewhere the worker locks with `flock`,
+/// which cannot be tested without being taken, so the shell takes the lock and releases it at once.
+/// A worker that binds the folder at that moment is refused with `project_locked`; only the
+/// Windows app, the one that ships, has to avoid that.
+#[cfg(not(windows))]
+fn is_held(file: File) -> bool {
+    file.try_lock().is_err()
 }
 
 #[cfg(test)]
@@ -398,6 +417,36 @@ mod tests {
         assert!(locked.is_dir() && bound.is_dir());
         drop(lock);
         assert_eq!(scratch.prune(&[bound]), [pruned(&locked)]);
+    }
+
+    /// Probing a lock takes no lock on Windows, so a worker that binds a folder while pruning
+    /// probes it is never refused (TR24). Rust's lock stands in for the worker's.
+    #[cfg(windows)]
+    #[test]
+    fn a_probe_never_refuses_a_lock_taken_while_it_runs() {
+        use std::sync::atomic::AtomicBool;
+        use std::thread;
+
+        let scratch = Scratch::new();
+        let folder = scratch.project(&named(1));
+        File::create(lock_file(&folder)).unwrap();
+        let done = AtomicBool::new(false);
+        let refused = thread::scope(|scope| {
+            scope.spawn(|| {
+                while !done.load(Ordering::Relaxed) {
+                    is_locked(&folder);
+                }
+            });
+            // Nothing here panics, so the probe always hears that the locks are done.
+            let refused = (0..2000)
+                .filter(|_| {
+                    !File::open(lock_file(&folder)).is_ok_and(|lock| lock.try_lock().is_ok())
+                })
+                .count();
+            done.store(true, Ordering::Relaxed);
+            refused
+        });
+        assert_eq!(refused, 0);
     }
 
     #[test]

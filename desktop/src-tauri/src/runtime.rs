@@ -89,14 +89,14 @@ struct Manifest {
 
 /// The `MATHIMATOR_*` tool overrides, which only debug builds honour (D30).
 #[derive(Default)]
-struct Overrides {
+pub struct Overrides {
     python: Option<PathBuf>,
     typst: Option<PathBuf>,
     tinytex_bin: Option<PathBuf>,
 }
 
 impl Overrides {
-    fn from_env() -> Self {
+    pub fn from_env() -> Self {
         let path = |name| {
             env::var_os(name)
                 .filter(|value| !value.is_empty())
@@ -154,7 +154,7 @@ pub fn repo_root() -> Option<PathBuf> {
 
 /// Debug builds: the repository's worker, .venv and sample, the overrides, and the Typst, TinyTeX
 /// and notices of packaging/bundle when it has them (C9.6, F055).
-fn development(repo: &Path, overrides: &Overrides) -> Runtime {
+pub fn development(repo: &Path, overrides: &Overrides) -> Runtime {
     let bundle = repo.join("packaging").join("bundle");
     let manifest = read_manifest(&bundle)
         .map(|(manifest, _)| manifest)
