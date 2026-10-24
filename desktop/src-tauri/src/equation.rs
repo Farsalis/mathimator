@@ -1,9 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::thread;
@@ -11,23 +9,26 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use crate::runtime::{hidden_command, Runtime};
+
 /// Typst glyph preview. The shell owns this process. It is not the supervisor.
 pub struct GlyphPreview {
     cancelled: AtomicU64,
     running: AtomicU64,
     child: Mutex<Option<Child>>,
     binary: Mutex<Option<PathBuf>>,
-    preferred: Option<PathBuf>,
+    /// The Typst the runtime resolved, or why there is none (C9.6).
+    typst: Result<PathBuf, String>,
 }
 
 impl GlyphPreview {
-    pub fn new(preferred: Option<PathBuf>) -> Self {
+    pub fn new(typst: Result<PathBuf, String>) -> Self {
         Self {
             cancelled: AtomicU64::new(0),
             running: AtomicU64::new(0),
             child: Mutex::new(None),
             binary: Mutex::new(None),
-            preferred,
+            typst,
         }
     }
 
@@ -40,8 +41,7 @@ impl GlyphPreview {
 
     pub fn compile(
         &self,
-        python: &Path,
-        worker_src: &Path,
+        runtime: &Runtime,
         project: &Path,
         latex: &str,
         generation: u64,
@@ -54,7 +54,7 @@ impl GlyphPreview {
             return Ok(cancelled());
         }
 
-        let translated = match translate(python, worker_src, latex) {
+        let translated = match translate(runtime, latex) {
             Ok(translated) => translated,
             Err(message) => return Ok(failed(message)),
         };
@@ -192,8 +192,8 @@ impl GlyphPreview {
         if let Some(path) = self.binary.lock().map_err(|err| err.to_string())?.clone() {
             return Ok(path);
         }
-        let path = locate_typst(self.preferred.as_deref())?;
-        let output = Command::new(&path)
+        let path = self.typst.clone()?;
+        let output = hidden_command(&path)
             .arg("--version")
             .output()
             .map_err(|err| format!("failed to run typst --version: {err}"))?;
@@ -230,19 +230,13 @@ fn failed(message: String) -> Value {
     json!({"status": "error", "message": message})
 }
 
-fn translate(python: &Path, worker_src: &Path, latex: &str) -> Result<Option<String>, String> {
-    let mut command = Command::new(python);
+fn translate(runtime: &Runtime, latex: &str) -> Result<Option<String>, String> {
+    let files = runtime.worker.as_ref().map_err(String::clone)?;
+    let mut command = runtime.python_command(files, "mathimator_worker.equation");
     command
-        .arg("-m")
-        .arg("mathimator_worker.equation")
-        .env("PYTHONPATH", worker_src)
-        .env("PYTHONUNBUFFERED", "1")
-        .env("PYTHONIOENCODING", "utf-8")
-        .env("PYTHONUTF8", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    hide_console(&mut command);
     let mut child = command
         .spawn()
         .map_err(|err| format!("failed to start the equation translator: {err}"))?;
@@ -279,59 +273,15 @@ fn translate(python: &Path, worker_src: &Path, latex: &str) -> Result<Option<Str
 }
 
 fn spawn_typst(binary: &Path, source: &Path, svg: &Path) -> Result<Child, String> {
-    let mut command = Command::new(binary);
-    command
+    hidden_command(binary)
         .arg("compile")
         .arg(source)
         .arg(svg)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    hide_console(&mut command);
-    command
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| format!("failed to start typst: {err}"))
-}
-
-fn locate_typst(preferred: Option<&Path>) -> Result<PathBuf, String> {
-    if let Some(value) = std::env::var_os("MATHIMATOR_TYPST") {
-        let path = PathBuf::from(value);
-        if path.is_file() {
-            return Ok(path);
-        }
-        return Err(format!(
-            "MATHIMATOR_TYPST is not a file: {}",
-            path.display()
-        ));
-    }
-    if let Some(path) = preferred {
-        if path.is_file() {
-            return Ok(path.to_path_buf());
-        }
-        return Err(format!("bundled typst is not a file: {}", path.display()));
-    }
-    let paths = std::env::var_os("PATH").unwrap_or_default();
-    for directory in std::env::split_paths(&paths) {
-        for name in ["typst", "typst.exe"] {
-            let candidate = directory.join(name);
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    Err("typst 0.15.0 was not found on PATH".to_string())
-}
-
-fn hide_console(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = command;
-    }
 }
 
 fn read_pipe<R: Read>(mut pipe: R) -> String {

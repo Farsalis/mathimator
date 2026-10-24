@@ -1,10 +1,12 @@
 //! Windows Job Object teardown for the supervisor process.
 //!
-//! `assign_supervisor` runs on Windows unless `MATHIMATOR_WIN32_JOBS=0`.
+//! `assign_supervisor` runs on Windows unless a debug build has
+//! `MATHIMATOR_WIN32_JOBS=0`; release builds read no such override (C9.6).
 //! Closing the returned handle kills the supervisor and every process it
 //! created, because the job has `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The test
 //! below is ignored until Craig approves executing it on this machine.
 
+use std::io;
 use std::process::Child;
 
 pub struct SupervisorJob {
@@ -21,56 +23,58 @@ impl Drop for SupervisorJob {
     }
 }
 
-pub fn assign_supervisor(child: &Child) -> Option<SupervisorJob> {
-    if std::env::var("MATHIMATOR_WIN32_JOBS").ok().as_deref() == Some("0") {
-        return None;
+/// Puts the supervisor in a kill-on-close Job Object. `Ok(None)` means Job
+/// Objects are off; an error carries the OS reason, for shell.log (F104).
+pub fn assign_supervisor(child: &Child) -> io::Result<Option<SupervisorJob>> {
+    if cfg!(debug_assertions) && std::env::var("MATHIMATOR_WIN32_JOBS").ok().as_deref() == Some("0")
+    {
+        return Ok(None);
     }
     assign_enabled(child)
 }
 
 #[cfg(not(windows))]
-fn assign_enabled(_child: &Child) -> Option<SupervisorJob> {
-    let _ = _child;
-    None
+fn assign_enabled(_child: &Child) -> io::Result<Option<SupervisorJob>> {
+    Ok(None)
 }
 
 #[cfg(windows)]
-fn assign_enabled(child: &Child) -> Option<SupervisorJob> {
+fn assign_enabled(child: &Child) -> io::Result<Option<SupervisorJob>> {
     const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
     const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
     const PROCESS_TERMINATE: u32 = 0x0001;
     const PROCESS_SET_QUOTA: u32 = 0x0100;
     unsafe {
-        let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
-        if job.is_null() {
-            return None;
+        let handle = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
         }
+        // From here on, dropping `job` closes the handle, after the error is read.
+        let job = SupervisorJob {
+            handle: handle as isize,
+        };
         let mut info: JobObjectExtendedLimitInformation = std::mem::zeroed();
         info.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         let set = SetInformationJobObject(
-            job,
+            handle,
             JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
             &mut info as *mut JobObjectExtendedLimitInformation as *mut std::ffi::c_void,
             std::mem::size_of::<JobObjectExtendedLimitInformation>() as u32,
         );
         if set == 0 {
-            CloseHandle(job);
-            return None;
+            return Err(io::Error::last_os_error());
         }
         let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, child.id());
         if process.is_null() {
-            CloseHandle(job);
-            return None;
+            return Err(io::Error::last_os_error());
         }
-        let assigned = AssignProcessToJobObject(job, process);
+        let assigned = AssignProcessToJobObject(handle, process);
+        let error = io::Error::last_os_error();
         CloseHandle(process);
         if assigned == 0 {
-            CloseHandle(job);
-            return None;
+            return Err(error);
         }
-        Some(SupervisorJob {
-            handle: job as isize,
-        })
+        Ok(Some(job))
     }
 }
 
@@ -178,7 +182,9 @@ fn reap_assigned_tree_within_one_second() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn manim stand-in");
-    let job = assign_supervisor(&child).expect("supervisor was not assigned to a job");
+    let job = assign_supervisor(&child)
+        .expect("the Job Object could not be set up")
+        .expect("Job Objects are off");
     std::fs::write(&go, b"go").expect("go file");
     let (latex_pid, dvisvgm_pid) = wait_child_pids(&pids);
     assert!(

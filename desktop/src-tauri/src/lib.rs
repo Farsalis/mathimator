@@ -1,7 +1,5 @@
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,24 +9,25 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, Runtime, State, Window};
+use tauri::{async_runtime, AppHandle, Emitter, Manager, State, Window};
 use tauri_plugin_dialog::{DialogExt, FileDialogBuilder, FilePath};
 
 mod equation;
 mod protocol;
+mod runtime;
+mod tex;
 mod win32_job;
 mod worker;
 
 use equation::GlyphPreview;
 use protocol::{ErrorCode, ShellError};
-use worker::{Host, Spawned, Worker, WorkerProcess};
+use runtime::{Runtime, WorkerFiles};
+use worker::{Host, Spawned, Spawner, Worker, WorkerProcess};
 
-fn repo_root() -> Option<PathBuf> {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .ok()
-}
+/// The variable that makes the worker refuse formulas with its text (C9.6, C9.7).
+const TEX_ERROR: &str = "MATHIMATOR_TEX_ERROR";
+/// supervisor.err is rotated to supervisor.err.1 at a spawn once it is larger than this (C9.8).
+const STDERR_LOG_LIMIT: u64 = 1024 * 1024;
 
 /// Locks a mutex, recovering the data if a panicking thread poisoned it.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -42,171 +41,24 @@ fn unix_millis() -> u128 {
         .unwrap_or(0)
 }
 
-#[derive(Clone)]
-struct ResolvedRuntime {
-    python: PathBuf,
-    worker_src: PathBuf,
-    typst: Option<PathBuf>,
-    tinytex_bin: Option<PathBuf>,
-    sample_json: Option<PathBuf>,
-}
-
-fn bundled_runtime(app: &AppHandle) -> Option<PathBuf> {
-    let resource = app.path().resource_dir().ok()?;
-    let runtime = resource.join("runtime");
-    if runtime.is_dir() {
-        Some(runtime)
-    } else {
-        None
+/// shell.log and supervisor.err go to the repository's out/logs in debug builds and to the app
+/// log folder, %LOCALAPPDATA%\<identifier>\logs, in release builds (C9.8, D32).
+fn log_dir(app: &AppHandle) -> PathBuf {
+    match runtime::repo_root() {
+        Some(repo) => repo.join("out").join("logs"),
+        None => app
+            .path()
+            .app_log_dir()
+            .unwrap_or_else(|_| std::env::temp_dir().join("Mathimator").join("logs")),
     }
 }
 
-fn first_file(root: &Path, relatives: &[&str]) -> Option<PathBuf> {
-    for relative in relatives {
-        let path = root.join(relative);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn find_tinytex_bin(runtime: &Path) -> Option<PathBuf> {
-    let root = runtime.join("tinytex/bin");
-    let entries = fs::read_dir(&root).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.join("latex").is_file() || path.join("latex.exe").is_file() {
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn resolve_runtime(app: &AppHandle) -> Result<ResolvedRuntime, String> {
-    let bundled = bundled_runtime(app);
-    let repo = repo_root();
-    let python = if let Some(value) = std::env::var_os("MATHIMATOR_PYTHON") {
-        PathBuf::from(value)
-    } else if let Some(path) = bundled.as_ref().and_then(|root| {
-        first_file(
-            root,
-            &[
-                "venv/bin/python",
-                "venv/bin/python3",
-                "venv/Scripts/python.exe",
-            ],
-        )
-    }) {
-        path
-    } else if let Some(root) = repo.as_ref() {
-        let unix = root.join(".venv/bin/python");
-        let windows = root.join(".venv/Scripts/python.exe");
-        if unix.is_file() {
-            unix
-        } else {
-            windows
-        }
-    } else {
-        return Err("Python interpreter not found".to_string());
-    };
-    if !python.is_file() {
-        return Err(format!(
-            "Python interpreter not found at {}",
-            python.display()
-        ));
-    }
-    let worker_src = if let Some(root) = bundled
-        .as_ref()
-        .filter(|root| root.join("worker/mathimator_worker").is_dir())
-    {
-        root.join("worker")
-    } else if let Some(root) = repo.as_ref() {
-        root.join("worker")
-    } else {
-        return Err("worker source was not found".to_string());
-    };
-    let typst = if let Some(value) = std::env::var_os("MATHIMATOR_TYPST") {
-        let path = PathBuf::from(value);
-        if !path.is_file() {
-            return Err(format!(
-                "MATHIMATOR_TYPST is not a file: {}",
-                path.display()
-            ));
-        }
-        Some(path)
-    } else {
-        bundled
-            .as_ref()
-            .and_then(|root| first_file(root, &["typst/typst", "typst/typst.exe"]))
-    };
-    let tinytex_bin = if let Some(value) = std::env::var_os("MATHIMATOR_TINYTEX_BIN") {
-        let path = PathBuf::from(value);
-        if !path.is_dir() {
-            return Err(format!(
-                "MATHIMATOR_TINYTEX_BIN is not a directory: {}",
-                path.display()
-            ));
-        }
-        Some(path)
-    } else {
-        bundled.as_ref().and_then(|root| find_tinytex_bin(root))
-    };
-    let sample_json = bundled
-        .as_ref()
-        .map(|root| root.join("samples/reference-60/project.json"))
-        .filter(|path| path.is_file())
-        .or_else(|| repo.map(|root| root.join("tests/fixtures/reference-60/project.json")))
-        .filter(|path| path.is_file());
-    Ok(ResolvedRuntime {
-        python,
-        worker_src,
-        typst,
-        tinytex_bin,
-        sample_json,
-    })
-}
-
-/// The folder for shell.log and supervisor.err (C9.8).
-fn log_dir() -> PathBuf {
-    repo_root()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("out")
-        .join("logs")
-}
-
-fn apply_tinytex(command: &mut Command, tinytex_bin: Option<&Path>) {
-    let Some(bin) = tinytex_bin else {
-        return;
-    };
-    let mut paths = vec![bin.to_path_buf()];
-    if let Some(current) = std::env::var_os("PATH") {
-        paths.extend(std::env::split_paths(&current));
-    }
-    if let Ok(joined) = std::env::join_paths(paths) {
-        command.env("PATH", joined);
-    }
-    for key in [
-        "TEXINPUTS",
-        "TEXMFHOME",
-        "TEXMFLOCAL",
-        "TEXMFCNF",
-        "TEXMFVAR",
-        "TEXMFCONFIG",
-    ] {
-        command.env_remove(key);
-    }
-}
-
-fn hide_console(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = command;
+/// Appends one timestamped line to shell.log in `logs` (C9.8). Logging never fails its caller.
+fn log_line(logs: &Path, line: &str) {
+    let _ = fs::create_dir_all(logs);
+    let file = logs.join("shell.log");
+    if let Ok(mut log) = OpenOptions::new().create(true).append(true).open(file) {
+        let _ = writeln!(log, "{} {line}", unix_millis());
     }
 }
 
@@ -221,46 +73,70 @@ fn allow_project(app: &AppHandle, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Starts the Python supervisor on a project folder. `--init` is only for new temp projects.
-fn spawn_supervisor(
-    runtime: &ResolvedRuntime,
-    stderr_log: &Path,
+/// The command that starts the Python supervisor on a project folder (C9.6). `--init` is only for
+/// new temp projects, and `tex_error` makes the worker refuse formulas (C9.7).
+fn supervisor_command(
+    runtime: &Runtime,
+    files: &WorkerFiles,
     project: &Path,
     init: bool,
-) -> io::Result<Spawned> {
-    let mut command = Command::new(&runtime.python);
+    tex_error: Option<&str>,
+) -> Command {
+    let mut command = runtime.python_command(files, "mathimator_worker");
     command
-        .arg("-m")
-        .arg("mathimator_worker")
         .arg("--project")
         .arg(project)
         .arg("--python")
-        .arg(&runtime.python);
+        .arg(&files.python);
     if init {
         command.arg("--init");
     }
+    match tex_error {
+        Some(error) => command.env(TEX_ERROR, error),
+        None => command.env_remove(TEX_ERROR),
+    };
     command
-        .env("PYTHONPATH", &runtime.worker_src)
-        .env("PYTHONUNBUFFERED", "1")
-        .env("PYTHONIOENCODING", "utf-8")
-        .env("PYTHONUTF8", "1")
+}
+
+/// The worker's spawner. Each spawn passes on the TeX error of its moment, so that a worker started
+/// after a failed self-test refuses formulas (C9.7, C14 Q4).
+fn spawner<F>(tex: Arc<Tex>, spawn: F) -> Spawner
+where
+    F: Fn(&Path, bool, Option<&str>) -> io::Result<Spawned> + Send + Sync + 'static,
+{
+    Box::new(move |project: &Path, init: bool| spawn(project, init, tex.error().as_deref()))
+}
+
+/// Starts the supervisor in a kill-on-close Job Object, with its stderr appended to
+/// supervisor.err (C9.6, C9.8).
+fn spawn_supervisor(
+    runtime: &Runtime,
+    files: &WorkerFiles,
+    shell: &Shell,
+    project: &Path,
+    init: bool,
+    tex_error: Option<&str>,
+) -> io::Result<Spawned> {
+    let mut command = supervisor_command(runtime, files, project, init, tex_error);
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    hide_console(&mut command);
-    apply_tinytex(&mut command, runtime.tinytex_bin.as_deref());
-    if let Some(root) = repo_root() {
-        command.current_dir(root);
-    }
-    let mut child = command.spawn()?;
-    let job = win32_job::assign_supervisor(&child);
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let job = win32_job::assign_supervisor(&child).unwrap_or_else(|err| {
+        shell.log(&format!("Could not put the worker in a Job Object: {err}."));
+        None
+    });
     let (Some(stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
     else {
         return Err(io::Error::other("the supervisor pipes were not set up"));
     };
-    let stderr_log = stderr_log.to_path_buf();
-    thread::spawn(move || drain_stderr(stderr_log, stderr));
+    let stderr_log = shell.supervisor_err();
+    let log = open_stderr_log(&stderr_log, child.id(), &|line| shell.log(line))
+        .inspect_err(|err| shell.log(&format!("Could not open {}: {err}.", stderr_log.display())))
+        .ok();
+    thread::spawn(move || drain_stderr(log, stderr));
     Ok(Spawned {
         stdin: Box::new(stdin),
         stdout: Box::new(stdout),
@@ -268,16 +144,45 @@ fn spawn_supervisor(
     })
 }
 
-fn drain_stderr(path: PathBuf, mut stderr: std::process::ChildStderr) {
-    let mut buffer = Vec::new();
-    let _ = std::io::Read::read_to_end(&mut stderr, &mut buffer);
-    if buffer.is_empty() {
-        return;
+/// Opens supervisor.err for the worker with this pid (C9.8): rotated to supervisor.err.1 once it
+/// is over 1 MiB, then appended to under a header for this spawn. A rotation that fails, for
+/// example while another program holds the file, is logged, and the file is appended to anyway,
+/// so the worker's stderr is still kept (F129).
+fn open_stderr_log(path: &Path, pid: u32, log: &dyn Fn(&str)) -> io::Result<File> {
+    if fs::metadata(path).is_ok_and(|metadata| metadata.len() > STDERR_LOG_LIMIT) {
+        let mut rotated = path.as_os_str().to_owned();
+        rotated.push(".1");
+        if let Err(err) = fs::rename(path, rotated) {
+            log(&format!("Could not rotate {}: {err}.", path.display()));
+        }
     }
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+    if let Some(folder) = path.parent() {
+        fs::create_dir_all(folder)?;
     }
-    let _ = fs::write(path, buffer);
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(
+        file,
+        "--- supervisor pid={pid} started {} ---",
+        unix_millis()
+    )?;
+    Ok(file)
+}
+
+/// Copies the worker's stderr into supervisor.err as it arrives, line by line and as bytes, so
+/// a crash keeps its traceback and output that is not UTF-8 cannot stop the copy (F129). Without
+/// a log the output is still read, so the worker never blocks on a full pipe.
+fn drain_stderr(mut log: Option<impl Write>, stderr: impl Read) {
+    let mut stderr = BufReader::new(stderr);
+    let mut line = Vec::new();
+    while stderr
+        .read_until(b'\n', &mut line)
+        .is_ok_and(|read| read > 0)
+    {
+        if let Some(log) = &mut log {
+            let _ = log.write_all(&line);
+        }
+        line.clear();
+    }
 }
 
 /// The supervisor process, and the Job Object that ends it together with its Manim grandchild.
@@ -311,17 +216,19 @@ fn wait_child(child: &mut Child, limit: Duration) -> Option<ExitStatus> {
     }
 }
 
-/// The shell side of worker output: `worker-event`s, the asset scope, `lastProject`, shell.log
-/// and notices (C8.5, C9.4, C9.5, C9.8).
+/// The shell side of worker output: `worker-event`s, the asset scope, `lastProject`, shell.log,
+/// notices and the TeX state (C8.5, C9.4, C9.5, C9.7, C9.8).
 struct Shell {
     app: AppHandle,
-    log_file: PathBuf,
+    /// The folder of shell.log and supervisor.err (C9.8).
+    logs: PathBuf,
     state_file: Option<PathBuf>,
     notices: Mutex<Notices>,
+    tex: Arc<Tex>,
 }
 
 impl Shell {
-    fn new(app: AppHandle, log_dir: &Path) -> Self {
+    fn new(app: AppHandle, logs: PathBuf, tex: Arc<Tex>) -> Self {
         let state_file = app
             .path()
             .app_config_dir()
@@ -329,10 +236,19 @@ impl Shell {
             .map(|folder| folder.join("state.json"));
         Self {
             app,
-            log_file: log_dir.join("shell.log"),
+            logs,
             state_file,
             notices: Mutex::default(),
+            tex,
         }
+    }
+
+    fn supervisor_err(&self) -> PathBuf {
+        self.logs.join("supervisor.err")
+    }
+
+    fn status(&self, unavailable: Option<String>) -> AppStatus {
+        AppStatus::new(unavailable, self.tex.status(), &lock(&self.notices))
     }
 }
 
@@ -356,16 +272,7 @@ impl Host for Shell {
     }
 
     fn log(&self, message: &str) {
-        if let Some(folder) = self.log_file.parent() {
-            let _ = fs::create_dir_all(folder);
-        }
-        if let Ok(mut log) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_file)
-        {
-            let _ = writeln!(log, "{} {message}", unix_millis());
-        }
+        log_line(&self.logs, message);
     }
 
     fn notice(&self, message: String) {
@@ -379,6 +286,138 @@ impl Host for Shell {
     }
 }
 
+/// What `app_status` and `restart_worker` return (C9.5).
+#[derive(Debug, PartialEq, Serialize)]
+struct AppStatus {
+    worker: WorkerState,
+    /// Why the worker is unavailable.
+    reason: Option<String>,
+    tex: TexStatus,
+    notices: Vec<Notice>,
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum WorkerState {
+    Ready,
+    Unavailable,
+}
+
+impl AppStatus {
+    fn new(unavailable: Option<String>, tex: TexStatus, notices: &Notices) -> Self {
+        Self {
+            worker: match unavailable {
+                Some(_) => WorkerState::Unavailable,
+                None => WorkerState::Ready,
+            },
+            reason: unavailable,
+            tex,
+            notices: notices.open.clone(),
+        }
+    }
+}
+
+/// Whether formulas can render (C9.5, C9.7).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct TexStatus {
+    state: TexState,
+    message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum TexState {
+    Checking,
+    Ok,
+    Failed,
+}
+
+impl TexStatus {
+    /// Failed from the start when TeX is blocked, else checking until the self-test ends (C9.7).
+    fn at_launch(tex_error: Option<String>) -> Self {
+        match tex_error {
+            Some(message) => Self::checked(Err(message)),
+            None => Self {
+                state: TexState::Checking,
+                message: None,
+            },
+        }
+    }
+
+    fn checked(result: Result<(), String>) -> Self {
+        match result {
+            Ok(()) => Self {
+                state: TexState::Ok,
+                message: None,
+            },
+            Err(message) => Self {
+                state: TexState::Failed,
+                message: Some(message),
+            },
+        }
+    }
+
+    /// The message formulas are refused with, while TeX has failed.
+    fn error(&self) -> Option<&str> {
+        match self.state {
+            TexState::Failed => self.message.as_deref(),
+            TexState::Checking | TexState::Ok => None,
+        }
+    }
+
+    /// The `tex_status` event that tells the UI this status (C9.5).
+    fn event(&self) -> Value {
+        json!({
+            "event": "tex_status",
+            "jobId": null,
+            "state": self.state,
+            "message": self.message,
+        })
+    }
+}
+
+/// The TeX status, shared by the shell and the worker's spawner (C9.7).
+struct Tex(Mutex<TexStatus>);
+
+impl Tex {
+    fn new(status: TexStatus) -> Self {
+        Self(Mutex::new(status))
+    }
+
+    fn status(&self) -> TexStatus {
+        lock(&self.0).clone()
+    }
+
+    /// The message the worker refuses formulas with, while TeX has failed (C9.7).
+    fn error(&self) -> Option<String> {
+        lock(&self.0).error().map(str::to_owned)
+    }
+
+    /// Records the self-test result, and returns the status it gives.
+    fn checked(&self, result: Result<(), String>) -> TexStatus {
+        let status = TexStatus::checked(result);
+        *lock(&self.0) = status.clone();
+        status
+    }
+}
+
+/// Records the TeX self-test result, logs it and sends `tex_status` (C9.7). A failure blocks
+/// formulas (C14 Q4): the worker is restarted, so that it runs with MATHIMATOR_TEX_ERROR.
+async fn tex_checked(worker: &Worker, tex: &Tex, host: &dyn Host, result: Result<(), String>) {
+    let status = tex.checked(result);
+    host.log(&match &status.message {
+        Some(message) => format!("The TeX self-test failed: {message}"),
+        None => "The TeX self-test passed.".to_owned(),
+    });
+    host.emit(status.event());
+    if status.state == TexState::Failed {
+        let message = "The worker was restarted because formulas cannot render.".to_owned();
+        if let Err(err) = worker.retire(message).await {
+            host.log(&err.message);
+        }
+    }
+}
+
 /// The notices not yet dismissed (C9.5).
 #[derive(Default)]
 struct Notices {
@@ -386,7 +425,7 @@ struct Notices {
     open: Vec<Notice>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 struct Notice {
     id: u64,
     message: String,
@@ -448,7 +487,10 @@ impl Drop for DialogTurn<'_> {
 
 /// Parents a file dialog to the window, which makes it modal. The dialog plugin does the same,
 /// and like it this skips Linux.
-fn parented<R: Runtime>(builder: FileDialogBuilder<R>, window: &Window<R>) -> FileDialogBuilder<R> {
+fn parented<R: tauri::Runtime>(
+    builder: FileDialogBuilder<R>,
+    window: &Window<R>,
+) -> FileDialogBuilder<R> {
     #[cfg(any(windows, target_os = "macos"))]
     let builder = builder.set_parent(window);
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -464,6 +506,22 @@ fn picked_path(picked: FilePath) -> Result<PathBuf, ShellError> {
 
 fn cancelled() -> Value {
     json!({"cancelled": true})
+}
+
+#[tauri::command]
+async fn app_status(
+    worker: State<'_, Worker>,
+    shell: State<'_, Arc<Shell>>,
+) -> Result<AppStatus, ShellError> {
+    Ok(shell.status(worker.unavailable().await))
+}
+
+#[tauri::command]
+async fn restart_worker(
+    worker: State<'_, Worker>,
+    shell: State<'_, Arc<Shell>>,
+) -> Result<AppStatus, ShellError> {
+    Ok(shell.status(worker.restart().await?))
 }
 
 #[tauri::command]
@@ -525,12 +583,12 @@ async fn new_project(worker: State<'_, Worker>) -> Result<Value, ShellError> {
 #[tauri::command]
 async fn open_sample(
     worker: State<'_, Worker>,
-    runtime: State<'_, ResolvedRuntime>,
+    runtime: State<'_, Runtime>,
 ) -> Result<Value, ShellError> {
-    let sample = runtime
-        .sample_json
-        .clone()
-        .ok_or_else(|| ShellError::new(ErrorCode::Io, "The sample project was not found."))?;
+    let sample = match &runtime.worker {
+        Ok(files) => files.sample.clone(),
+        Err(reason) => return Err(ShellError::new(ErrorCode::WorkerUnavailable, reason)),
+    };
     worker.open_sample(sample).await
 }
 
@@ -642,7 +700,7 @@ fn cancel_equation_preview(glyph: State<'_, GlyphPreview>, generation: u64) {
 #[tauri::command]
 fn compile_equation_preview(
     worker: State<'_, Worker>,
-    runtime: State<'_, ResolvedRuntime>,
+    runtime: State<'_, Runtime>,
     glyph: State<'_, GlyphPreview>,
     latex: String,
     generation: u64,
@@ -650,23 +708,38 @@ fn compile_equation_preview(
     let project = worker
         .project()
         .ok_or_else(|| "No project is open.".to_string())?;
-    glyph.compile(
-        &runtime.python,
-        &runtime.worker_src,
-        &project,
-        &latex,
-        generation,
-    )
+    glyph.compile(&runtime, &project, &latex, generation)
 }
 
+/// Writes the shell-ready marker, only when MATHIMATOR_SHELL_READY_FILE names a file (D32).
 #[tauri::command]
-fn note_shell_ready() -> Result<(), String> {
-    let path = log_dir().join("shell-ready.txt");
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+fn note_shell_ready() -> Result<(), ShellError> {
+    let Some(file) =
+        std::env::var_os("MATHIMATOR_SHELL_READY_FILE").filter(|file| !file.is_empty())
+    else {
+        return Ok(());
+    };
+    let file = PathBuf::from(file);
+    fs::write(&file, format!("ready {}\n", unix_millis())).map_err(|err| {
+        ShellError::new(
+            ErrorCode::Io,
+            format!("Could not write {}: {err}.", file.display()),
+        )
+    })
+}
+
+/// Runs the TeX self-test once the launch is done (C8.5 launch step 5, C9.7).
+async fn check_tex(app: AppHandle) {
+    let (worker, shell) = (app.state::<Worker>(), app.state::<Arc<Shell>>());
+    if shell.tex.status().state != TexState::Checking {
+        return;
     }
-    fs::write(&path, format!("ready {}\n", unix_millis())).map_err(|err| err.to_string())?;
-    Ok(())
+    worker.launched().await;
+    let runtime = Runtime::clone(&app.state::<Runtime>());
+    let result = async_runtime::spawn_blocking(move || tex::self_test(&runtime))
+        .await
+        .unwrap_or_else(|err| Err(format!("The TeX self-test stopped: {err}")));
+    tex_checked(&worker, &shell.tex, &**shell, result).await;
 }
 
 /// Registers the Tauri commands, and keeps their names for the `commands.json` check (C9.1).
@@ -682,6 +755,8 @@ macro_rules! commands {
 }
 
 commands![
+    app_status,
+    restart_worker,
     dismiss_notice,
     reserve_job_id,
     get_state,
@@ -710,25 +785,34 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let runtime = resolve_runtime(app.handle()).map_err(std::io::Error::other)?;
-            let logs = log_dir();
-            let stderr_log = logs.join("supervisor.err");
-            let shell = Arc::new(Shell::new(app.handle().clone(), &logs));
-            let spawn_runtime = runtime.clone();
-            let spawn_log = stderr_log.clone();
+            // Nothing here fails: a missing runtime or a worker that cannot start leaves the window
+            // open with "Worker unavailable" and the reason (C9.5, D31).
+            let handle = app.handle();
+            let logs = log_dir(handle);
+            let runtime = runtime::resolve(handle, &|line| log_line(&logs, line));
+            let tex = Arc::new(Tex::new(TexStatus::at_launch(runtime.tex_error.clone())));
+            let shell = Arc::new(Shell::new(handle.clone(), logs, Arc::clone(&tex)));
+            let spawn = runtime.worker.clone().map(|files| {
+                let (runtime, shell) = (runtime.clone(), Arc::clone(&shell));
+                spawner(
+                    tex,
+                    move |project: &Path, init: bool, tex_error: Option<&str>| {
+                        spawn_supervisor(&runtime, &files, &shell, project, init, tex_error)
+                    },
+                )
+            });
             let worker = Worker::launch(
                 shell.clone(),
-                Box::new(move |project: &Path, init: bool| {
-                    spawn_supervisor(&spawn_runtime, &spawn_log, project, init)
-                }),
+                spawn,
                 std::env::temp_dir(),
-                stderr_log,
+                shell.supervisor_err(),
             );
             app.manage(GlyphPreview::new(runtime.typst.clone()));
             app.manage(runtime);
             app.manage(worker);
             app.manage(shell);
             app.manage(Dialogs::default());
+            async_runtime::spawn(check_tex(handle.clone()));
             Ok(())
         })
         .invoke_handler(invoke_handler())
@@ -738,6 +822,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::ffi::OsStr;
+
     use super::*;
 
     #[test]
@@ -763,8 +850,7 @@ mod tests {
             .copied()
             .filter(|name| !listed.contains(name))
             .collect();
-        // app_status and restart_worker come with AppStatus (contract C9.5), a later shell step.
-        assert_eq!(missing, ["app_status", "restart_worker"]);
+        assert!(missing.is_empty(), "not registered: {missing:?}");
         assert!(unlisted.is_empty(), "not in commands.json: {unlisted:?}");
     }
 
@@ -798,6 +884,237 @@ mod tests {
             saved,
             json!({"lastProject": "C:\\Users\\me\\Lessons\\sine"})
         );
+    }
+
+    #[test]
+    fn app_status_keeps_a_notice_until_it_is_dismissed() {
+        let mut notices = Notices::default();
+        let notice = notices.add("Could not reopen C:\\a. A new project was started.".to_owned());
+        let checking = TexStatus::at_launch(None);
+        let first = AppStatus::new(None, checking.clone(), &notices);
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            json!({
+                "worker": "ready",
+                "reason": null,
+                "tex": {"state": "checking", "message": null},
+                "notices": [{"id": 1, "message": "Could not reopen C:\\a. A new project was started."}],
+            })
+        );
+        assert_eq!(AppStatus::new(None, checking.clone(), &notices), first);
+        notices.dismiss(notice.id);
+        assert!(AppStatus::new(None, checking, &notices).notices.is_empty());
+    }
+
+    #[test]
+    fn app_status_reports_an_unavailable_worker_and_a_failed_tex() {
+        let status = AppStatus::new(
+            Some("The installed runtime is incomplete (python). Reinstall Mathimator.".to_owned()),
+            TexStatus::at_launch(Some(tex::MISSING.to_owned())),
+            &Notices::default(),
+        );
+        assert_eq!(
+            serde_json::to_value(status).unwrap(),
+            json!({
+                "worker": "unavailable",
+                "reason": "The installed runtime is incomplete (python). Reinstall Mathimator.",
+                "tex": {"state": "failed", "message": tex::MISSING},
+                "notices": [],
+            })
+        );
+    }
+
+    #[test]
+    fn only_a_failed_tex_check_blocks_formulas() {
+        assert_eq!(TexStatus::at_launch(None).error(), None);
+        assert_eq!(TexStatus::checked(Ok(())).error(), None);
+        assert_eq!(
+            TexStatus::checked(Err("LaTeX is not working.".to_owned())).error(),
+            Some("LaTeX is not working.")
+        );
+        assert_eq!(
+            TexStatus::at_launch(Some(tex::MISSING.to_owned())).error(),
+            Some(tex::MISSING)
+        );
+    }
+
+    #[test]
+    fn tex_status_events_carry_the_state_and_the_message() {
+        assert_eq!(
+            TexStatus::checked(Ok(())).event(),
+            json!({"event": "tex_status", "jobId": null, "state": "ok", "message": null})
+        );
+        assert_eq!(
+            TexStatus::checked(Err("LaTeX is not working.".to_owned())).event(),
+            json!({
+                "event": "tex_status",
+                "jobId": null,
+                "state": "failed",
+                "message": "LaTeX is not working.",
+            })
+        );
+    }
+
+    #[test]
+    fn the_tex_error_follows_the_latest_check() {
+        let tex = Tex::new(TexStatus::at_launch(None));
+        assert_eq!(tex.error(), None);
+        tex.checked(Err("LaTeX is not working.".to_owned()));
+        assert_eq!(tex.error().as_deref(), Some("LaTeX is not working."));
+        assert_eq!(tex.status().state, TexState::Failed);
+        tex.checked(Ok(()));
+        assert_eq!(tex.error(), None);
+    }
+
+    fn files() -> WorkerFiles {
+        WorkerFiles {
+            python: PathBuf::from("C:\\rt\\python\\python.exe"),
+            source: PathBuf::from("C:\\rt\\worker"),
+            sample: PathBuf::from("C:\\rt\\sample.json"),
+        }
+    }
+
+    fn installed_runtime() -> Runtime {
+        Runtime {
+            worker: Ok(files()),
+            typst: Err("none".to_owned()),
+            tinytex_bin: None,
+            tex_error: None,
+            work_dir: PathBuf::from("C:\\Users\\me\\AppData\\Local\\com.mathimator.desktop"),
+        }
+    }
+
+    fn env_value<'a>(command: &'a Command, key: &str) -> Option<Option<&'a OsStr>> {
+        command
+            .get_envs()
+            .find(|(name, _)| name.eq_ignore_ascii_case(key))
+            .map(|(_, value)| value)
+    }
+
+    #[test]
+    fn the_supervisor_runs_with_the_contract_command_line() {
+        let project = Path::new("C:\\Users\\me\\Lessons\\waves");
+        let command = supervisor_command(&installed_runtime(), &files(), project, true, None);
+        assert_eq!(
+            command.get_program(),
+            Path::new("C:\\rt\\python\\python.exe")
+        );
+        let args: Vec<&OsStr> = command.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "-P",
+                "-m",
+                "mathimator_worker",
+                "--project",
+                "C:\\Users\\me\\Lessons\\waves",
+                "--python",
+                "C:\\rt\\python\\python.exe",
+                "--init",
+            ]
+        );
+        assert_eq!(
+            command.get_current_dir(),
+            Some(Path::new(
+                "C:\\Users\\me\\AppData\\Local\\com.mathimator.desktop"
+            ))
+        );
+        assert_eq!(env_value(&command, TEX_ERROR), Some(None));
+        let reopened = supervisor_command(&installed_runtime(), &files(), project, false, None);
+        assert!(!reopened.get_args().any(|arg| arg == "--init"));
+    }
+
+    #[test]
+    fn a_tex_error_reaches_the_worker_environment() {
+        let command = supervisor_command(
+            &installed_runtime(),
+            &files(),
+            Path::new("C:\\p"),
+            false,
+            Some(tex::MISSING),
+        );
+        assert_eq!(
+            env_value(&command, TEX_ERROR),
+            Some(Some(OsStr::new(tex::MISSING)))
+        );
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let folder =
+            std::env::temp_dir().join(format!("mathimator-{name}-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    /// Opens supervisor.err as a spawn does, and returns what it logged.
+    fn open_logged(path: &Path, pid: u32) -> Vec<String> {
+        let logs = RefCell::new(Vec::new());
+        drop(open_stderr_log(path, pid, &|line| logs.borrow_mut().push(line.to_owned())).unwrap());
+        logs.into_inner()
+    }
+
+    #[test]
+    fn supervisor_err_gets_a_header_per_spawn_and_rotates_above_1_mib() {
+        let folder = scratch("stderr-log");
+        let path = folder.join("logs").join("supervisor.err");
+        assert!(open_logged(&path, 11).is_empty());
+        assert!(open_logged(&path, 12).is_empty());
+        let text = fs::read_to_string(&path).unwrap();
+        let headers: Vec<&str> = text.lines().collect();
+        assert_eq!(headers.len(), 2, "{text}");
+        assert!(headers[0].starts_with("--- supervisor pid=11 started "));
+        assert!(headers[1].starts_with("--- supervisor pid=12 started "));
+
+        let large = vec![b'x'; STDERR_LOG_LIMIT as usize + 1];
+        fs::write(&path, &large).unwrap();
+        assert!(open_logged(&path, 13).is_empty());
+        let rotated = fs::read(folder.join("logs").join("supervisor.err.1")).unwrap();
+        let current = fs::read_to_string(&path).unwrap();
+        let _ = fs::remove_dir_all(&folder);
+        assert_eq!(rotated, large);
+        assert!(
+            current.starts_with("--- supervisor pid=13 started "),
+            "{current}"
+        );
+        assert_eq!(current.lines().count(), 1);
+    }
+
+    #[test]
+    fn supervisor_err_is_appended_to_when_it_cannot_be_rotated() {
+        let folder = scratch("stderr-rotation");
+        let path = folder.join("supervisor.err");
+        let large = vec![b'x'; STDERR_LOG_LIMIT as usize + 1];
+        fs::write(&path, &large).unwrap();
+        // A folder that is not empty cannot be replaced by the rotation.
+        fs::create_dir_all(folder.join("supervisor.err.1").join("kept")).unwrap();
+        let logs = open_logged(&path, 14);
+        let text = fs::read(&path).unwrap();
+        let _ = fs::remove_dir_all(&folder);
+        let (kept, appended) = text.split_at(large.len());
+        assert_eq!(kept, large);
+        assert!(
+            appended.starts_with(b"--- supervisor pid=14 started "),
+            "{}",
+            String::from_utf8_lossy(appended)
+        );
+        assert_eq!(logs.len(), 1, "{logs:?}");
+        assert!(
+            logs[0].starts_with(&format!("Could not rotate {}: ", path.display())),
+            "{logs:?}"
+        );
+    }
+
+    #[test]
+    fn stderr_is_copied_as_bytes_line_by_line() {
+        let stderr: &[u8] =
+            b"Traceback (most recent call last):\n  bad \xff byte\nlast line without newline";
+        let mut copied = Vec::new();
+        drain_stderr(Some(&mut copied), stderr);
+        assert_eq!(copied, stderr);
+        let mut unread = stderr;
+        drain_stderr(None::<Vec<u8>>, &mut unread);
+        assert!(unread.is_empty(), "stderr was not read without a log");
     }
 
     #[test]

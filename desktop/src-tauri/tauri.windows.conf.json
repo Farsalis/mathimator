@@ -11,6 +11,9 @@
       "digestAlgorithm": null,
       "timestampUrl": null,
       "signCommand": null,
+      "nsis": {
+        "installMode": "perMachine"
+      },
       "webviewInstallMode": {
         "type": "offlineInstaller",
         "silent": true

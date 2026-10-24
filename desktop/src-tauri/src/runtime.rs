@@ -1,0 +1,890 @@
+//! The tools the shell runs and how it starts them (contract C9.6): Python with the worker, Typst
+//! for the glyph preview, TinyTeX, and the sample. Debug builds use the repository; release builds
+//! use only the installed bundle, as its runtime.json describes it (D30, D33).
+
+use std::env;
+use std::ffi::{OsStr, OsString};
+use std::fs;
+use std::iter;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use serde::Deserialize;
+use serde_json::Value;
+use tauri::{AppHandle, Manager};
+
+use crate::tex;
+
+const PYTHON_OVERRIDE: &str = "MATHIMATOR_PYTHON";
+const TYPST_OVERRIDE: &str = "MATHIMATOR_TYPST";
+const TINYTEX_OVERRIDE: &str = "MATHIMATOR_TINYTEX_BIN";
+
+/// What the shell runs. Each part is resolved on its own, so a missing piece disables only what
+/// needs it (D31).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Runtime {
+    /// Python and the worker, or why the worker cannot start.
+    pub worker: Result<WorkerFiles, String>,
+    /// Typst for the glyph preview, or why there is none.
+    pub typst: Result<PathBuf, String>,
+    /// The TinyTeX bin folder. A debug build without one uses the TeX on PATH.
+    pub tinytex_bin: Option<PathBuf>,
+    /// Why formulas cannot render, when TeX is blocked from the start (C9.7).
+    pub tex_error: Option<String>,
+    /// The working directory of every child (C9.6).
+    pub work_dir: PathBuf,
+}
+
+/// What starting the worker takes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkerFiles {
+    /// The real interpreter with Manim installed (D33).
+    pub python: PathBuf,
+    /// The folder that holds `mathimator_worker`.
+    pub source: PathBuf,
+    /// The reference-60 project.json that Sample copies.
+    pub sample: PathBuf,
+}
+
+/// The fields of runtime.json the shell uses (C9.6). The informational ones are only logged, and
+/// unknown ones are ignored.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Manifest {
+    platform: Option<String>,
+    python: Option<String>,
+    worker: Option<String>,
+    sample: Option<String>,
+    typst: Option<String>,
+    tinytex_bin: Option<String>,
+}
+
+/// The `MATHIMATOR_*` tool overrides. Debug builds honour them; release builds ignore them and
+/// say so in shell.log (D30).
+#[derive(Default)]
+struct Overrides {
+    python: Option<PathBuf>,
+    typst: Option<PathBuf>,
+    tinytex_bin: Option<PathBuf>,
+}
+
+impl Overrides {
+    fn from_env() -> Self {
+        let path = |name| {
+            env::var_os(name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        };
+        Self {
+            python: path(PYTHON_OVERRIDE),
+            typst: path(TYPST_OVERRIDE),
+            tinytex_bin: path(TINYTEX_OVERRIDE),
+        }
+    }
+
+    /// The names of the overrides that are set.
+    fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        [
+            (PYTHON_OVERRIDE, &self.python),
+            (TYPST_OVERRIDE, &self.typst),
+            (TINYTEX_OVERRIDE, &self.tinytex_bin),
+        ]
+        .into_iter()
+        .filter(|(_, value)| value.is_some())
+        .map(|(name, _)| name)
+    }
+}
+
+/// Finds the runtime and logs what it found (C9.8). It never fails: a missing part carries the
+/// reason instead (D31).
+pub fn resolve(app: &AppHandle, log: &dyn Fn(&str)) -> Runtime {
+    let overrides = Overrides::from_env();
+    let runtime = match repo_root() {
+        Some(repo) => development(&repo, &overrides),
+        None => {
+            let work_dir = app
+                .path()
+                .app_local_data_dir()
+                .unwrap_or_else(|_| env::temp_dir());
+            if let Err(err) = fs::create_dir_all(&work_dir) {
+                log(&format!("Could not create {}: {err}.", work_dir.display()));
+            }
+            let bundle = app
+                .path()
+                .resource_dir()
+                .map(|resources| plain(resources).join("runtime"));
+            installed(bundle, work_dir, &overrides, log)
+        }
+    };
+    log(&runtime.describe());
+    runtime
+}
+
+/// The repository, in debug builds only. Release builds neither use nor embed its path (D30,
+/// F057).
+#[cfg(debug_assertions)]
+pub fn repo_root() -> Option<PathBuf> {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .map(Path::to_path_buf)
+}
+
+/// The repository, in debug builds only. Release builds neither use nor embed its path (D30,
+/// F057).
+#[cfg(not(debug_assertions))]
+pub fn repo_root() -> Option<PathBuf> {
+    None
+}
+
+/// Debug builds: the repository's worker, .venv and sample, the overrides, and the Typst and
+/// TinyTeX of packaging/bundle when it has them (C9.6, F055).
+fn development(repo: &Path, overrides: &Overrides) -> Runtime {
+    let bundle = repo.join("packaging").join("bundle");
+    let manifest = read_manifest(&bundle)
+        .map(|(manifest, _)| manifest)
+        .unwrap_or_default();
+    let python = overrides
+        .python
+        .clone()
+        .unwrap_or_else(|| venv_python(repo));
+    let worker = if python.is_file() {
+        Ok(WorkerFiles {
+            python,
+            source: repo.join("worker"),
+            sample: repo
+                .join("tests")
+                .join("fixtures")
+                .join("reference-60")
+                .join("project.json"),
+        })
+    } else {
+        Err(format!("Python was not found at {}.", python.display()))
+    };
+    let typst = match &overrides.typst {
+        Some(path) if path.is_file() => Ok(path.clone()),
+        Some(path) => Err(format!(
+            "{TYPST_OVERRIDE} is not a file: {}",
+            path.display()
+        )),
+        None => file_in(&bundle, manifest.typst.as_deref())
+            .or_else(|| on_path("typst"))
+            .ok_or_else(|| "typst 0.15.0 was not found on PATH".to_owned()),
+    };
+    let (tinytex_bin, tex_error) = match &overrides.tinytex_bin {
+        Some(path) if path.is_dir() => (Some(path.clone()), None),
+        Some(path) => (
+            None,
+            Some(format!(
+                "Formulas and axis labels cannot render: {TINYTEX_OVERRIDE} is not a folder ({}).",
+                path.display()
+            )),
+        ),
+        None => (folder_in(&bundle, manifest.tinytex_bin.as_deref()), None),
+    };
+    Runtime {
+        worker,
+        typst,
+        tinytex_bin,
+        tex_error,
+        work_dir: repo.to_owned(),
+    }
+}
+
+/// Release builds: only the bundle, as its runtime.json describes it (C9.6, D30, D33). Without a
+/// resource folder there is no bundle: nothing is looked up from the working directory (F124).
+fn installed(
+    bundle: tauri::Result<PathBuf>,
+    work_dir: PathBuf,
+    overrides: &Overrides,
+    log: &dyn Fn(&str),
+) -> Runtime {
+    for name in overrides.names() {
+        log(&format!(
+            "Ignored {name}: release builds use only the installed runtime."
+        ));
+    }
+    let bundle = match &bundle {
+        Ok(bundle) => bundle.as_path(),
+        Err(err) => {
+            log(&format!("Could not find the resource folder: {err}."));
+            return Runtime::unusable(incomplete("runtime.json"), work_dir);
+        }
+    };
+    let Some((manifest, text)) = read_manifest(bundle) else {
+        return Runtime::unusable(incomplete("runtime.json"), work_dir);
+    };
+    log(&format!("runtime.json: {text}"));
+    if manifest.platform != Some(platform()) {
+        return Runtime::unusable(incomplete("platform"), work_dir);
+    }
+    let python = file_in(bundle, manifest.python.as_deref()).ok_or_else(|| incomplete("python"));
+    let source = folder_in(bundle, manifest.worker.as_deref())
+        .filter(|folder| folder.join("mathimator_worker").is_dir())
+        .ok_or_else(|| incomplete("worker"));
+    let sample = file_in(bundle, manifest.sample.as_deref()).ok_or_else(|| incomplete("sample"));
+    let worker = python.and_then(|python| {
+        Ok(WorkerFiles {
+            python,
+            source: source?,
+            sample: sample?,
+        })
+    });
+    let typst = file_in(bundle, manifest.typst.as_deref())
+        .ok_or_else(|| "The bundled Typst is missing. Reinstall Mathimator.".to_owned());
+    let tinytex_bin = folder_in(bundle, manifest.tinytex_bin.as_deref());
+    let tex_error = tinytex_bin.is_none().then(|| tex::MISSING.to_owned());
+    Runtime {
+        worker,
+        typst,
+        tinytex_bin,
+        tex_error,
+        work_dir,
+    }
+}
+
+/// Why the worker cannot start from an installed runtime that lacks `field` (C9.6).
+fn incomplete(field: &str) -> String {
+    format!("The installed runtime is incomplete ({field}). Reinstall Mathimator.")
+}
+
+impl Runtime {
+    /// A runtime whose bundle cannot be used at all.
+    fn unusable(reason: String, work_dir: PathBuf) -> Self {
+        Self {
+            worker: Err(reason.clone()),
+            typst: Err(reason),
+            tinytex_bin: None,
+            tex_error: Some(tex::MISSING.to_owned()),
+            work_dir,
+        }
+    }
+
+    /// A child with the worker's environment (C9.6, F124): no console window, the fixed working
+    /// directory, the inherited `PYTHON*`, `TEXINPUTS` and `TEXMF*` variables removed, and the
+    /// TinyTeX bin folder first on PATH.
+    pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
+        self.command_with(program, env::vars_os())
+    }
+
+    fn command_with(
+        &self,
+        program: impl AsRef<OsStr>,
+        inherited: impl IntoIterator<Item = (OsString, OsString)>,
+    ) -> Command {
+        let mut command = hidden_command(program);
+        command.current_dir(&self.work_dir);
+        let mut path = None;
+        for (key, value) in inherited {
+            if is_cleaned(&key) {
+                command.env_remove(&key);
+            } else if key.eq_ignore_ascii_case("PATH") {
+                path = Some(value);
+            }
+        }
+        if let Some(bin) = &self.tinytex_bin {
+            let paths = iter::once(bin.clone()).chain(path.iter().flat_map(env::split_paths));
+            if let Ok(joined) = env::join_paths(paths) {
+                command.env("PATH", joined);
+            }
+        }
+        command
+    }
+
+    /// `python -P -m <module>` with the worker package importable (C9.6). `-P` keeps the working
+    /// directory off `sys.path` (F124).
+    pub fn python_command(&self, files: &WorkerFiles, module: &str) -> Command {
+        let mut command = self.command(&files.python);
+        command
+            .arg("-P")
+            .arg("-m")
+            .arg(module)
+            .env("PYTHONPATH", &files.source)
+            .env("PYTHONUNBUFFERED", "1")
+            .env("PYTHONIOENCODING", "utf-8")
+            .env("PYTHONUTF8", "1");
+        command
+    }
+
+    /// A TeX program: TinyTeX's when there is TinyTeX, else the one on PATH.
+    pub fn tex_program(&self, name: &str) -> PathBuf {
+        match &self.tinytex_bin {
+            Some(bin) => bin.join(format!("{name}{}", env::consts::EXE_SUFFIX)),
+            None => PathBuf::from(name),
+        }
+    }
+
+    /// One shell.log line that names every tool (C9.8).
+    fn describe(&self) -> String {
+        let worker = match &self.worker {
+            Ok(files) => format!(
+                "python {}, worker {}, sample {}",
+                files.python.display(),
+                files.source.display(),
+                files.sample.display()
+            ),
+            Err(reason) => format!("no worker ({reason})"),
+        };
+        let typst = match &self.typst {
+            Ok(path) => path.display().to_string(),
+            Err(reason) => format!("none ({reason})"),
+        };
+        let tex = match (&self.tinytex_bin, &self.tex_error) {
+            (Some(bin), _) => bin.display().to_string(),
+            (None, Some(error)) => format!("blocked ({error})"),
+            (None, None) => "from PATH".to_owned(),
+        };
+        format!(
+            "Runtime: {worker}; typst {typst}; TinyTeX {tex}; working folder {}.",
+            self.work_dir.display()
+        )
+    }
+}
+
+/// A command whose console window stays hidden (F105).
+pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
+/// Whether children lose an inherited variable: the `PYTHON*` ones change how the interpreter
+/// starts, `PYTHONHOME` among them, and `TEXINPUTS` and `TEXMF*` change which files kpathsea
+/// finds (C9.6, F124, G2.6).
+fn is_cleaned(key: &OsStr) -> bool {
+    let key = key.to_string_lossy().to_ascii_uppercase();
+    key.starts_with("PYTHON") || key.starts_with("TEXMF") || key == "TEXINPUTS"
+}
+
+/// The platform runtime.json must name, for example `windows-x86_64`.
+fn platform() -> String {
+    format!("{}-{}", env::consts::OS, env::consts::ARCH)
+}
+
+/// Reads runtime.json, and returns it with its text on one line for shell.log.
+fn read_manifest(bundle: &Path) -> Option<(Manifest, String)> {
+    let bytes = fs::read(bundle.join("runtime.json")).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let manifest = Manifest::deserialize(&value).ok()?;
+    Some((manifest, value.to_string()))
+}
+
+/// A runtime.json path, which separates folders with `/`, inside the bundle.
+fn bundled(bundle: &Path, relative: &str) -> PathBuf {
+    relative
+        .split('/')
+        .fold(bundle.to_path_buf(), |path, part| path.join(part))
+}
+
+fn file_in(bundle: &Path, relative: Option<&str>) -> Option<PathBuf> {
+    relative
+        .map(|relative| bundled(bundle, relative))
+        .filter(|path| path.is_file())
+}
+
+fn folder_in(bundle: &Path, relative: Option<&str>) -> Option<PathBuf> {
+    relative
+        .map(|relative| bundled(bundle, relative))
+        .filter(|path| path.is_dir())
+}
+
+fn venv_python(repo: &Path) -> PathBuf {
+    let venv = repo.join(".venv");
+    if cfg!(windows) {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python")
+    }
+}
+
+fn on_path(name: &str) -> Option<PathBuf> {
+    let file = format!("{name}{}", env::consts::EXE_SUFFIX);
+    env::split_paths(&env::var_os("PATH")?)
+        .map(|folder| folder.join(&file))
+        .find(|path| path.is_file())
+}
+
+/// Tauri's resource folder is canonical, so on Windows it starts with `\\?\`. Python, PATH
+/// lookups and TeX need the plain form, which names the same folder.
+fn plain(path: PathBuf) -> PathBuf {
+    match path.to_str().and_then(|text| text.strip_prefix(r"\\?\")) {
+        Some(rest) if rest.get(1..3) == Some(":\\") => PathBuf::from(rest),
+        _ => path,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use serde_json::json;
+
+    use super::*;
+
+    /// A scratch folder, deleted when the test ends.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let folder = env::temp_dir().join(format!(
+                "mathimator-runtime-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&folder).unwrap();
+            Self(folder)
+        }
+
+        /// Creates a file and its folders.
+        fn file(&self, relative: &str) -> PathBuf {
+            let path = bundled(&self.0, relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"").unwrap();
+            path
+        }
+
+        fn folder(&self, relative: &str) -> PathBuf {
+            let path = bundled(&self.0, relative);
+            fs::create_dir_all(&path).unwrap();
+            path
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// An installed bundle with every file today's bundle scripts write, and runtime.json.
+    fn bundle(manifest: &Value) -> Scratch {
+        let scratch = Scratch::new();
+        scratch.file("python/python.exe");
+        scratch.folder("worker/mathimator_worker");
+        scratch.file("samples/reference-60/project.json");
+        scratch.file("typst/typst.exe");
+        scratch.folder("tinytex/bin/windows");
+        fs::write(scratch.0.join("runtime.json"), manifest.to_string()).unwrap();
+        scratch
+    }
+
+    fn manifest() -> Value {
+        json!({
+            "python": "python/python.exe",
+            "worker": "worker",
+            "pythonVersion": "3.14.9",
+            "pythonSelection": "CPython 3.14.9",
+            "manim": "0.22.0",
+            "lockSha256": "0".repeat(64),
+            "typst": "typst/typst.exe",
+            "typstVersion": "typst 0.15.0",
+            "tinytexBin": "tinytex/bin/windows",
+            "tinytexVersion": "tlmgr revision 80658",
+            "tinytexRelease": "2026.10",
+            "sample": "samples/reference-60/project.json",
+            "platform": platform(),
+        })
+    }
+
+    fn without(field: &str) -> Value {
+        let mut manifest = manifest();
+        manifest.as_object_mut().unwrap().remove(field);
+        manifest
+    }
+
+    fn install(scratch: &Scratch, overrides: &Overrides) -> (Runtime, Vec<String>) {
+        install_from(Ok(scratch.0.clone()), overrides)
+    }
+
+    fn install_from(
+        bundle: tauri::Result<PathBuf>,
+        overrides: &Overrides,
+    ) -> (Runtime, Vec<String>) {
+        let logs = RefCell::new(Vec::new());
+        let runtime = installed(
+            bundle,
+            PathBuf::from("C:\\work"),
+            overrides,
+            &|line: &str| logs.borrow_mut().push(line.to_owned()),
+        );
+        (runtime, logs.into_inner())
+    }
+
+    #[test]
+    fn a_complete_bundle_resolves_every_tool_from_runtime_json() {
+        let scratch = bundle(&manifest());
+        let (runtime, logs) = install(&scratch, &Overrides::default());
+        let root = &scratch.0;
+        assert_eq!(
+            runtime,
+            Runtime {
+                worker: Ok(WorkerFiles {
+                    python: root.join("python").join("python.exe"),
+                    source: root.join("worker"),
+                    sample: root
+                        .join("samples")
+                        .join("reference-60")
+                        .join("project.json"),
+                }),
+                typst: Ok(root.join("typst").join("typst.exe")),
+                tinytex_bin: Some(root.join("tinytex").join("bin").join("windows")),
+                tex_error: None,
+                work_dir: PathBuf::from("C:\\work"),
+            }
+        );
+        assert_eq!(logs, [format!("runtime.json: {}", manifest())]);
+    }
+
+    #[test]
+    fn a_missing_required_field_makes_the_worker_unavailable() {
+        for field in ["python", "worker", "sample"] {
+            let scratch = bundle(&without(field));
+            let (runtime, _) = install(&scratch, &Overrides::default());
+            assert_eq!(runtime.worker, Err(incomplete(field)), "{field}");
+            assert!(
+                runtime.typst.is_ok() && runtime.tex_error.is_none(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_required_file_that_is_gone_counts_as_missing() {
+        let scratch = bundle(&manifest());
+        fs::remove_file(scratch.0.join("python").join("python.exe")).unwrap();
+        assert_eq!(
+            install(&scratch, &Overrides::default()).0.worker,
+            Err(incomplete("python"))
+        );
+        let scratch = bundle(&manifest());
+        fs::remove_dir(scratch.0.join("worker").join("mathimator_worker")).unwrap();
+        assert_eq!(
+            install(&scratch, &Overrides::default()).0.worker,
+            Err(incomplete("worker"))
+        );
+    }
+
+    #[test]
+    fn a_platform_mismatch_makes_the_whole_bundle_unusable() {
+        let mut other = manifest();
+        other["platform"] = json!("linux-x86_64-or-other");
+        let scratch = bundle(&other);
+        let (runtime, _) = install(&scratch, &Overrides::default());
+        assert_eq!(
+            runtime,
+            Runtime::unusable(incomplete("platform"), PathBuf::from("C:\\work"))
+        );
+        assert_eq!(runtime.tex_error.as_deref(), Some(tex::MISSING));
+    }
+
+    #[test]
+    fn a_missing_or_unreadable_runtime_json_makes_the_bundle_unusable() {
+        let scratch = Scratch::new();
+        let (runtime, logs) = install(&scratch, &Overrides::default());
+        assert_eq!(runtime.worker, Err(incomplete("runtime.json")));
+        assert!(logs.is_empty());
+        fs::write(scratch.0.join("runtime.json"), b"{\"python\": ").unwrap();
+        assert_eq!(
+            install(&scratch, &Overrides::default()).0.worker,
+            Err(incomplete("runtime.json"))
+        );
+    }
+
+    #[test]
+    fn without_a_resource_folder_the_bundle_is_unusable() {
+        let (runtime, logs) = install_from(Err(tauri::Error::UnknownPath), &Overrides::default());
+        assert_eq!(
+            runtime,
+            Runtime::unusable(incomplete("runtime.json"), PathBuf::from("C:\\work"))
+        );
+        assert_eq!(logs, ["Could not find the resource folder: unknown path."]);
+    }
+
+    #[test]
+    fn a_missing_typst_disables_only_the_glyph_preview() {
+        let scratch = bundle(&without("typst"));
+        let (runtime, _) = install(&scratch, &Overrides::default());
+        assert_eq!(
+            runtime.typst,
+            Err("The bundled Typst is missing. Reinstall Mathimator.".to_owned())
+        );
+        assert!(runtime.worker.is_ok());
+        assert!(runtime.tinytex_bin.is_some() && runtime.tex_error.is_none());
+        let scratch = bundle(&manifest());
+        fs::remove_file(scratch.0.join("typst").join("typst.exe")).unwrap();
+        assert!(install(&scratch, &Overrides::default()).0.typst.is_err());
+    }
+
+    #[test]
+    fn a_missing_tinytex_blocks_tex_with_the_reinstall_message() {
+        for scratch in [bundle(&without("tinytexBin")), bundle(&manifest())] {
+            fs::remove_dir_all(scratch.0.join("tinytex")).unwrap();
+            let (runtime, _) = install(&scratch, &Overrides::default());
+            assert_eq!(runtime.tinytex_bin, None);
+            assert_eq!(runtime.tex_error.as_deref(), Some(tex::MISSING));
+            assert!(runtime.worker.is_ok() && runtime.typst.is_ok());
+        }
+    }
+
+    #[test]
+    fn unknown_runtime_json_fields_are_ignored() {
+        let mut extra = manifest();
+        extra["tlnetRepository"] = json!("https://example.invalid/tlnet");
+        extra["layout"] = json!({"version": 9, "parts": [1, 2]});
+        let scratch = bundle(&extra);
+        let (runtime, logs) = install(&scratch, &Overrides::default());
+        assert!(runtime.worker.is_ok() && runtime.typst.is_ok() && runtime.tex_error.is_none());
+        assert!(logs[0].contains("tlnetRepository"), "{logs:?}");
+    }
+
+    #[test]
+    fn release_ignores_the_overrides_and_logs_them() {
+        let scratch = bundle(&manifest());
+        let elsewhere = Scratch::new();
+        let overrides = Overrides {
+            python: Some(elsewhere.file("python.exe")),
+            typst: Some(elsewhere.file("typst.exe")),
+            tinytex_bin: Some(elsewhere.folder("tinytex")),
+        };
+        let (runtime, logs) = install(&scratch, &overrides);
+        assert_eq!(runtime, install(&scratch, &Overrides::default()).0);
+        assert_eq!(
+            logs[..3],
+            [PYTHON_OVERRIDE, TYPST_OVERRIDE, TINYTEX_OVERRIDE].map(|name| format!(
+                "Ignored {name}: release builds use only the installed runtime."
+            ))
+        );
+    }
+
+    #[test]
+    fn the_debug_repository_root_holds_the_worker_source() {
+        let repo = repo_root().unwrap();
+        assert!(repo.join("worker").join("mathimator_worker").is_dir());
+        assert!(!repo.to_string_lossy().starts_with(r"\\?\"));
+    }
+
+    #[test]
+    fn debug_uses_the_repository_and_the_tools_of_packaging_bundle() {
+        let repo = Scratch::new();
+        let python = repo.file(".venv/Scripts/python.exe");
+        repo.file(".venv/bin/python");
+        let typst = repo.file("packaging/bundle/typst/typst.exe");
+        let tinytex = repo.folder("packaging/bundle/tinytex/bin/windows");
+        fs::write(
+            repo.0.join("packaging").join("bundle").join("runtime.json"),
+            json!({"typst": "typst/typst.exe", "tinytexBin": "tinytex/bin/windows"}).to_string(),
+        )
+        .unwrap();
+        let runtime = development(&repo.0, &Overrides::default());
+        let python = if cfg!(windows) {
+            python
+        } else {
+            repo.0.join(".venv").join("bin").join("python")
+        };
+        assert_eq!(
+            runtime,
+            Runtime {
+                worker: Ok(WorkerFiles {
+                    python,
+                    source: repo.0.join("worker"),
+                    sample: repo
+                        .0
+                        .join("tests")
+                        .join("fixtures")
+                        .join("reference-60")
+                        .join("project.json"),
+                }),
+                typst: Ok(typst),
+                tinytex_bin: Some(tinytex),
+                tex_error: None,
+                work_dir: repo.0.clone(),
+            }
+        );
+    }
+
+    #[test]
+    fn debug_honours_the_overrides_and_a_bad_one_disables_only_its_feature() {
+        let repo = Scratch::new();
+        let tools = Scratch::new();
+        let good = Overrides {
+            python: Some(tools.file("python.exe")),
+            typst: Some(tools.file("typst.exe")),
+            tinytex_bin: Some(tools.folder("tinytex")),
+        };
+        let runtime = development(&repo.0, &good);
+        assert_eq!(runtime.worker.unwrap().python, tools.0.join("python.exe"));
+        assert_eq!(runtime.typst, Ok(tools.0.join("typst.exe")));
+        assert_eq!(runtime.tinytex_bin, Some(tools.0.join("tinytex")));
+
+        let missing = tools.0.join("missing");
+        let bad = Overrides {
+            python: Some(missing.join("python.exe")),
+            typst: Some(missing.join("typst.exe")),
+            tinytex_bin: Some(missing.clone()),
+        };
+        let runtime = development(&repo.0, &bad);
+        assert_eq!(
+            runtime.worker,
+            Err(format!(
+                "Python was not found at {}.",
+                missing.join("python.exe").display()
+            ))
+        );
+        assert_eq!(
+            runtime.typst,
+            Err(format!(
+                "MATHIMATOR_TYPST is not a file: {}",
+                missing.join("typst.exe").display()
+            ))
+        );
+        assert_eq!(runtime.tinytex_bin, None);
+        assert_eq!(
+            runtime.tex_error,
+            Some(format!(
+                "Formulas and axis labels cannot render: MATHIMATOR_TINYTEX_BIN is not a folder ({}).",
+                missing.display()
+            ))
+        );
+    }
+
+    fn runtime(tinytex_bin: Option<PathBuf>) -> Runtime {
+        Runtime {
+            worker: Ok(WorkerFiles {
+                python: PathBuf::from("C:\\rt\\python\\python.exe"),
+                source: PathBuf::from("C:\\rt\\worker"),
+                sample: PathBuf::from("C:\\rt\\sample.json"),
+            }),
+            typst: Err("none".to_owned()),
+            tinytex_bin,
+            tex_error: None,
+            work_dir: PathBuf::from("C:\\Users\\me\\AppData\\Local\\com.mathimator.desktop"),
+        }
+    }
+
+    fn envs(command: &Command) -> Vec<(String, Option<String>)> {
+        command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn children_lose_inherited_python_and_tex_settings_and_get_tinytex_first_on_path() {
+        let runtime = runtime(Some(PathBuf::from("C:\\rt\\tinytex\\bin\\windows")));
+        let inherited = [
+            ("PYTHONHOME", "C:\\Python27"),
+            ("PythonStartup", "C:\\startup.py"),
+            ("PYTHONPATH", "C:\\elsewhere"),
+            ("TEXMFHOME", "C:\\texmf"),
+            ("texmfcnf", "C:\\cnf"),
+            ("TEXINPUTS", "C:\\inputs"),
+            ("Path", "C:\\Windows;C:\\MiKTeX\\bin"),
+            ("TEMP", "C:\\Temp"),
+        ]
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)));
+        let command = runtime.command_with("latex", inherited);
+        let mut envs = envs(&command);
+        envs.sort_by_key(|(key, _)| key.to_ascii_uppercase());
+        let expected_path = env::join_paths([
+            "C:\\rt\\tinytex\\bin\\windows",
+            "C:\\Windows",
+            "C:\\MiKTeX\\bin",
+        ])
+        .unwrap();
+        assert_eq!(
+            envs,
+            [
+                ("PATH", Some(expected_path.to_string_lossy().into_owned())),
+                ("PYTHONHOME", None),
+                ("PYTHONPATH", None),
+                ("PythonStartup", None),
+                ("TEXINPUTS", None),
+                ("texmfcnf", None),
+                ("TEXMFHOME", None),
+            ]
+            .map(|(key, value)| (key.to_owned(), value))
+        );
+        assert_eq!(command.get_current_dir(), Some(runtime.work_dir.as_path()));
+    }
+
+    #[test]
+    fn without_tinytex_children_keep_the_inherited_path() {
+        let inherited = [(OsString::from("PATH"), OsString::from("C:\\Windows"))];
+        assert!(envs(&runtime(None).command_with("latex", inherited)).is_empty());
+    }
+
+    #[test]
+    fn python_children_run_with_dash_p_and_the_worker_on_pythonpath() {
+        let runtime = runtime(None);
+        let files = runtime.worker.clone().unwrap();
+        let command = runtime.python_command(&files, "mathimator_worker");
+        assert_eq!(command.get_program(), files.python);
+        let args: Vec<&OsStr> = command.get_args().collect();
+        assert_eq!(args, ["-P", "-m", "mathimator_worker"]);
+        let envs = envs(&command);
+        for (key, value) in [
+            ("PYTHONPATH", "C:\\rt\\worker"),
+            ("PYTHONUNBUFFERED", "1"),
+            ("PYTHONIOENCODING", "utf-8"),
+            ("PYTHONUTF8", "1"),
+        ] {
+            assert!(
+                envs.contains(&(key.to_owned(), Some(value.to_owned()))),
+                "{key}: {envs:?}"
+            );
+        }
+        assert!(!envs
+            .iter()
+            .any(|(key, value)| key.eq_ignore_ascii_case("PYTHONHOME") && value.is_some()));
+        assert_eq!(command.get_current_dir(), Some(runtime.work_dir.as_path()));
+    }
+
+    #[test]
+    fn tex_programs_come_from_tinytex_when_there_is_one() {
+        let bin = PathBuf::from("C:\\rt\\tinytex\\bin\\windows");
+        assert_eq!(
+            runtime(Some(bin.clone())).tex_program("latex"),
+            bin.join(format!("latex{}", env::consts::EXE_SUFFIX))
+        );
+        assert_eq!(runtime(None).tex_program("latex"), PathBuf::from("latex"));
+    }
+
+    #[test]
+    fn the_verbatim_prefix_is_dropped_from_drive_paths_only() {
+        assert_eq!(
+            plain(PathBuf::from(r"\\?\C:\Program Files\Mathimator")),
+            PathBuf::from(r"C:\Program Files\Mathimator")
+        );
+        for kept in [
+            r"\\?\UNC\server\share\Mathimator",
+            r"C:\Program Files\Mathimator",
+        ] {
+            assert_eq!(plain(PathBuf::from(kept)), PathBuf::from(kept));
+        }
+    }
+
+    #[test]
+    fn bundle_paths_use_the_platform_separator() {
+        assert_eq!(
+            bundled(Path::new("C:\\rt"), "tinytex/bin/windows"),
+            Path::new("C:\\rt")
+                .join("tinytex")
+                .join("bin")
+                .join("windows")
+        );
+    }
+}

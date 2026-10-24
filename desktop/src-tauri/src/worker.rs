@@ -1,6 +1,7 @@
 //! The worker as the shell runs it: start and handshake (contract C6), the request gate and the
-//! per-generation pending replies (C9.1, C9.2), routing worker stdout (C9.4), and exit and
-//! respawn (C8.6). Every worker-bound command of C9.1 has a method on [`Worker`].
+//! per-generation pending replies (C9.1, C9.2), routing worker stdout (C9.4), exit and respawn
+//! (C8.6), and the status the UI starts from (C9.5). Every worker-bound command of C9.1 has a
+//! method on [`Worker`].
 
 use std::collections::HashMap;
 use std::fs;
@@ -27,6 +28,8 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const EXIT_CODE_WAIT: Duration = Duration::from_secs(1);
 /// How long the shell waits for a worker it ended to exit (C8.6).
 const STOP_WAIT: Duration = Duration::from_secs(5);
+/// Why no worker starts while an ended one is still alive (C8.6 step 4).
+const STUCK: &str = "The previous worker did not stop. Restart Mathimator.";
 
 /// What the shell does with what the worker reports (C9.4, C9.5).
 pub trait Host: Send + Sync + 'static {
@@ -64,11 +67,25 @@ pub struct Worker {
     shared: Arc<Shared>,
     /// The request gate (C9.2). Its holder owns the worker: only it writes requests and starts or
     /// ends the process. The lock is fair, so requests are written in call order.
-    status: Arc<async_runtime::Mutex<Status>>,
+    gate: Arc<async_runtime::Mutex<Gate>>,
+    /// Held for writing until the launch is done, so a read lock waits for the launch and not for
+    /// the requests after it (C8.5 launch step 5, C9.1).
+    launch: Arc<async_runtime::RwLock<()>>,
 }
 
+/// What the holder of the request gate owns.
+#[derive(Default)]
+struct Gate {
+    status: Status,
+    /// A worker that was ended but was still alive 5 s later. It is ended again before any worker
+    /// starts, so a new worker never meets its project lock (C8.6 step 4).
+    stuck: Option<Arc<Process>>,
+}
+
+#[derive(Default)]
 enum Status {
-    /// No worker has been started yet.
+    /// No worker runs: none has been started yet, or the last one was ended.
+    #[default]
     Stopped,
     Running(Link),
     /// Commands fail with `worker_unavailable` and this reason.
@@ -99,7 +116,8 @@ enum Start {
 
 struct Shared {
     host: Arc<dyn Host>,
-    spawn: Spawner,
+    /// Starts a worker, or says why none can: the runtime has no worker (C9.6).
+    spawn: Result<Spawner, String>,
     /// Where temp projects are created.
     temp_root: PathBuf,
     /// supervisor.err, which the "stopped during startup" reason points to.
@@ -109,6 +127,9 @@ struct Shared {
     next_generation: AtomicU64,
     routes: Mutex<Routes>,
     bound: Mutex<Bound>,
+    /// Why the worker is unavailable, as the last holder of the request gate left it, so that
+    /// `app_status` does not wait for the gate (C9.1, C9.2).
+    unavailable: Mutex<Option<String>>,
 }
 
 /// Replies the router owes to callers.
@@ -166,15 +187,33 @@ struct Bound {
 /// The holder of the request gate.
 struct Session<'a> {
     status: &'a mut Status,
+    stuck: &'a mut Option<Arc<Process>>,
     shared: &'a Arc<Shared>,
+}
+
+impl Gate {
+    /// Runs `work` as the holder of the gate, then mirrors the status it leaves for `app_status`.
+    fn session<T>(&mut self, shared: &Arc<Shared>, work: impl FnOnce(&mut Session<'_>) -> T) -> T {
+        let result = work(&mut Session {
+            status: &mut self.status,
+            stuck: &mut self.stuck,
+            shared,
+        });
+        *lock(&shared.unavailable) = match &self.status {
+            Status::Unavailable(reason) => Some(reason.clone()),
+            Status::Stopped | Status::Running(_) => None,
+        };
+        result
+    }
 }
 
 impl Worker {
     /// Starts the first worker in the background, on a new temp project in `temp_root`. Every
-    /// worker-bound command waits until its handshake is done (C6).
+    /// worker-bound command waits until its handshake is done (C6). Without a spawner, every
+    /// command fails with `worker_unavailable` and the reason (D31).
     pub fn launch(
         host: Arc<dyn Host>,
-        spawn: Spawner,
+        spawn: Result<Spawner, String>,
         temp_root: PathBuf,
         stderr_log: PathBuf,
     ) -> Self {
@@ -187,21 +226,27 @@ impl Worker {
             next_generation: AtomicU64::new(1),
             routes: Mutex::default(),
             bound: Mutex::default(),
+            unavailable: Mutex::default(),
         });
-        let status = Arc::new(async_runtime::Mutex::new(Status::Stopped));
-        let mut gate = Arc::clone(&status)
+        let gate = Arc::new(async_runtime::Mutex::new(Gate::default()));
+        let launch = Arc::new(async_runtime::RwLock::new(()));
+        let mut held = Arc::clone(&gate)
             .try_lock_owned()
             .expect("a new request gate is free");
-        let launching = Arc::clone(&shared);
+        let launching = Arc::clone(&launch)
+            .try_write_owned()
+            .expect("a new launch lock is free");
+        let starter = Arc::clone(&shared);
         async_runtime::spawn_blocking(move || {
             // A failed launch leaves the worker unavailable, and every command reports why.
-            let _ = Session {
-                status: &mut gate,
-                shared: &launching,
-            }
-            .ready();
+            let _ = held.session(&starter, |session| session.ready());
+            drop(launching);
         });
-        Self { shared, status }
+        Self {
+            shared,
+            gate,
+            launch,
+        }
     }
 
     /// The next id from the one id counter, for example `preview-7`.
@@ -212,6 +257,42 @@ impl Worker {
     /// The bound project folder (C9.4), once a worker has been started.
     pub fn project(&self) -> Option<PathBuf> {
         self.shared.project()
+    }
+
+    /// Waits until the launch handshake is done (C8.5 launch step 5).
+    pub async fn launched(&self) {
+        drop(self.launch.read().await);
+    }
+
+    /// Why worker-bound commands fail with `worker_unavailable`, or `None` when they reach a
+    /// worker or start one (C9.5). Waits for the launch, but not for a request in flight, which
+    /// may take minutes (C9.1).
+    pub async fn unavailable(&self) -> Option<String> {
+        self.launched().await;
+        lock(&self.shared.unavailable).clone()
+    }
+
+    /// `restart_worker` (C9.1): makes sure a worker runs, retrying one that is unavailable, and
+    /// returns why it still is. A worker that did not stop must exit before another starts.
+    pub async fn restart(&self) -> Result<Option<String>, ShellError> {
+        self.hold(|session| {
+            if matches!(session.status, Status::Unavailable(_)) {
+                *session.status = Status::Stopped;
+            }
+            Ok(session.ready().err().map(|error| error.message))
+        })
+        .await
+    }
+
+    /// Ends the running worker, so that the next command starts one with the shell's current
+    /// settings, such as a TeX error (C9.7). The UI hears `worker_exited` with `message`, as after
+    /// a crash, so it ends its jobs and reloads the document (C8.6).
+    pub async fn retire(&self, message: String) -> Result<(), ShellError> {
+        self.hold(move |session| {
+            session.retire(&message);
+            Ok(())
+        })
+        .await
     }
 
     pub async fn get_state(&self) -> Result<Value, ShellError> {
@@ -289,27 +370,33 @@ impl Worker {
             .await
     }
 
-    /// Runs `work` holding the request gate, once the worker is ready. The work blocks on pipes
-    /// and replies, so it runs on the blocking pool, never on the UI thread (D20).
+    /// Runs `work` holding the request gate, once the worker is ready.
     async fn run<T, F>(&self, work: F) -> Result<T, ShellError>
     where
         T: Send + 'static,
         F: FnOnce(&mut Session<'_>) -> Result<T, ShellError> + Send + 'static,
     {
-        let mut gate = Arc::clone(&self.status).lock_owned().await;
-        let shared = Arc::clone(&self.shared);
-        async_runtime::spawn_blocking(move || {
-            let mut session = Session {
-                status: &mut gate,
-                shared: &shared,
-            };
+        self.hold(move |session| {
             session.ready()?;
-            work(&mut session)
+            work(session)
         })
         .await
-        .map_err(|err| {
-            ShellError::new(ErrorCode::Io, format!("The worker request failed: {err}"))
-        })?
+    }
+
+    /// Runs `work` holding the request gate. The work blocks on pipes and replies, so it runs on
+    /// the blocking pool, never on the UI thread (D20).
+    async fn hold<T, F>(&self, work: F) -> Result<T, ShellError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Session<'_>) -> Result<T, ShellError> + Send + 'static,
+    {
+        let mut gate = Arc::clone(&self.gate).lock_owned().await;
+        let shared = Arc::clone(&self.shared);
+        async_runtime::spawn_blocking(move || gate.session(&shared, work))
+            .await
+            .map_err(|err| {
+                ShellError::new(ErrorCode::Io, format!("The worker request failed: {err}"))
+            })?
     }
 }
 
@@ -333,23 +420,27 @@ impl Session<'_> {
     /// project, and runs the handshake (C6). Returns the reason the worker is unavailable.
     fn start(&mut self) -> Result<(), String> {
         self.stop()?;
-        let (folder, start) = match self.shared.project() {
+        let shared = self.shared;
+        let spawn = shared.spawn.as_ref().map_err(String::clone)?;
+        let (folder, start) = match shared.project() {
             Some(folder) => (folder, Start::Respawn),
             None => (
-                self.shared
-                    .create_temp_project()
-                    .map_err(|err| err.message)?,
+                shared.create_temp_project().map_err(|err| err.message)?,
                 Start::Launch,
             ),
         };
         let init = matches!(start, Start::Launch);
-        let spawned = (self.shared.spawn)(&folder, init)
-            .map_err(|err| format!("Could not start the worker: {err}."))?;
-        self.shared
+        let spawned = spawn(&folder, init).map_err(|err| {
+            if init {
+                shared.remove_folder(&folder);
+            }
+            format!("Could not start the worker: {err}.")
+        })?;
+        shared
             .host
             .log(&format!("Started a worker on {}.", folder.display()));
-        self.shared.set_project(&folder);
-        *self.status = Status::Running(self.shared.connect(spawned));
+        shared.set_project(&folder);
+        *self.status = Status::Running(shared.connect(spawned));
         let started = self
             .handshake()
             .and_then(|startup_error| match startup_error {
@@ -357,23 +448,58 @@ impl Session<'_> {
                 None => Ok(()),
             });
         if started.is_err() {
-            let _ = self.stop();
+            if let Err(reason) = self.stop() {
+                shared.host.log(&reason);
+            }
+            if init {
+                // No worker took the launch folder, so a retry launches afresh.
+                shared.abandon(&folder);
+            }
         }
         started
     }
 
-    /// Ends the running worker for good and waits for it to exit (C8.6 step 4).
+    /// Ends the running worker, or the one that did not stop before, for good and waits for it to
+    /// exit (C8.6 step 4). A worker still alive after 5 s is kept as stuck.
     fn stop(&mut self) -> Result<(), String> {
-        let Status::Running(link) = mem::replace(self.status, Status::Stopped) else {
-            return Ok(());
+        let process = match mem::replace(self.status, Status::Stopped) {
+            // Its stdin closes as the link drops.
+            Status::Running(link) => link.process,
+            Status::Stopped | Status::Unavailable(_) => match self.stuck.take() {
+                Some(process) => process,
+                None => return Ok(()),
+            },
         };
-        link.process.stopping.store(true, Ordering::SeqCst);
-        drop(link.stdin);
-        if lock(&link.process.child).end(STOP_WAIT) {
-            Ok(())
-        } else {
-            Err("The previous worker did not stop. Restart Mathimator.".to_owned())
+        process.stopping.store(true, Ordering::SeqCst);
+        if !lock(&process.child).end(STOP_WAIT) {
+            *self.stuck = Some(process);
+            return Err(STUCK.to_owned());
         }
+        let exit_code = lock(&process.child).exit_code(Duration::ZERO);
+        self.shared
+            .host
+            .log(&format!("Stopped the worker{}.", exit_code_text(exit_code)));
+        Ok(())
+    }
+
+    /// Ends a running worker whose stdout is still open, and tells the UI as a crash would (C8.6).
+    /// A worker that is not running starts with the current settings anyway.
+    fn retire(&mut self, message: &str) {
+        match &*self.status {
+            Status::Running(link) if self.shared.is_open(link.generation) => {}
+            _ => return,
+        }
+        if let Err(reason) = self.stop() {
+            self.shared.host.log(&reason);
+            *self.status = Status::Unavailable(reason);
+        }
+        self.shared.host.log(message);
+        self.shared.host.emit(json!({
+            "event": "worker_exited",
+            "jobId": null,
+            "message": message,
+            "exitCode": null,
+        }));
     }
 
     /// Sends `status` and checks the reply (C6). Returns the worker's `startupError`.
@@ -704,6 +830,17 @@ impl Shared {
             && is_temp_project(&old)
     }
 
+    /// Forgets a launch folder that no worker took, and deletes it.
+    fn abandon(&self, folder: &Path) {
+        {
+            let mut bound = lock(&self.bound);
+            if bound.folder.as_deref() == Some(folder) {
+                bound.folder = None;
+            }
+        }
+        self.remove_folder(folder);
+    }
+
     /// Deletes a folder the shell owns, best effort, and logs the outcome.
     fn remove_folder(&self, folder: &Path) {
         match fs::remove_dir_all(folder) {
@@ -802,6 +939,7 @@ mod tests {
     use tauri::async_runtime::block_on;
 
     use super::*;
+    use crate::{spawner, tex_checked, Tex, TexStatus};
 
     const FAKE_EXIT_CODE: i32 = 3;
 
@@ -858,6 +996,24 @@ mod tests {
             exit: Exit,
             answer: impl Fn(&Value) -> Option<Vec<String>> + Send + Sync + 'static,
         ) -> Self {
+            Self::launch(exit, answer, |fake| {
+                Ok(Box::new(move |folder: &Path, init: bool| {
+                    fake.spawn(folder, init)
+                }))
+            })
+        }
+
+        /// A worker whose runtime could not be resolved, so it has no spawner.
+        fn without_runtime(reason: &str) -> Self {
+            Self::launch(Exit::WithStdout, answer, |_| Err(reason.to_owned()))
+        }
+
+        /// A worker whose spawner `spawner` makes from the fake.
+        fn launch(
+            exit: Exit,
+            answer: impl Fn(&Value) -> Option<Vec<String>> + Send + Sync + 'static,
+            spawner: impl FnOnce(Fake) -> Result<Spawner, String>,
+        ) -> Self {
             static NEXT: AtomicUsize = AtomicUsize::new(0);
             let root = std::env::temp_dir().join(format!(
                 "mathimator-shell-test-{}-{}",
@@ -878,11 +1034,9 @@ mod tests {
                 Arc::clone(&fake.history),
                 Arc::clone(&fake.spawns),
             );
-            let spawn: Spawner =
-                Box::new(move |folder: &Path, init: bool| fake.spawn(folder, init));
             let worker = Worker::launch(
                 host.clone(),
-                spawn,
+                spawner(fake),
                 root.clone(),
                 root.join("supervisor.err"),
             );
@@ -934,6 +1088,8 @@ mod tests {
         WithStdout,
         /// Only once the shell ends it, a moment after it is told to.
         WhenEnded,
+        /// Like `WhenEnded`, but too late for the first end, which gives up at once.
+        Late,
         Never,
     }
 
@@ -993,6 +1149,7 @@ mod tests {
                 process: Box::new(FakeProcess {
                     exit: self.exit,
                     exited,
+                    ended: false,
                     history: Arc::clone(&self.history),
                 }),
             })
@@ -1012,6 +1169,8 @@ mod tests {
     struct FakeProcess {
         exit: Exit,
         exited: Arc<AtomicBool>,
+        /// Whether the shell has ended it before.
+        ended: bool,
         history: Arc<Mutex<Vec<String>>>,
     }
 
@@ -1038,14 +1197,16 @@ mod tests {
         }
 
         fn end(&mut self, limit: Duration) -> bool {
-            if matches!(self.exit, Exit::WhenEnded) {
+            if matches!(self.exit, Exit::WhenEnded | Exit::Late) {
                 let (exited, history) = (Arc::clone(&self.exited), Arc::clone(&self.history));
                 thread::spawn(move || {
                     thread::sleep(Duration::from_millis(100));
                     record_exit(&exited, &history);
                 });
             }
-            let exited = self.wait(limit);
+            let gives_up = matches!(self.exit, Exit::Late) && !self.ended;
+            self.ended = true;
+            let exited = !gives_up && self.wait(limit);
             lock(&self.history).push("end".to_owned());
             exited
         }
@@ -1276,6 +1437,178 @@ mod tests {
         assert!(test.history().contains(&"end".to_owned()));
         assert!(test.events().is_empty(), "{:?}", test.events());
         assert!(lock(&test.host.notices).is_empty());
+        assert!(!test.launch_folder().exists(), "the launch folder was kept");
+        assert_eq!(test.worker.project(), None);
+    }
+
+    #[test]
+    fn a_worker_without_a_runtime_is_unavailable_and_makes_no_folder() {
+        let reason = "The installed runtime is incomplete (python). Reinstall Mathimator.";
+        let test = Test::without_runtime(reason);
+        assert_eq!(block_on(test.worker.unavailable()), Some(reason.to_owned()));
+        assert_eq!(
+            block_on(test.worker.get_state()).unwrap_err(),
+            ShellError::new(ErrorCode::WorkerUnavailable, reason)
+        );
+        assert_eq!(
+            block_on(test.worker.restart()).unwrap(),
+            Some(reason.to_owned())
+        );
+        assert_eq!(fs::read_dir(&test.root).unwrap().count(), 0);
+        assert!(lock(&test.spawns).is_empty());
+        assert!(lock(&test.host.logs).contains(&reason.to_owned()));
+    }
+
+    #[test]
+    fn restart_retries_an_unavailable_worker_on_a_new_launch_folder() {
+        // The first worker is out of date; the one the retry starts is not.
+        let test = Test::start(|request| match cmd(request) {
+            "status" if request["id"] == "status-1" => Some(vec![
+                json!({"event": "ready", "jobId": request["id"]}).to_string(),
+            ]),
+            _ => answer(request),
+        });
+        let reason = block_on(test.worker.unavailable()).unwrap();
+        assert!(reason.starts_with("The worker is out of date"), "{reason}");
+        assert_eq!(block_on(test.worker.restart()).unwrap(), None);
+        assert_eq!(block_on(test.worker.unavailable()), None);
+        block_on(test.worker.get_state()).unwrap();
+        let spawns = lock(&test.spawns).clone();
+        let [(first, true), (second, true)] = spawns.as_slice() else {
+            panic!("{spawns:?}");
+        };
+        assert_ne!(first, second);
+        assert!(!first.exists() && second.is_dir());
+        assert_eq!(test.worker.project().as_ref(), Some(second));
+    }
+
+    #[test]
+    fn restart_leaves_a_ready_worker_alone() {
+        let test = Test::start(answer);
+        assert_eq!(block_on(test.worker.restart()).unwrap(), None);
+        assert_eq!(lock(&test.spawns).len(), 1);
+        assert_eq!(lock(&test.requests).len(), 1);
+    }
+
+    #[test]
+    fn unavailable_waits_for_the_launch_but_not_for_a_request_in_flight() {
+        // Each `status` and `get_state` answer waits for one release.
+        let (release, held) = mpsc::channel::<()>();
+        let held = Mutex::new(held);
+        let test = Test::start(move |request| {
+            if matches!(cmd(request), "status" | "get_state") {
+                let _ = lock(&held).recv();
+            }
+            answer(request)
+        });
+        let read = |entry: &str| test.history().contains(&entry.to_owned()).then_some(());
+        thread::scope(|scope| {
+            let launching = scope.spawn(|| block_on(test.worker.unavailable()));
+            wait_for(|| read("in status"));
+            thread::sleep(Duration::from_millis(50));
+            assert!(!launching.is_finished(), "it did not wait for the launch");
+            release.send(()).unwrap();
+            assert_eq!(launching.join().unwrap(), None);
+
+            let request = scope.spawn(|| block_on(test.worker.get_state()));
+            wait_for(|| read("in get_state"));
+            assert_eq!(block_on(test.worker.unavailable()), None);
+            assert!(!request.is_finished());
+            release.send(()).unwrap();
+            request.join().unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn retire_ends_the_worker_and_the_next_command_respawns_it() {
+        let test = Test::start(answer);
+        block_on(test.worker.get_state()).unwrap();
+        let message = "The worker was restarted because formulas cannot render.";
+        block_on(test.worker.retire(message.to_owned())).unwrap();
+        assert_eq!(
+            test.events(),
+            [
+                json!({"event": "worker_exited", "jobId": null, "message": message, "exitCode": null})
+            ]
+        );
+        assert!(test.history().contains(&"exited".to_owned()));
+        block_on(test.worker.get_state()).unwrap();
+        let folder = test.launch_folder();
+        assert_eq!(
+            lock(&test.spawns).as_slice(),
+            [(folder.clone(), true), (folder, false)]
+        );
+        assert_eq!(test.events().len(), 1, "{:?}", test.events());
+        let logs = lock(&test.host.logs).clone();
+        assert!(logs.contains(&message.to_owned()), "{logs:?}");
+        assert!(
+            logs.contains(&"Stopped the worker (exit code 3).".to_owned()),
+            "{logs:?}"
+        );
+    }
+
+    #[test]
+    fn retire_does_nothing_without_a_running_worker() {
+        let test = Test::without_runtime("No runtime.");
+        block_on(test.worker.retire("Restarted.".to_owned())).unwrap();
+        assert!(test.events().is_empty());
+    }
+
+    /// A worker spawned through the shell's own spawner, and the TeX error each spawn saw.
+    fn launch_with_tex(tex: &Arc<Tex>) -> (Test, Arc<Mutex<Vec<Option<String>>>>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (tex, recorded) = (Arc::clone(tex), Arc::clone(&seen));
+        let test = Test::launch(Exit::WithStdout, answer, move |fake| {
+            Ok(spawner(
+                tex,
+                move |folder: &Path, init: bool, tex_error: Option<&str>| {
+                    lock(&recorded).push(tex_error.map(str::to_owned));
+                    fake.spawn(folder, init)
+                },
+            ))
+        });
+        (test, seen)
+    }
+
+    #[test]
+    fn a_failed_tex_check_restarts_the_worker_with_the_tex_error() {
+        let tex = Arc::new(Tex::new(TexStatus::at_launch(None)));
+        let (test, seen) = launch_with_tex(&tex);
+        block_on(test.worker.get_state()).unwrap();
+        let message = "Formulas and axis labels cannot render on this PC: latex failed (exit code: 1). Reinstall Mathimator for all users.";
+        block_on(tex_checked(
+            &test.worker,
+            &tex,
+            &*test.host,
+            Err(message.to_owned()),
+        ));
+        block_on(test.worker.get_state()).unwrap();
+        assert_eq!(lock(&seen).as_slice(), [None, Some(message.to_owned())]);
+        assert_eq!(
+            test.events(),
+            [
+                json!({"event": "tex_status", "jobId": null, "state": "failed", "message": message}),
+                json!({
+                    "event": "worker_exited",
+                    "jobId": null,
+                    "message": "The worker was restarted because formulas cannot render.",
+                    "exitCode": null,
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_passed_tex_check_keeps_the_worker() {
+        let tex = Arc::new(Tex::new(TexStatus::at_launch(None)));
+        let (test, seen) = launch_with_tex(&tex);
+        block_on(tex_checked(&test.worker, &tex, &*test.host, Ok(())));
+        block_on(test.worker.get_state()).unwrap();
+        assert_eq!(lock(&seen).as_slice(), [None]);
+        assert_eq!(
+            test.events(),
+            [json!({"event": "tex_status", "jobId": null, "state": "ok", "message": null})]
+        );
     }
 
     #[test]
@@ -1366,15 +1699,14 @@ mod tests {
         let root = std::env::temp_dir();
         let shared = Shared {
             host: Arc::new(Recorder::default()),
-            spawn: Box::new(|_: &Path, _: bool| -> io::Result<Spawned> {
-                Err(io::Error::other("no spawn"))
-            }),
+            spawn: Err("no spawn".to_owned()),
             temp_root: root.clone(),
             stderr_log: root,
             next_id: AtomicU64::new(1),
             next_generation: AtomicU64::new(1),
             routes: Mutex::default(),
             bound: Mutex::default(),
+            unavailable: Mutex::default(),
         };
         let (old_reply, old) = mpsc::channel();
         let (new_reply, new) = mpsc::channel();
@@ -1440,7 +1772,38 @@ mod tests {
                 "The previous worker did not stop. Restart Mathimator."
             )
         );
+        assert_eq!(
+            block_on(test.worker.restart()).unwrap(),
+            Some(error.message)
+        );
         assert_eq!(lock(&test.spawns).len(), 1, "a second worker was started");
+    }
+
+    #[test]
+    fn restart_starts_a_worker_once_the_one_that_did_not_stop_has_exited() {
+        let test = Test::start_with_exit(Exit::Late, answer);
+        block_on(test.worker.get_state()).unwrap();
+        block_on(test.worker.retire("Restarted.".to_owned())).unwrap();
+        let stuck = "The previous worker did not stop. Restart Mathimator.";
+        assert_eq!(block_on(test.worker.unavailable()), Some(stuck.to_owned()));
+        assert_eq!(
+            block_on(test.worker.get_state()).unwrap_err(),
+            ShellError::new(ErrorCode::WorkerUnavailable, stuck)
+        );
+        assert_eq!(lock(&test.spawns).len(), 1);
+        assert_eq!(block_on(test.worker.restart()).unwrap(), None);
+        assert_eq!(block_on(test.worker.unavailable()), None);
+        let history = test.history();
+        let respawn = history.iter().rposition(|entry| entry == "spawn").unwrap();
+        assert!(
+            history[..respawn].contains(&"exited".to_owned()),
+            "the new worker started before the old one exited: {history:?}"
+        );
+        let folder = test.launch_folder();
+        assert_eq!(
+            lock(&test.spawns).as_slice(),
+            [(folder.clone(), true), (folder, false)]
+        );
     }
 
     #[test]
