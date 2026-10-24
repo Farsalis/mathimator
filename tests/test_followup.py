@@ -168,6 +168,8 @@ def test_a_wait_fails_as_soon_as_the_supervisor_dies_and_shows_its_stderr() -> N
 
 
 _PARTIALS = "partial_movie_files/MainScene"
+# A quality folder, relative to the project folder of a discard.
+_VIDEO = "videos/scene/480p15"
 _CUT_OFF = b"\x00" * 48
 
 
@@ -195,34 +197,37 @@ def test_a_discard_takes_only_what_the_run_wrote_that_may_be_cut_off(
     path.parent.mkdir(parents=True)
     path.write_bytes(data)
     before = run_files(video) if earlier else {}
-    assert discard_written(video, before, ClipChecker()) == (([path], []) if discarded else ([], []))
+    assert discard_written(tmp_path, video, before, ClipChecker()) == (([path], []) if discarded else ([], []))
     assert path.exists() is not discarded
 
 
 @pytest.mark.parametrize(
     "linked",
     [
-        pytest.param("", id="quality-folder"),
-        pytest.param("partial_movie_files", id="partial-movie-files"),
-        pytest.param(_PARTIALS, id="partials"),
+        pytest.param("videos", id="above-the-quality-folder"),
+        pytest.param(_VIDEO, id="quality-folder"),
+        pytest.param(f"{_VIDEO}/partial_movie_files", id="partial-movie-files"),
+        pytest.param(f"{_VIDEO}/{_PARTIALS}", id="partials"),
     ],
 )
-def test_a_discard_never_deletes_through_a_link(tmp_path: Path, linked: str) -> None:
-    """A link planted in the quality folder never lets a discard delete outside the project (O10)."""
-    outside = tmp_path / "outside"
-    (outside / _PARTIALS).mkdir(parents=True)
-    foreign = [outside / _PARTIALS / f"{'b' * 64}.mp4", outside / _PARTIALS / MANIFEST, outside / "MainScene.mp4"]
+def test_a_discard_never_deletes_through_a_link(tmp_path: Path, linked: str, link_kind: str) -> None:
+    """A link planted anywhere in the project never lets a discard delete outside it (O10)."""
+    project, outside = tmp_path / "project", tmp_path / "outside"
+    partials = outside / _VIDEO / _PARTIALS
+    partials.mkdir(parents=True)
+    foreign = [partials / f"{'b' * 64}.mp4", partials / MANIFEST, outside / _VIDEO / "MainScene.mp4"]
     for path in foreign:
         path.write_bytes(_CUT_OFF)
-    video = tmp_path / "videos" / "scene" / "480p15"
-    link = video / linked
+    link = project / linked
     link.parent.mkdir(parents=True)
-    link_folder(link, outside / linked)
+    link_folder(link, outside / linked, link_kind)
+    video = project / _VIDEO
     # The movie of a run is still discarded when only its partials folder is linked.
     movie = video / "MainScene.mp4"
-    if linked:
+    below = video in link.parents
+    if below:
         movie.write_bytes(_CUT_OFF)
-    assert discard_written(video, {}, ClipChecker()) == ([movie] if linked else [], [])
+    assert discard_written(project, video, {}, ClipChecker()) == ([movie] if below else [], [])
     assert all(path.is_file() for path in foreign)
 
 

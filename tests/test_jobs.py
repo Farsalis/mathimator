@@ -222,7 +222,7 @@ def test_progress_hands_out_each_finished_partial_in_beat_order(tmp_path: Path) 
     folder = video / "partial_movie_files" / "MainScene"
     folder.mkdir(parents=True)
     cached = _clip(folder / "c0.mp4", 0, at=-60)
-    progress = ManimProgress(video, ClipChecker(), {0: cached}, [1, 2, 3])
+    progress = ManimProgress(tmp_path, video, ClipChecker(), {0: cached}, [1, 2, 3])
     # A beat whose partial is current already is ready at once.
     assert progress.poll() == [(0, cached)]
     # Manim writes one partial at a time, so the newest may still be in flight. The names do not give the order.
@@ -241,7 +241,7 @@ def test_progress_waits_for_the_segment_list_when_the_order_is_unclear(tmp_path:
     video = tmp_path / "videos" / "scene" / "480p15"
     folder = video / "partial_movie_files" / "MainScene"
     folder.mkdir(parents=True)
-    broken = ManimProgress(video, ClipChecker(), {}, [0, 1, 2])
+    broken = ManimProgress(tmp_path, video, ClipChecker(), {}, [0, 1, 2])
     cut_off = _clip(folder / "a.mp4", 0, at=1, complete=False)
     later = [_clip(folder / "b.mp4", 1, at=2), _clip(folder / "c.mp4", 2, at=3)]
     # A finished partial that is cut off ends the live order.
@@ -249,14 +249,14 @@ def test_progress_waits_for_the_segment_list_when_the_order_is_unclear(tmp_path:
     assert broken.finish([cut_off, *later]) == [(0, cut_off), (1, later[0]), (2, later[1])]
 
     # Manim reused a partial it wrote earlier in this run, so there is one partial fewer than beats.
-    reused = ManimProgress(video, ClipChecker(), {}, [0])
+    reused = ManimProgress(tmp_path, video, ClipChecker(), {}, [0])
     extra = [_clip(folder / f"{name}.mp4", 9, at=at) for name, at in (("d", 5), ("e", 6), ("f", 7))]
     assert reused.poll() == [(0, extra[0])]
     assert reused.poll() == []
     assert reused.finish([extra[0], extra[0], extra[1], extra[2]]) == [(1, extra[0]), (2, extra[1]), (3, extra[2])]
 
     # Without the order of the beats Manim renders (hand-written mode), every beat waits for the list.
-    handwritten = ManimProgress(video, ClipChecker(), {}, None)
+    handwritten = ManimProgress(tmp_path, video, ClipChecker(), {}, None)
     _clip(folder / "g.mp4", 9, at=8)
     _clip(folder / "h.mp4", 9, at=9)
     assert handwritten.poll() == []
@@ -267,7 +267,7 @@ def test_progress_never_orders_partials_with_one_mtime_by_name(tmp_path: Path) -
     folder = video / "partial_movie_files" / "MainScene"
     folder.mkdir(parents=True)
     # Manim closed beat 0's partial and opened beat 1's in one clock tick, and the one in flight sorts first.
-    progress = ManimProgress(video, ClipChecker(), {}, [0, 1])
+    progress = ManimProgress(tmp_path, video, ClipChecker(), {}, [0, 1])
     finished = _clip(folder / "f0.mp4", 0, at=1)
     in_flight = _tied(_clip(folder / "a1.mp4", 1, complete=False), finished)
     assert progress.poll() == []
@@ -276,7 +276,7 @@ def test_progress_never_orders_partials_with_one_mtime_by_name(tmp_path: Path) -
     assert progress.finish([finished, in_flight]) == [(1, in_flight)]
 
     # Beats 1 and 2 finished in one clock tick, named against their order, so they wait for the segment list.
-    progress = ManimProgress(video, ClipChecker(), {}, [0, 1, 2, 3])
+    progress = ManimProgress(tmp_path, video, ClipChecker(), {}, [0, 1, 2, 3])
     beats = [_clip(folder / "m0.mp4", 0, at=3), _clip(folder / "z1.mp4", 1, at=4)]
     beats += [_tied(_clip(folder / "b2.mp4", 2), beats[1]), _clip(folder / "c3.mp4", 3, at=5)]
     assert progress.poll() == [(0, beats[0])]
@@ -290,7 +290,7 @@ def test_progress_reads_only_the_segment_list_this_run_wrote(tmp_path: Path) -> 
     folder.mkdir(parents=True)
     manifest = folder / MANIFEST
     manifest.write_text("file 'file:C:/old/a.mp4'\n", encoding="utf-8")
-    progress = ManimProgress(video, ClipChecker(), {}, [0, 1])
+    progress = ManimProgress(tmp_path, video, ClipChecker(), {}, [0, 1])
     # A list from an earlier render, or from another quality folder, is not this run's (F032).
     other = tmp_path / "videos" / "scene" / "480p15" / "partial_movie_files" / "MainScene"
     other.mkdir(parents=True)
@@ -316,7 +316,7 @@ def test_a_discard_removes_only_what_this_run_wrote_that_may_be_cut_off(tmp_path
     # Another quality folder, which another window may be rendering into right now (G5.7).
     other = media / "videos" / "scene" / "1080p30" / "partial_movie_files" / "MainScene"
     other.mkdir(parents=True)
-    progress = ManimProgress(video, ClipChecker(), {}, [0, 1, 2])
+    progress = ManimProgress(tmp_path, video, ClipChecker(), {}, [0, 1, 2])
     elsewhere = [_clip(other / "busy.mp4", 1, at=1, complete=False), _clip(other / "done.mp4", 1, at=1)]
     finished = _clip(folder / "finished.mp4", 1, at=1)
     # A file server whose clock runs an hour behind stamps this run's file in the past (G5.10).
@@ -333,7 +333,7 @@ def test_a_file_the_discard_cannot_remove_is_reported(tmp_path: Path, monkeypatc
     video = tmp_path / "videos" / "scene" / "480p15"
     folder = video / "partial_movie_files" / "MainScene"
     folder.mkdir(parents=True)
-    progress = ManimProgress(video, ClipChecker(), {}, [0])
+    progress = ManimProgress(tmp_path, video, ClipChecker(), {}, [0])
     held = _clip(folder / "held.mp4", 0, at=1, complete=False)
     loose = _clip(folder / "loose.mp4", 0, at=2, complete=False)
     refused = PermissionError(13, IN_USE)

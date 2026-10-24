@@ -1,4 +1,4 @@
-"""The project lifecycle: lock, fingerprint, folder identity, the project commands, and the log (contract C8, C10).
+"""The project lifecycle: lock, fingerprint, folder identity, links, the project commands, and the log (C8, C10).
 
 Every test runs Supervisors in this process through ``handle_line`` and reads
 their replies from the captured stdout. Jobs run the ``fake_manim`` stand-in.
@@ -35,7 +35,17 @@ from mathimator_worker.supervisor import (
     Supervisor,
     _Job,
 )
-from tests.support import REPO, FakeManim, Stdout, complete_clip, unreadable, video_render, write_clip
+from tests.support import (
+    REPO,
+    FakeManim,
+    Stdout,
+    complete_clip,
+    link_file,
+    link_folder,
+    unreadable,
+    video_render,
+    write_clip,
+)
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 
@@ -101,6 +111,87 @@ def test_init_writes_only_behind_the_lock(tmp_path: Path, start: Start, stdout: 
     assert refused["code"] == "project_locked"
     assert status["startupError"]["code"] == "project_locked"
     assert not (held / "project.json").exists()
+
+
+# Folders that are links (O10)
+
+
+@pytest.mark.parametrize(
+    "linked",
+    [
+        ".mathimator",
+        ".mathimator/cache",
+        ".mathimator/cache/media",
+        ".mathimator/cache/media/Tex",
+        ".mathimator/cache/media/videos",
+        ".mathimator/cache/media/images",
+        ".mathimator/cache/last-good",
+        ".mathimator/codegen",
+        ".mathimator/exports",
+        ".mathimator/equation",
+        ".mathimator/logs",
+    ],
+)
+def test_a_project_whose_own_folder_is_a_link_is_never_bound(
+    tmp_path: Path, start: Start, stdout: Stdout, linked: str, link_kind: str
+) -> None:
+    supervisor = start(_journey(tmp_path / "bound"))
+    shared = _journey(tmp_path / "shared")
+    link = shared.resolve() / linked
+    link.parent.mkdir(parents=True, exist_ok=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    link_folder(link, elsewhere, link_kind)
+    _send(supervisor, cmd="open_project", id="open", path=str(shared))
+    _send(supervisor, cmd="get_state", id="state")
+    _send(start(shared, init=False), cmd="status", id="status")
+    refused, state, status = stdout.read()
+    assert refused == {"event": "rejected", "jobId": "open", "code": "linked_folder", "message": _linked(link)}
+    assert status["startupError"] == {"code": "linked_folder", "message": _linked(link)}
+    assert state["projectPath"] == str(supervisor.project)
+    # The refusal comes before the lock, so nothing is written there or through the link.
+    assert not os.path.lexists(shared / ".mathimator" / "lock")
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_a_log_that_is_a_link_is_refused_and_takes_no_line(tmp_path: Path, start: Start, stdout: Stdout) -> None:
+    mine = _made(tmp_path / "elsewhere" / "notes.txt")
+    mine.write_bytes(b"mine")
+    shared = _journey(tmp_path / "shared")
+    log = _made(shared.resolve() / ".mathimator" / "logs" / "worker.log")
+    link_file(log, mine)
+    _send(start(shared, init=False, log=False), cmd="status", id="status")
+    assert stdout.last()["startupError"] == {"code": "linked_folder", "message": _linked(log)}
+    # A log that became a link after the bind takes no line, and Clear cache never empties what it points to.
+    supervisor = start(_journey(tmp_path / "journey"), log=False)
+    _send(supervisor, cmd="get_state", id="state")
+    supervisor.log_path.unlink()
+    link_file(supervisor.log_path, mine)
+    _send(supervisor, cmd="clear_cache", id="clear")
+    refused = stdout.last()
+    assert (refused["code"], refused["message"]) == ("linked_folder", _linked(supervisor.log_path))
+    assert mine.read_bytes() == b"mine"
+
+
+def test_save_as_refuses_a_folder_whose_mathimator_is_a_link(
+    tmp_path: Path, start: Start, stdout: Stdout, link_kind: str
+) -> None:
+    supervisor = start(_journey(tmp_path / "journey"))
+    target = tmp_path / "target"
+    target.mkdir()
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    link_folder(target / ".mathimator", gone, link_kind)
+    # A link counts even when it leads nowhere.
+    gone.rmdir()
+    _send(supervisor, cmd="save_as", id="save", path=str(target))
+    assert stdout.last() == {
+        "event": "rejected",
+        "jobId": "save",
+        "code": "save_as_failed",
+        "message": f"Could not save the project to {target}: it already holds .mathimator.",
+    }
+    assert [path.name for path in target.iterdir()] == [".mathimator"]
 
 
 # open_project, reload, overwrite (C8.3)
@@ -653,6 +744,49 @@ def test_clear_cache_removes_read_only_files(tmp_path: Path, start: Start, stdou
     assert not (state / "codegen").exists()
 
 
+def test_clear_cache_refuses_a_linked_folder_and_deletes_nothing(
+    tmp_path: Path, start: Start, stdout: Stdout, link_kind: str
+) -> None:
+    supervisor = start(_journey(tmp_path / "journey"))
+    elsewhere = tmp_path / "elsewhere"
+    mine = write_clip(_made(elsewhere / "mine.mp4"))
+    # A link made after the bind, where the codegen reset and Clear cache delete.
+    codegen = supervisor.layout.scene_path.parent
+    link_folder(codegen, elsewhere, link_kind)
+    cached = write_clip(_made(supervisor.layout.media_dir / "cached.mp4"))
+    _send(supervisor, cmd="clear_cache", id="clear")
+    assert stdout.last() == {
+        "event": "rejected",
+        "jobId": "clear",
+        "code": "linked_folder",
+        "message": _linked(codegen),
+    }
+    assert (mine.is_file(), cached.is_file()) == (True, True)
+
+
+def test_clear_cache_removes_links_and_never_what_they_point_to(
+    tmp_path: Path, start: Start, stdout: Stdout, link_kind: str
+) -> None:
+    supervisor = start(_journey(tmp_path / "journey"), log=False)
+    elsewhere = tmp_path / "elsewhere"
+    mine = write_clip(_made(elsewhere / "mine.mp4"))
+    state = supervisor.project / ".mathimator"
+    links = [
+        state / "typst",
+        state / "logs" / "linked",
+        supervisor.layout.media_dir / "texts",
+        supervisor.layout.video_dir("480p15"),
+    ]
+    for link in links:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link_folder(link, elsewhere, link_kind)
+    _send(supervisor, cmd="clear_cache", id="clear")
+    cleared = stdout.last()
+    assert (cleared["event"], "warning" in cleared) == ("state", False)
+    assert [os.path.lexists(link) for link in links] == [False] * len(links)
+    assert [path.name for path in elsewhere.iterdir()] == [mine.name]
+
+
 # The worker log (D55)
 
 
@@ -709,6 +843,14 @@ def _journey(root: Path) -> Path:
     root.mkdir(parents=True)
     (root / "project.json").write_bytes(JOURNEY.read_bytes())
     return root
+
+
+def _linked(link: Path) -> str:
+    """The refusal of a project whose own folder or log ``link`` is a symbolic link or a junction (O10)."""
+    return (
+        f"Mathimator cannot use {link}: it is a link to another location, and Mathimator keeps its files inside "
+        "the project. Delete the link and try again."
+    )
 
 
 def _made(path: Path) -> Path:

@@ -1,8 +1,9 @@
-"""The supervisor's pure parts, without a supervisor: the project layout, the preview index and export publishing (F088)."""
+"""The supervisor's pure parts, without a supervisor: the project layout, links, the preview index and exports (F088)."""
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,8 @@ from mathimator_worker.exports import PublishFailed, _export_problem, existing_e
 from mathimator_worker.identity import beat_chain_keys, export_folder_name, export_key
 from mathimator_worker.layout import ProjectLayout
 from mathimator_worker.preview_index import IndexBeat, PreviewIndex, rebuild_index
-from tests.support import REPO
+from mathimator_worker.project_folder import LinkedFolder, remove_below, retry_read_only
+from tests.support import REPO, link_file, link_folder
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 
@@ -31,9 +33,11 @@ def test_the_layout_is_the_folder_tree_of_spec_section_4(tmp_path: Path) -> None
         "run_marker": layout.run_marker,
         "log_path": layout.log_path,
         "export_dir": layout.export_dir(project),
+        "export_path": layout.export_path(project),
         "video_dir": layout.video_dir("480p15"),
         "partial_movie_dir": layout.partial_movie_dir("1080p30"),
         "png_frames_dir": layout.png_frames_dir,
+        "tex_dir": layout.tex_dir,
     }
     assert {name: path.relative_to(tmp_path).as_posix() for name, path in paths.items()} == {
         "project_file": "project.json",
@@ -45,11 +49,24 @@ def test_the_layout_is_the_folder_tree_of_spec_section_4(tmp_path: Path) -> None
         "run_marker": ".mathimator/cache/manim-run.json",
         "log_path": ".mathimator/logs/worker.log",
         "export_dir": f".mathimator/exports/{export_folder_name(project)}",
+        "export_path": f".mathimator/exports/{export_folder_name(project)}/scene.mp4",
         "video_dir": ".mathimator/cache/media/videos/scene/480p15",
         "partial_movie_dir": ".mathimator/cache/media/videos/scene/1080p30/partial_movie_files/MainScene",
         "png_frames_dir": ".mathimator/cache/media/images/scene/MainScene",
+        "tex_dir": ".mathimator/cache/media/Tex",
     }
     assert [path.name for path in layout.derived_dirs] == ["cache", "codegen", "equation", "typst"]
+    # With the folders above them: .mathimator, its cache and the media folder (O10).
+    assert [path.relative_to(tmp_path).as_posix() for path in layout.managed_paths] == [
+        ".mathimator/codegen",
+        ".mathimator/cache/media/Tex",
+        ".mathimator/cache/media/videos/scene",
+        ".mathimator/cache/media/images/scene/MainScene",
+        ".mathimator/cache/last-good",
+        ".mathimator/exports",
+        ".mathimator/equation",
+        ".mathimator/logs/worker.log",
+    ]
 
 
 def test_the_layout_watches_the_files_manim_is_given(tmp_path: Path) -> None:
@@ -58,6 +75,96 @@ def test_the_layout_watches_the_files_manim_is_given(tmp_path: Path) -> None:
     runs_in = layout.scene_path.parent
     assert runs_in / SCENE_FILE == layout.scene_path
     assert (runs_in / MEDIA_DIR).resolve() == layout.media_dir.resolve()
+
+
+# Links (O10)
+
+
+@pytest.mark.parametrize(
+    "linked",
+    [
+        ".mathimator",
+        ".mathimator/cache",
+        ".mathimator/cache/media",
+        ".mathimator/cache/media/images",
+        ".mathimator/exports",
+        ".mathimator/logs",
+    ],
+)
+def test_the_layout_names_the_outermost_link_above_its_folders(tmp_path: Path, linked: str, link_kind: str) -> None:
+    project = tmp_path / "project"
+    link = project / linked
+    link.parent.mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "cache" / "media").mkdir(parents=True)
+    link_folder(link, elsewhere, link_kind)
+    assert ProjectLayout(project).linked_path() == link
+
+
+def test_the_layout_names_a_log_that_is_a_link(tmp_path: Path) -> None:
+    layout = ProjectLayout(tmp_path / "project")
+    layout.log_path.parent.mkdir(parents=True)
+    link_file(layout.log_path, _file(tmp_path / "notes.txt", b"mine"))
+    assert layout.linked_path() == layout.log_path
+
+
+def test_the_layout_checks_the_paths_of_a_job_only_when_asked(tmp_path: Path, link_kind: str) -> None:
+    project = tmp_path / "project"
+    layout = ProjectLayout(project)
+    *folders, log = layout.managed_paths
+    for folder in folders:
+        folder.mkdir(parents=True)
+    _file(log, b"log")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    # A quality folder is not known before a render, which names it.
+    quality = layout.video_dir("480p15")
+    link_folder(quality, elsewhere, link_kind)
+    assert layout.linked_path() is None
+    assert layout.linked_path(layout.partial_movie_dir("1080p30"), layout.partial_movie_dir("480p15")) == quality
+    # The folder the user opened may be reached through a link of their own.
+    opened = tmp_path / "opened"
+    link_folder(opened, project, link_kind)
+    assert ProjectLayout(opened).linked_path() is None
+
+
+def test_remove_below_removes_links_and_never_what_they_point_to(tmp_path: Path, link_kind: str) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    mine = _file(elsewhere / "notes.txt", b"mine")
+    project = tmp_path / "project"
+    cache = project / "cache"
+    _file(cache / "nested" / "derived.txt", b"derived")
+    link_folder(cache / "nested" / "linked", elsewhere, link_kind)
+    remove_below(project, cache, retry_read_only)
+    assert not cache.exists()
+    link_folder(cache, elsewhere, link_kind)
+    remove_below(project, cache, retry_read_only)
+    assert not os.path.lexists(cache)
+    stray = _file(project / "stray.txt", b"stray")
+    remove_below(project, stray, retry_read_only)
+    remove_below(project, project / "missing", retry_read_only)
+    assert list(project.iterdir()) == []
+    assert [path.name for path in elsewhere.iterdir()] == [mine.name]
+
+
+def test_remove_below_deletes_nothing_through_a_link_above_its_path(tmp_path: Path, link_kind: str) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    mine = _file(elsewhere / "cache" / "notes.txt", b"mine")
+    project = tmp_path / "project"
+    project.mkdir()
+    state = project / ".mathimator"
+    link_folder(state, elsewhere, link_kind)
+    failures: list[tuple[str, BaseException]] = []
+    remove_below(project, state / "cache", lambda function, path, exc: failures.append((path, exc)))
+    ((path, failure),) = failures
+    assert (path, type(failure), str(failure)) == (
+        str(state / "cache"),
+        LinkedFolder,
+        f"{state} is a link to another folder",
+    )
+    with pytest.raises(LinkedFolder):
+        remove_below(project, state / "cache" / "notes.txt", retry_read_only)
+    assert mine.read_bytes() == b"mine"
 
 
 # The preview index
@@ -144,6 +251,35 @@ def test_a_finished_export_is_published_with_its_manifest_and_then_reused(tmp_pa
     assert existing_export(layout, project) == published
     (published.parent / "export.json").write_text(json.dumps({"exportKey": "another"}), encoding="utf-8")
     assert existing_export(layout, project) is None
+
+
+@pytest.mark.parametrize("fmt", ["mp4", "png_sequence"])
+def test_an_export_is_never_published_through_a_link(tmp_path: Path, fmt: str, link_kind: str) -> None:
+    """A link made in exports/ after the job started is refused as at the start, so nothing outside changes (O10)."""
+    layout = ProjectLayout(tmp_path / "project")
+    project = _journey()
+    project.export_profile.format = fmt
+    if fmt == "png_sequence":
+        movie = _file(layout.png_frames_dir / "0000.png", b"png").parent
+    else:
+        movie = _file(layout.video_dir("1080p30") / "MainScene.mp4", b"movie")
+    elsewhere = tmp_path / "elsewhere"
+    mine = [_file(elsewhere / "frames" / "precious.png", b"mine"), _file(elsewhere / "scene.mp4", b"mine")]
+    link = layout.export_dir(project)
+    link.parent.mkdir(parents=True)
+    link_folder(link, elsewhere, link_kind)
+    with pytest.raises(PublishFailed) as raised:
+        publish_export(layout, project, movie, "1080p30")
+    assert str(raised.value) == (
+        f"Mathimator cannot use {link}: it is a link to another location, and Mathimator keeps its files inside "
+        "the project. Delete the link and try again."
+    )
+    assert sorted(path.relative_to(elsewhere).as_posix() for path in elsewhere.rglob("*")) == [
+        "frames",
+        "frames/precious.png",
+        "scene.mp4",
+    ]
+    assert [path.read_bytes() for path in mine] == [b"mine", b"mine"]
 
 
 def test_the_preview_is_never_published(tmp_path: Path) -> None:

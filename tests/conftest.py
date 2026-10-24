@@ -10,8 +10,9 @@ skipped off Windows where there is no ``/proc`` to walk, as on macOS, which is
 untested (D47).
 
 The ``fake_manim`` fixture puts ``support.FakeManim`` on PYTHONPATH for the
-tests that run jobs in-process without Manim, and ``stdout`` reads what an
-in-process supervisor wrote.
+tests that run jobs in-process without Manim, ``stdout`` reads what an
+in-process supervisor wrote, and ``link_kind`` runs a test once for each kind
+of folder link.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.support import FakeManim, Stdout
+from tests.support import LINK_KINDS, FakeManim, Stdout
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -53,3 +54,10 @@ def fake_manim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeManim:
 @pytest.fixture
 def stdout(capsys: pytest.CaptureFixture[str]) -> Stdout:
     return Stdout(capsys)
+
+
+@pytest.fixture(params=LINK_KINDS)
+def link_kind(request: pytest.FixtureRequest) -> str:
+    """Each kind of folder link this platform has, for ``link_folder``."""
+    kind: str = request.param
+    return kind

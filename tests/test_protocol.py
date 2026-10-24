@@ -43,6 +43,7 @@ from tests.support import (
     Stdout,
     complete_clip,
     handwritten_project,
+    link_folder,
     unreadable,
     video_render,
 )
@@ -104,6 +105,9 @@ DISK_CHECKS: list[tuple[str, str, str | None]] = [
     ("clear_cache", "moved", "project_unavailable"),
     ("clear_cache", "deleted", None),
     ("clear_cache", "changed", None),
+    # A folder of the project's own that became a link stops only what deletes or renders there (O10).
+    *((command, "linked", None) for command in ("edit", "undo", "redo", "overwrite", "reload")),
+    *((command, "linked", "linked_folder") for command in ("render_preview", "export", "clear_cache")),
 ]
 
 
@@ -1008,6 +1012,10 @@ def _disk_problem(supervisor: Supervisor, problem: str) -> Iterator[None]:
             project_file.unlink()
         case "changed":
             project_file.write_bytes(project_file.read_bytes() + b" ")
+        case "linked":
+            elsewhere = supervisor.project.with_name(f"{supervisor.project.name} elsewhere")
+            elsewhere.mkdir()
+            link_folder(supervisor.layout.exports_dir, elsewhere)
     yield
 
 

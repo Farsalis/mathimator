@@ -17,7 +17,14 @@ from mathimator_worker.document import FORMATS, MANIM_VERSION, PREVIEW_FPS, PREV
 from mathimator_worker.identity import export_key, scene_hash
 from mathimator_worker.jsonio import dumps_record, read_record
 from mathimator_worker.layout import ProjectLayout
-from mathimator_worker.project_folder import copy_atomically, make_folders, os_reason, write_atomically
+from mathimator_worker.project_folder import (
+    copy_atomically,
+    first_link,
+    link_refusal,
+    make_folders,
+    os_reason,
+    write_atomically,
+)
 
 CLOSE_AND_RETRY = "If the file is open in another program, close it and export again."
 # Manim's closing line for a PNG sequence. Rich may wrap the folder onto later lines, but the count stays with "images".
@@ -88,9 +95,8 @@ def frame_count_problem(frames: Path, output: str, expected: int) -> str | None:
 
 def existing_export(layout: ProjectLayout, project: Project) -> Path | None:
     """The published export of ``project``, when its export.json records the current key, or None."""
-    folder = layout.export_dir(project)
-    manifest_path = folder / "export.json"
-    artifact = folder / FORMATS[project.export_profile.format].artifact_name
+    artifact = layout.export_path(project)
+    manifest_path = artifact.parent / "export.json"
     if project.export_profile.format == "png_sequence":
         ready = artifact.is_dir() and any(artifact.glob("*.png"))
     else:
@@ -108,17 +114,21 @@ def publish_export(layout: ProjectLayout, captured: Project, movie: Path, qualit
 
     ``captured`` is the document the export rendered, in the ``quality``
     folder of the project at ``layout``. Only ``exports/`` is written, so this
-    needs no document lock (F031, F164). The copy replaces the older file of
-    the same key only once it is whole, and export.json is written after it,
-    so a failure leaves both as they were (C7.2). Raises PublishFailed with
-    the message.
+    needs no document lock (F031, F164). A link on the way to the published
+    file, made since the job started, is refused here as it was there (O10).
+    The copy replaces the older file of the same key only once it is whole,
+    and export.json is written after it, so a failure leaves both as they
+    were (C7.2). Raises PublishFailed with the message.
     """
-    folder = layout.export_dir(captured)
+    target = layout.export_path(captured)
+    folder = target.parent
     fmt = captured.export_profile.format
-    target = folder / FORMATS[fmt].artifact_name
     problem = _export_problem(movie, target, fmt, layout.media_dir, quality)
     if problem is not None:
         raise PublishFailed(f"Could not save the export to {target}: {problem}.")
+    link = first_link(layout.root, target)
+    if link is not None:
+        raise PublishFailed(link_refusal(link))
     try:
         make_folders(layout.root, folder)
         copy_atomically(movie, target)

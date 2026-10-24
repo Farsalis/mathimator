@@ -14,9 +14,12 @@ The worker is bound to at most one project folder (contract C8). While bound
 it holds the folder's lock (D58), the folder's identity (D57) and the SHA-256
 of project.json as last read or written (D59). A write or a render first
 checks that the folder is still there and that project.json is unchanged on
-disk, and refuses otherwise. A render then refuses a scene that cannot be
-generated, a scene with formulas while TeX is unavailable, and a project path
-Manim cannot use (C7.2). Startup never exits on a project problem: the
+disk, and refuses otherwise. A bind, a render and Clear cache refuse a
+project whose own folders or log include a symbolic link or a junction, a
+render also one in its quality folder or published export, and no delete
+ever goes through one (O10). A render then refuses a scene that cannot
+be generated, a scene with formulas while TeX is unavailable, and a project
+path Manim cannot use (C7.2). Startup never exits on a project problem: the
 worker stays unbound and says why in ``ready.startupError``. The worker never
 creates a project folder and never writes an empty project.json over a missing
 one.
@@ -43,7 +46,6 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import threading
@@ -85,14 +87,20 @@ from mathimator_worker.progress import (
     written_since,
 )
 from mathimator_worker.project_folder import (
+    LinkedFolder,
     ProjectLock,
     ProjectLocked,
     fingerprint,
+    first_link,
     folder_identity,
+    is_link,
+    link_refusal,
     make_folders,
     os_reason,
+    remove_below,
     remove_file,
     remove_quietly,
+    retry_read_only,
     write_atomically,
 )
 from mathimator_worker.protocol import (
@@ -322,10 +330,11 @@ class Supervisor:
             self.log(f"could not sweep {self.layout.videos_dir}: {exc}")
             return
         swept = [
-            self._log_discarded(discard_written(folder, before, self._clips)) for folder, before in folders.items()
+            self._log_discarded(discard_written(self.project, folder, before, self._clips))
+            for folder, before in folders.items()
         ]
         if frames:
-            swept.append(self._remove_frames(self.layout.png_frames_dir))
+            swept.append(self._remove_frames(self.layout))
         if all(swept):
             self._remove_run_marker(marker)
 
@@ -338,8 +347,8 @@ class Supervisor:
     def log(self, message: str) -> None:
         """Append one line to the log. Never raises (D03) and never creates the project folder (G1.3).
 
-        A line goes to stderr when the log file cannot take it, or when no
-        folder is bound and there is no ``--log`` file.
+        A line goes to stderr when the log file cannot take it or is a link
+        (O10), or when no folder is bound and there is no ``--log`` file.
         """
         stamp = datetime.now(UTC).isoformat(timespec="milliseconds")
         line = f"{stamp} {message}\n"
@@ -357,9 +366,13 @@ class Supervisor:
         if self._log_override is None:
             if self._binding is None and not self._handwritten:
                 return False
+            # The log is <project>/.mathimator/logs/worker.log. Its folders are made
+            # only inside the project, and no line goes through a link there (O10).
+            root = log_path.parents[2]
+            if first_link(root, log_path) is not None:
+                return False
             try:
-                # The log is <project>/.mathimator/logs/worker.log, so this checks the folder it is written to.
-                make_folders(log_path.parents[2], log_path.parent)
+                make_folders(root, log_path.parent)
             except OSError:
                 return False
         _rotate_log(log_path)
@@ -436,11 +449,14 @@ class Supervisor:
     def _claim(self, folder: Path, identity: tuple[int, int], *, init: bool) -> _Claim:
         """Lock ``folder``, write an empty project.json there when ``init`` asks for one, and read it.
 
-        These are steps 3 to 5 of C8.2 and 4 to 6 of C8.3. Reopening the bound
-        folder keeps its lock. A refusal raises DocumentError after undoing
-        what the attempt created.
+        These are steps 3 to 5 of C8.2 and 4 to 6 of C8.3, after the check that
+        none of the folder's own folders, nor its log, is a link (O10), which
+        comes before the lock writes there. Reopening the bound folder keeps its lock. A
+        refusal raises DocumentError after undoing what the attempt created.
         """
-        project_file = ProjectLayout(folder).project_file
+        layout = ProjectLayout(folder)
+        _check_links(layout)
+        project_file = layout.project_file
         with contextlib.ExitStack() as undo:
             bound = self._binding
             if bound is not None and bound.identity == identity:
@@ -711,7 +727,8 @@ class Supervisor:
         if self._binding is not None and identity == self._binding.identity:
             return "it is the folder of the open project"
         for name in ("project.json", ".mathimator"):
-            if (target / name).exists():
+            # A link counts, whether or not it leads anywhere (O10).
+            if os.path.lexists(target / name):
                 return f"it already holds {name}"
         return None
 
@@ -922,6 +939,7 @@ class Supervisor:
             else:
                 try:
                     self._check_root_locked()
+                    _check_links(self.layout)
                 except DocumentError as exc:
                     event = _refusal(request.id, exc)
                 else:
@@ -940,32 +958,26 @@ class Supervisor:
 
         The active log is emptied. project.json, exports/, the lock and the
         temp-project marker stay. A read-only file or folder is made writable
-        first (S26). Return what could not be removed, each with the OS reason.
+        first (S26), and a link goes, never what it points to (O10). Return
+        what could not be removed, each with the OS reason.
         """
         left: list[str] = []
 
-        def collect(function: Callable[[str], object], path: str, exc: BaseException) -> None:
+        def collect(function: Callable[..., object], path: str, exc: BaseException) -> None:
             try:
-                _retry_read_only(function, path, exc)
+                retry_read_only(function, path, exc)
             except FileNotFoundError:
                 pass
             except OSError as failure:
                 left.append(f"{path}: {failure}")
 
         for folder in self.layout.derived_dirs:
-            shutil.rmtree(folder, onexc=collect)
+            remove_below(self.project, folder, collect)
         logs = self.layout.log_path.parent
         if logs.is_dir():
             for child in list(logs.iterdir()):
-                if child == self.log_path:
-                    continue
-                if child.is_dir():
-                    shutil.rmtree(child, onexc=collect)
-                    continue
-                try:
-                    child.unlink()
-                except OSError as exc:
-                    collect(os.unlink, str(child), exc)
+                if child != self.log_path:
+                    remove_below(self.project, child, collect)
         with self._log_lock:
             try:
                 os.truncate(self.log_path, 0)
@@ -1027,7 +1039,7 @@ class Supervisor:
             return
         assert job.layout is not None
         # What the quality folder holds before Manim starts, which tells the files this run writes.
-        progress = ManimProgress(job.video_dir, self._clips, job.ready, job.waiting)
+        progress = ManimProgress(job.layout.root, job.video_dir, self._clips, job.ready, job.waiting)
         marker = job.layout.run_marker
         if not self._write_run_marker(job, marker, progress):
             return
@@ -1047,9 +1059,9 @@ class Supervisor:
         """
         layout = job.layout
         assert layout is not None
-        tex = layout.media_dir / "Tex"
+        tex = layout.tex_dir
         try:
-            _remove_tex_inputs(tex)
+            _remove_tex_inputs(layout.root, tex)
         except OSError as exc:
             message = f"could not remove the old TeX files in {tex}: {exc}"
             self._end(job, error(job.job_id, "render_failed", message))
@@ -1057,23 +1069,23 @@ class Supervisor:
         if job.output_format == "png_sequence":
             frames = layout.png_frames_dir
             try:
-                _remove_tree(frames)
+                _remove_tree(layout.root, frames)
             except OSError as exc:
                 message = f"could not remove the old PNG frames in {frames}: {exc}"
                 self._end(job, error(job.job_id, "render_failed", message))
                 return False
-        self._drop_incomplete_clips(layout.partial_movie_dir(job.quality))
+        self._drop_incomplete_clips(layout.root, layout.partial_movie_dir(job.quality))
         return True
 
-    def _drop_incomplete_clips(self, folder: Path) -> None:
+    def _drop_incomplete_clips(self, root: Path, folder: Path) -> None:
         for path in _segments(folder):
             if not self._clips.complete(path):
-                self._remove_clip(path)
+                self._remove_clip(root, path)
 
-    def _remove_clip(self, path: Path) -> bool:
-        """Delete an incomplete clip. Return False when it is still there."""
+    def _remove_clip(self, root: Path, path: Path) -> bool:
+        """Delete an incomplete clip, never through a link below ``root`` (O10). Return False when it is still there."""
         try:
-            path.unlink(missing_ok=True)
+            remove_below(root, path, retry_read_only)
         except OSError as exc:
             self.log(f"could not remove incomplete clip {path}: {exc}")
             return False
@@ -1106,7 +1118,7 @@ class Supervisor:
 
     def _run_manim(self, job: _Job, argv: list[str], progress: ManimProgress) -> None:
         assert job.layout is not None and job.manim_dir is not None
-        tex = job.layout.media_dir / "Tex"
+        tex = job.layout.tex_dir
         if sys.platform == "win32":
             # start_new_session is ignored on Windows, so the grandchild would
             # stay in this console and could open its own window. A new process
@@ -1228,7 +1240,7 @@ class Supervisor:
         self._log_discarded(progress.discard())
         if job.output_format == "png_sequence":
             assert job.layout is not None
-            self._remove_frames(job.layout.png_frames_dir)
+            self._remove_frames(job.layout)
 
     def _log_discarded(self, discarded: Discarded) -> bool:
         """Log what a discard removed and what it could not. Return False when a file is still there."""
@@ -1239,12 +1251,13 @@ class Supervisor:
             self.log(f"could not remove unfinished media {path}: {exc}")
         return not failed
 
-    def _remove_frames(self, frames: Path) -> bool:
+    def _remove_frames(self, layout: ProjectLayout) -> bool:
         """Delete Manim's PNG folder, whose sequence may be cut off (F021). Return False when it is still there."""
+        frames = layout.png_frames_dir
         if not frames.exists():
             return True
         try:
-            _remove_tree(frames)
+            _remove_tree(layout.root, frames)
         except OSError as exc:
             self.log(f"could not remove unfinished media {frames}: {exc}")
             return False
@@ -1259,7 +1272,8 @@ class Supervisor:
         if incomplete:
             # Manim reused or wrote a clip that is cut off, so its output is
             # suspect. Delete exactly those clips, so the next render redoes their beats.
-            left = [path for path in incomplete if not self._remove_clip(path)]
+            assert job.layout is not None
+            left = [path for path in incomplete if not self._remove_clip(job.layout.root, path)]
             if left:
                 message = f"manim used an incomplete clip {left[0]} that could not be removed"
             else:
@@ -1370,10 +1384,19 @@ class Supervisor:
         if self.session is None:
             return self._prepare_handwritten_locked(job)
         project = self.session.project
+        profile = project.preview_profile if job.profile == "preview" else project.export_profile
+        job.quality = f"{profile.height}p{profile.fps}"
+        # Besides the project's own folders, Manim writes into the quality
+        # folder, and an export is published as its file or folder in exports/.
+        own = [layout.partial_movie_dir(job.quality)]
+        if job.profile == "export":
+            own.append(layout.export_path(project))
         try:
             # The start never writes project.json: every edit has saved it, and
             # a file changed outside Mathimator must not be overwritten (D59).
             self._check_disk_locked()
+            # Manim writes, and the job deletes, only in the project's own folders (O10).
+            _check_links(layout, *own)
             source = _scene_source(project)
             latex = needs_latex(project)
             if latex and self._tex_error is not None:
@@ -1400,7 +1423,7 @@ class Supervisor:
         # written (F170, D60).
         codegen = layout.scene_path.parent
         try:
-            _remove_tree(codegen)
+            _remove_tree(layout.root, codegen)
             make_folders(layout.root, codegen)
             layout.scene_path.write_text(source, encoding="utf-8", newline="\n")
         except OSError as exc:
@@ -1409,9 +1432,6 @@ class Supervisor:
         job.manim_dir = root / codegen.relative_to(layout.root)
         job.captured = load_text(dumps_project(project))
         if job.profile == "preview":
-            width = project.preview_profile.width
-            height = project.preview_profile.height
-            fps = project.preview_profile.fps
             self._rebuild_index_locked()
             self._copy_last_good_locked()
             self._save_sidecars_locked()
@@ -1419,18 +1439,13 @@ class Supervisor:
             job.capture_keys = beat_chain_keys(project, "preview")
             job.ready = {beat.index: Path(beat.partial) for beat in self._index.beats if beat.fresh and beat.partial}
             job.waiting = [beat.index for beat in self._index.beats if not beat.fresh]
-        else:
-            width = project.export_profile.width
-            height = project.export_profile.height
-            fps = project.export_profile.fps
-        job.quality = f"{height}p{fps}"
         job.argv = build_manim_argv(
             self._manim_python,
             job.profile,
             str(project.seed),
-            width=width,
-            height=height,
-            fps=fps,
+            width=profile.width,
+            height=profile.height,
+            fps=profile.fps,
             fmt=export_format,
             transparent=export_transparent,
         )
@@ -1587,6 +1602,16 @@ def _lock_folder(folder: Path) -> ProjectLock:
         raise DocumentError(f"Mathimator cannot write to {folder}: {os_reason(exc)}.", code="lock_failed") from exc
 
 
+def _check_links(layout: ProjectLayout, *also: Path) -> None:
+    """Refuse with ``linked_folder`` when a path the project keeps Mathimator's files in, or one of ``also``, is a link.
+
+    A symbolic link or a junction there would point the worker's writes and deletes at another place (O10).
+    """
+    link = layout.linked_path(*also)
+    if link is not None:
+        raise DocumentError(link_refusal(link), code="linked_folder")
+
+
 def _rotate_log(log_path: Path) -> None:
     """Move a full log to ``<log>.1``, replacing the older copy (D55).
 
@@ -1639,14 +1664,16 @@ def _interrupted_run(layout: ProjectLayout, record: object) -> tuple[dict[Path, 
     return {folder: {} for folder in videos.iterdir() if folder.is_dir()}, True
 
 
-def _remove_tree(path: Path) -> None:
-    """Delete a folder that may not exist, retrying for about 0.5 s while Windows reports it in use.
+def _remove_tree(root: Path, path: Path) -> None:
+    """Delete a folder below ``root`` that may not exist, retrying for about 0.5 s while Windows reports it in use.
 
-    A read-only file or folder in it is made writable first (S26).
+    A read-only file or folder in it is made writable first (S26). A link
+    goes, never what it points to, and a link above ``path`` raises
+    LinkedFolder (``remove_below``, O10).
     """
     for attempt in range(5):
         try:
-            shutil.rmtree(path, onexc=_retry_read_only)
+            remove_below(root, path, retry_read_only)
             return
         except FileNotFoundError:
             return
@@ -1656,34 +1683,18 @@ def _remove_tree(path: Path) -> None:
             time.sleep(0.1)
 
 
-def _retry_read_only(function: Callable[[str], object], path: str, exc: BaseException) -> None:
-    """``shutil.rmtree``'s ``onexc``: make a read-only file or folder writable, then remove it again (S26).
-
-    Windows will not delete either while it is read-only, as a copied or
-    shared project folder can carry them. A link is never changed, and any
-    other failure, including one of a call that lists or opens a folder, is
-    raised again.
-    """
-    if function not in (os.unlink, os.rmdir) or not isinstance(exc, PermissionError):
-        raise exc
-    try:
-        mode = os.lstat(path).st_mode
-    except OSError:
-        raise exc from None
-    if mode & stat.S_IWRITE or stat.S_ISLNK(mode) or os.path.isjunction(path):
-        raise exc
-    os.chmod(path, stat.S_IMODE(mode) | stat.S_IWRITE)
-    function(path)
-
-
-def _remove_tex_inputs(tex: Path) -> None:
-    """Delete everything in Manim's TeX folder but the SVG files it reuses.
+def _remove_tex_inputs(root: Path, tex: Path) -> None:
+    """Delete everything in Manim's TeX folder ``tex`` below ``root`` but the SVG files it reuses.
 
     Manim writes a TeX source and its DVI file again when it needs them. A
     link goes, never what it points to: ``remove_file`` removes a link to a
-    folder on Windows too.
+    folder on Windows too. A link above ``tex`` raises LinkedFolder, and
+    nothing is deleted (O10).
     """
-    if tex.is_symlink() or tex.is_junction():
+    link = first_link(root, tex.parent)
+    if link is not None:
+        raise LinkedFolder(link)
+    if is_link(tex):
         remove_file(tex)
         return
     if not tex.is_dir():
@@ -1691,8 +1702,8 @@ def _remove_tex_inputs(tex: Path) -> None:
     for path in list(tex.iterdir()):
         if path.suffix == ".svg" and path.is_file(follow_symlinks=False):
             continue
-        if path.is_dir(follow_symlinks=False) and not path.is_junction():
-            _remove_tree(path)
+        if path.is_dir() and not is_link(path):
+            _remove_tree(root, path)
         else:
             remove_file(path)
 

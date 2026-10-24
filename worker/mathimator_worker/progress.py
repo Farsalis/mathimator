@@ -22,7 +22,7 @@ from collections import Counter, deque
 from pathlib import Path, PurePosixPath
 
 from mathimator_worker.clip_check import SEGMENT_SUFFIXES, ClipChecker
-from mathimator_worker.project_folder import remove_file
+from mathimator_worker.project_folder import first_link, remove_file
 
 MANIFEST = "partial_movie_file_list.txt"
 # The folder of a quality folder that Manim writes the partial movies of MainScene into.
@@ -35,7 +35,7 @@ Discarded = tuple[list[Path], list[tuple[Path, OSError]]]
 
 
 class ManimProgress:
-    """One Manim run, followed through its quality folder ``video_dir`` (C7.2).
+    """One Manim run of the project in ``root``, followed through its quality folder ``video_dir`` (C7.2).
 
     ``ready`` are the beats whose partial is current already, so Manim reuses
     it, and ``waiting`` are the beats Manim renders, in order. ``waiting`` is
@@ -44,7 +44,10 @@ class ManimProgress:
     beat whose predecessors are not ready yet waits for them.
     """
 
-    def __init__(self, video_dir: Path, clips: ClipChecker, ready: dict[int, Path], waiting: list[int] | None) -> None:
+    def __init__(
+        self, root: Path, video_dir: Path, clips: ClipChecker, ready: dict[int, Path], waiting: list[int] | None
+    ) -> None:
+        self._root = root
         self._video_dir = video_dir
         self._partials = video_dir / _PARTIALS
         self._clips = clips
@@ -102,7 +105,7 @@ class ManimProgress:
 
     def discard(self) -> Discarded:
         """Delete what this run wrote that may be cut off, after a cancel or a failure (``discard_written``)."""
-        return discard_written(self._video_dir, self._before, self._clips)
+        return discard_written(self._root, self._video_dir, self._before, self._clips)
 
     def _written(self, folder: Path, pattern: str) -> list[Path]:
         return written_since(self._before, file_stamps(folder, pattern))
@@ -143,22 +146,21 @@ def run_files(video_dir: Path) -> dict[Path, Stamp]:
     return file_stamps(video_dir, "*") | file_stamps(video_dir / _PARTIALS, "*")
 
 
-def discard_written(video_dir: Path, before: dict[Path, Stamp], clips: ClipChecker) -> Discarded:
+def discard_written(root: Path, video_dir: Path, before: dict[Path, Stamp], clips: ClipChecker) -> Discarded:
     """Delete what an unfinished run wrote into its quality folder ``video_dir`` that may be cut off (D13, G1.1).
 
     The run wrote the files that ``before``, what ``run_files`` listed when it
     started, lacks or holds with another stamp. What may be cut off is an
     incomplete partial, which only the newest one can be, the segment list
     and the scene movie. Complete partials stay, so the next render reuses
-    them. Nothing is deleted through a link from ``video_dir`` down, so a
-    link planted in the quality folder cannot point a discard outside the
-    project (O10). Return the files removed and those that could not be
-    (G5.10).
+    them. Nothing is deleted through a link below the project folder
+    ``root``, so a link planted in the project cannot point a discard outside
+    it (O10). Return the files removed and those that could not be (G5.10).
     """
     removed: list[Path] = []
     failed: list[tuple[Path, OSError]] = []
     for path in written_since(before, run_files(video_dir)):
-        if _through_link(path.parent, video_dir) or not _cut_off(path, video_dir, clips):
+        if first_link(root, path.parent) is not None or not _cut_off(path, video_dir, clips):
             continue
         try:
             remove_file(path)
@@ -175,13 +177,6 @@ def _cut_off(path: Path, video_dir: Path, clips: ClipChecker) -> bool:
             return True
         return path.suffix.lower() in SEGMENT_SUFFIXES and not clips.complete(path)
     return path.parent == video_dir and path.name.startswith("MainScene")
-
-
-def _through_link(folder: Path, video_dir: Path) -> bool:
-    """Whether a folder from ``video_dir`` down to ``folder``, both included, is a symbolic link or a junction."""
-    return any(
-        path.is_symlink() or path.is_junction() for path in (folder, *folder.parents) if path.is_relative_to(video_dir)
-    )
 
 
 def stamps_record(folder: Path, stamps: dict[Path, Stamp]) -> dict[str, list[int]]:

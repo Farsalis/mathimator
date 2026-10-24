@@ -27,12 +27,13 @@ from mathimator_worker.clip_check import ClipChecker, clip_is_complete
 from mathimator_worker.codegen import generate
 from mathimator_worker.document import dumps_project, load_text
 from mathimator_worker.exports import _export_problem
-from mathimator_worker.identity import beat_chain_keys, export_folder_name
+from mathimator_worker.identity import beat_chain_keys, export_folder_name, export_key
 from mathimator_worker.layout import ProjectLayout
 from mathimator_worker.manim_paths import short_path
 from mathimator_worker.progress import MANIFEST
+from mathimator_worker.project_folder import retry_read_only
 from mathimator_worker.session import Session
-from mathimator_worker.supervisor import Supervisor, _Job, _remove_tree, _retry_read_only
+from mathimator_worker.supervisor import Supervisor, _Job, _remove_tree
 from tests.support import (
     REPO,
     TERMINAL_EVENTS,
@@ -282,7 +283,7 @@ def test_a_read_only_file_or_folder_is_made_writable_and_removed(
     tmp_path: Path, function: Callable[[str], object]
 ) -> None:
     path = _read_only(tmp_path / "read-only", folder=function is os.rmdir)
-    _retry_read_only(function, str(path), PermissionError(13, "Access is denied", str(path)))
+    retry_read_only(function, str(path), PermissionError(13, "Access is denied", str(path)))
     assert not os.path.lexists(path)
 
 
@@ -303,7 +304,7 @@ def test_the_read_only_handler_raises_any_other_failure_again(
     if writable:
         path.chmod(stat.S_IREAD | stat.S_IWRITE)
     with pytest.raises(OSError) as raised:
-        _retry_read_only(function, str(path), failure)
+        retry_read_only(function, str(path), failure)
     assert raised.value is failure
     assert bool(path.stat().st_mode & stat.S_IWRITE) is writable
 
@@ -317,7 +318,7 @@ def test_the_read_only_handler_never_changes_a_link_or_its_target(tmp_path: Path
         os.chmod(link, stat.S_IREAD | stat.S_IEXEC, follow_symlinks=False)
     refused = PermissionError(13, "Access is denied", str(link))
     with pytest.raises(PermissionError) as raised:
-        _retry_read_only(os.rmdir, str(link), refused)
+        retry_read_only(os.rmdir, str(link), refused)
     assert raised.value is refused
     assert os.path.lexists(link)
     assert not target.stat().st_mode & stat.S_IWRITE
@@ -436,6 +437,109 @@ def test_the_sweep_never_deletes_through_a_link(tmp_path: Path, monkeypatch: pyt
     _supervisor(project, monkeypatch)
     assert all(path.is_file() for path in outside)
     assert not marker.exists()
+
+
+def test_a_handwritten_startup_never_sweeps_through_a_linked_media_folder(tmp_path: Path, link_kind: str) -> None:
+    """Hand-written mode binds without the link check, so each delete of its sweep checks for links (O10)."""
+    elsewhere = tmp_path / "elsewhere"
+    outside = _foreign_quality_folder(elsewhere / "videos" / "scene" / "1080p30")
+    (elsewhere / "images" / "scene" / "MainScene").mkdir(parents=True)
+    outside.append(_written(elsewhere / "images" / "scene" / "MainScene" / "0000.png", b"png"))
+    folder = tmp_path / "handwritten"
+    media = ProjectLayout(folder).media_dir
+    media.parent.mkdir(parents=True)
+    link_folder(media, elsewhere, link_kind)
+    # A marker that cannot be read sweeps every quality folder and the PNG folder.
+    marker = _write_marker(folder, '{"quality": ')
+    log = tmp_path / "handwritten.log"
+    Supervisor(folder, sys.executable, log, False).close()
+    assert all(path.is_file() for path in outside)
+    # The PNG folder is still there, so the next bind sweeps again.
+    assert marker.is_file()
+    assert f"{media} is a link to another folder" in log.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("linked", ["codegen", "cache/media/images"])
+def test_a_render_after_a_folder_became_a_link_is_refused_and_deletes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim, linked: str, link_kind: str
+) -> None:
+    supervisor, events = _supervisor(_project(tmp_path / "shared", export=_PNG_PROFILE), monkeypatch)
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "scene" / "MainScene").mkdir(parents=True)
+    mine = [
+        _written(elsewhere / "scene.py", b"mine"),
+        _written(elsewhere / "scene" / "MainScene" / "0000.png", b"mine"),
+    ]
+    # Where the codegen reset and the PNG export delete before Manim starts.
+    link = supervisor.project / ".mathimator" / linked
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link_folder(link, elsewhere, link_kind)
+    _run(supervisor, "export", "export-1")
+    refused = _terminal(events, "export-1")
+    assert (refused["event"], refused["code"]) == ("rejected", "linked_folder")
+    assert str(refused["message"]).startswith(f"Mathimator cannot use {link}: ")
+    assert not fake_manim.ran()
+    assert [path.read_bytes() for path in mine] == [b"mine", b"mine"]
+
+
+@pytest.mark.parametrize(("command", "quality"), [("render_preview", "480p15"), ("export", "1080p30")])
+@pytest.mark.parametrize(
+    "linked",
+    [pytest.param("", id="quality-folder"), pytest.param("partial_movie_files", id="partial-movie-files")],
+)
+def test_a_render_into_a_linked_quality_folder_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_manim: FakeManim,
+    command: str,
+    quality: str,
+    linked: str,
+    link_kind: str,
+) -> None:
+    """Manim would write, and prune its partial movies, through a link in the render's quality folder (O10)."""
+    supervisor, events = _supervisor(_project(tmp_path / "shared"), monkeypatch)
+    outside = tmp_path / "outside"
+    _foreign_quality_folder(outside)
+    before = _tree(outside)
+    link = supervisor.layout.video_dir(quality) / linked
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link_folder(link, outside / linked, link_kind)
+    _run(supervisor, command, "job-1")
+    refused = _terminal(events, "job-1")
+    assert (refused["event"], refused["code"]) == ("rejected", "linked_folder")
+    assert str(refused["message"]).startswith(f"Mathimator cannot use {link}: ")
+    assert not fake_manim.ran()
+    assert _tree(outside) == before
+
+
+@pytest.mark.parametrize("export", [pytest.param(None, id="mp4"), pytest.param(_PNG_PROFILE, id="png-sequence")])
+def test_an_export_into_a_linked_export_folder_is_refused_and_changes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_manim: FakeManim,
+    export: dict[str, object] | None,
+    link_kind: str,
+) -> None:
+    """A link at exports/<key16> would publish an export, or find a finished one, outside the project (O10)."""
+    supervisor, events = _supervisor(_project(tmp_path / "shared", export=export), monkeypatch)
+    assert supervisor.session is not None
+    project = supervisor.session.project
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "frames").mkdir(parents=True)
+    _written(elsewhere / "frames" / "precious.png", b"mine")
+    _written(elsewhere / "scene.mp4", b"mine")
+    # With the key of this export, the export.json there would make it look finished already.
+    _written(elsewhere / "export.json", json.dumps({"exportKey": export_key(project)}).encode("utf-8"))
+    before = _tree(elsewhere)
+    link = supervisor.layout.export_dir(project)
+    link.parent.mkdir(parents=True)
+    link_folder(link, elsewhere, link_kind)
+    _run(supervisor, "export", "export-1")
+    refused = _terminal(events, "export-1")
+    assert (refused["event"], refused["code"]) == ("rejected", "linked_folder")
+    assert str(refused["message"]).startswith(f"Mathimator cannot use {link}: ")
+    assert not fake_manim.ran()
+    assert _tree(elsewhere) == before
 
 
 def test_a_sweep_that_cannot_remove_a_file_keeps_the_marker(
@@ -698,10 +802,10 @@ def test_png_export_stops_when_the_old_frames_cannot_be_removed(
     stale = frames / "0000.png"
     stale.write_bytes(b"stale")
 
-    def in_use(path: Path) -> None:
+    def in_use(root: Path, path: Path) -> None:
         if path == frames:
             raise PermissionError(13, "The process cannot access the file", str(path))
-        _remove_tree(path)
+        _remove_tree(root, path)
 
     monkeypatch.setattr("mathimator_worker.supervisor._remove_tree", in_use)
     fake_manim.plan(_png_render(frames, 3), _wrapped_images_ready(3, frames))
@@ -824,6 +928,13 @@ def _crash(
 def _written(path: Path, data: bytes) -> Path:
     path.write_bytes(data)
     return path
+
+
+def _tree(folder: Path) -> dict[str, bytes | None]:
+    """Every file below ``folder`` with its bytes, and every folder with None."""
+    return {
+        path.relative_to(folder).as_posix(): path.read_bytes() if path.is_file() else None for path in folder.rglob("*")
+    }
 
 
 def _read_only(path: Path, *, folder: bool) -> Path:

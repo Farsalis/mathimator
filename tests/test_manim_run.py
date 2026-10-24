@@ -32,6 +32,7 @@ from mathimator_worker.identity import export_folder_name, export_key
 from mathimator_worker.manim_main import concat_manifest_bytes, write_every_frame
 from mathimator_worker.manim_paths import PARTIAL_FILE, TEX_FILE, longest_folder, manim_root, short_path
 from mathimator_worker.progress import read_manifest
+from mathimator_worker.project_folder import LinkedFolder
 from mathimator_worker.supervisor import Supervisor, _Job, _remove_tex_inputs
 from tests.support import (
     REFERENCE,
@@ -215,20 +216,35 @@ def test_tex_inputs_planted_in_the_project_are_removed_before_manim(
     assert [path.name for path in tex.iterdir()] == [f"{TEX_HASH}.svg"]
 
 
-def test_a_link_in_the_tex_folder_goes_and_what_it_points_to_stays(tmp_path: Path) -> None:
+def test_a_link_in_the_tex_folder_goes_and_what_it_points_to_stays(tmp_path: Path, link_kind: str) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "notes.tex").write_text("mine", encoding="utf-8")
     tex = tmp_path / "media" / "Tex"
     tex.mkdir(parents=True)
-    link_folder(tex / "linked", outside)
-    _remove_tex_inputs(tex)
+    link_folder(tex / "linked", outside, link_kind)
+    _remove_tex_inputs(tmp_path, tex)
     assert list(tex.iterdir()) == []
     tex.rmdir()
-    link_folder(tex, outside)
-    _remove_tex_inputs(tex)
+    link_folder(tex, outside, link_kind)
+    _remove_tex_inputs(tmp_path, tex)
     assert not os.path.lexists(tex)
     assert [path.name for path in outside.iterdir()] == ["notes.tex"]
+
+
+def test_a_link_above_the_tex_folder_deletes_nothing(tmp_path: Path, link_kind: str) -> None:
+    """A media folder that leads elsewhere never lets the TeX clean-up delete there (O10)."""
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "Tex").mkdir(parents=True)
+    notes = elsewhere / "Tex" / "notes.tex"
+    notes.write_text("mine", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    media = project / "media"
+    link_folder(media, elsewhere, link_kind)
+    with pytest.raises(LinkedFolder, match="is a link to another folder"):
+        _remove_tex_inputs(project, media / "Tex")
+    assert notes.read_text(encoding="utf-8") == "mine"
 
 
 def test_a_render_stops_when_a_planted_tex_input_cannot_be_removed(

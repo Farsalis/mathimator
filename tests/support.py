@@ -2,8 +2,8 @@
 
 Repo paths, the render interpreter, the supervisor client, the reader of an
 in-process supervisor's stdout, fake interpreters, the fake ``manim`` package,
-minimal complete clips, unreadable files, and video probes. ``OUT`` and the
-scene paths belong to the phase 1 tests.
+minimal complete clips, unreadable files, links, and video probes. ``OUT``
+and the scene paths belong to the phase 1 tests.
 """
 
 from __future__ import annotations
@@ -41,6 +41,8 @@ WIN32_FIXTURES = REPO / "tests" / "fixtures" / "win32"
 TERMINAL_EVENTS = frozenset({"done", "error", "rejected"})
 # The stderr lines a SupervisorClient keeps for its failure messages.
 _STDERR_LINES = 200
+# The links to a folder a test makes: junctions and symbolic links on Windows, symbolic links elsewhere.
+LINK_KINDS = ("junction", "symlink") if sys.platform == "win32" else ("symlink",)
 
 
 def venv_python() -> Path:
@@ -262,14 +264,35 @@ def video_render(layout: ProjectLayout, quality: str, clips: list[bytes], suffix
     return files
 
 
-def link_folder(link: Path, target: Path) -> None:
-    """A link to a folder that any account can make: a junction on Windows, a symbolic link elsewhere."""
-    if sys.platform == "win32":
+def link_folder(link: Path, target: Path, kind: str = LINK_KINDS[0]) -> None:
+    """A link to the folder ``target`` of one of the ``LINK_KINDS``.
+
+    The default is the one any account can make: a junction on Windows, a
+    symbolic link elsewhere. Windows makes a symbolic link only in Developer
+    Mode or with the right to create one, so a test that asks for one there is
+    skipped without it.
+    """
+    if sys.platform == "win32" and kind == "junction":
         import _winapi
 
         _winapi.CreateJunction(str(target), str(link))
-    else:
-        link.symlink_to(target, target_is_directory=True)
+        return
+    _symlink(link, target, folder=True)
+
+
+def link_file(link: Path, target: Path) -> None:
+    """A symbolic link to the file ``target``, which Windows makes only as ``link_folder`` says."""
+    _symlink(link, target, folder=False)
+
+
+def _symlink(link: Path, target: Path, *, folder: bool) -> None:
+    """A symbolic link to ``target``, or a skipped test on a Windows account that cannot make one."""
+    try:
+        link.symlink_to(target, target_is_directory=folder)
+    except OSError as exc:
+        if sys.platform != "win32":
+            raise
+        pytest.skip(f"this account cannot make symbolic links: {exc}")
 
 
 @contextlib.contextmanager
