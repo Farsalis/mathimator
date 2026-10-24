@@ -21,6 +21,7 @@ from tests.support import (
     REPO,
     TERMINAL_EVENTS,
     SupervisorClient,
+    fixture_project,
     media_dir,
     probe_video,
     sha256_file,
@@ -37,7 +38,7 @@ RELATIVE_CAP_S = 4.770
 
 
 def test_reference_60_codegen_preview_export_and_partial() -> None:
-    project = _fresh_project(PHASE2 / "reference", REFERENCE_JSON)
+    project = fixture_project(PHASE2 / "reference", REFERENCE_JSON)
     log_dir = PHASE2 / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -183,14 +184,6 @@ def test_axes_function_insert_preview() -> None:
             "reference_budget_seconds": 8,
         },
     )
-
-
-def _fresh_project(root: Path, fixture: Path) -> Path:
-    if root.exists():
-        shutil.rmtree(root)
-    root.mkdir(parents=True)
-    shutil.copyfile(fixture, root / "project.json")
-    return root
 
 
 def _ready(client: SupervisorClient, job_id: str) -> None:

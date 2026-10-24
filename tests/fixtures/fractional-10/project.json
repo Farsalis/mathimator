@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": 2,
+  "id": "half_seconds",
+  "name": "Half-second beats",
+  "seed": 1,
+  "scene": {
+    "id": "scene_main",
+    "name": "Main",
+    "kind": "scene",
+    "background": "#000000",
+    "objects": [
+      {
+        "id": "axes_1",
+        "name": "Axes",
+        "type": "axes",
+        "params": {
+          "xRange": [-6.5, 6.5, 1],
+          "yRange": [-1.5, 1.5, 0.5],
+          "xLength": 10,
+          "yLength": 4,
+          "color": "#FFFFFF",
+          "showLabels": false
+        }
+      },
+      {
+        "id": "plot_1",
+        "name": "Sine",
+        "type": "function_plot",
+        "params": {
+          "axesId": "axes_1",
+          "expression": "sin(x)",
+          "xMin": -6.28,
+          "xMax": 6.28,
+          "color": "#58C4DD"
+        }
+      }
+    ],
+    "beats": [
+      {
+        "id": "beat_1",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["axes_1"]
+      },
+      {
+        "id": "beat_2",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["plot_1"]
+      },
+      {
+        "id": "beat_3",
+        "duration": 0.5,
+        "action": "wait",
+        "targets": []
+      },
+      {
+        "id": "beat_4",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["plot_1"],
+        "params": {
+          "color": "#E07A5F"
+        }
+      },
+      {
+        "id": "beat_5",
+        "duration": 0.5,
+        "action": "wait",
+        "targets": []
+      },
+      {
+        "id": "beat_6",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["plot_1"],
+        "params": {
+          "color": "#81B29A"
+        }
+      },
+      {
+        "id": "beat_7",
+        "duration": 0.5,
+        "action": "wait",
+        "targets": []
+      },
+      {
+        "id": "beat_8",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["plot_1"],
+        "params": {
+          "color": "#F2CC8F"
+        }
+      },
+      {
+        "id": "beat_9",
+        "duration": 0.5,
+        "action": "wait",
+        "targets": []
+      },
+      {
+        "id": "beat_10",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["plot_1"],
+        "params": {
+          "color": "#FC6255"
+        }
+      },
+      {
+        "id": "beat_11",
+        "duration": 0.5,
+        "action": "wait",
+        "targets": []
+      },
+      {
+        "id": "beat_12",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["plot_1"],
+        "params": {
+          "color": "#83C167"
+        }
+      },
+      {
+        "id": "beat_13",
+        "duration": 0.5,
+        "action": "wait",
+        "targets": []
+      },
+      {
+        "id": "beat_14",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["plot_1"],
+        "params": {
+          "color": "#FFFF00"
+        }
+      },
+      {
+        "id": "beat_15",
+        "duration": 0.5,
+        "action": "wait",
+        "targets": []
+      },
+      {
+        "id": "beat_16",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["plot_1"],
+        "params": {
+          "color": "#9A72AC"
+        }
+      },
+      {
+        "id": "beat_17",
+        "duration": 0.5,
+        "action": "wait",
+        "targets": []
+      },
+      {
+        "id": "beat_18",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["plot_1"],
+        "params": {
+          "color": "#FF862F"
+        }
+      },
+      {
+        "id": "beat_19",
+        "duration": 0.5,
+        "action": "wait",
+        "targets": []
+      },
+      {
+        "id": "beat_20",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["plot_1"],
+        "params": {
+          "color": "#29ABCA"
+        }
+      }
+    ],
+    "templateInstances": [
+      {
+        "id": "tmpl_1",
+        "templateId": "axes_function",
+        "params": {
+          "expression": "sin(x)",
+          "xRange": [-6.5, 6.5, 1],
+          "yRange": [-1.5, 1.5, 0.5],
+          "color": "#58C4DD"
+        },
+        "objectIds": ["axes_1", "plot_1"],
+        "beatIds": ["beat_1", "beat_2"]
+      }
+    ]
+  },
+  "previewProfile": {
+    "width": 854,
+    "height": 480,
+    "fps": 15,
+    "transparent": false
+  },
+  "exportProfile": {
+    "format": "mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "transparent": false
+  }
+}

@@ -134,8 +134,13 @@ Manim, it writes one file after another, so each file gets a later mtime than
 the one before. After each group but the last, and after the last too in a
 held plan, it writes held-<n>.txt and waits for go-<n>.txt. A plan with a
 child first starts a process that sleeps with this one's stdout and stderr,
-like a TeX child that outlives Manim, and writes its pid to child.txt.
+like a TeX child that outlives Manim, and writes its pid to child.txt. Like
+Manim at the end of a render, it then marks each segment that a segment list
+it wrote names as used, in list order, and in that list's folder keeps at most
+max_files_cached segments, as the --config_file sets it or Manim's default of
+100, deleting the least recently used; -1 keeps them all.
 """
+import configparser
 import json
 import os
 import subprocess
@@ -146,6 +151,7 @@ from pathlib import Path
 from manim.scene.scene_file_writer import SceneFileWriter
 
 ENVIRONMENT = ("HOME", "USERPROFILE", "shell_escape", "openin_any", "openout_any")
+SEGMENTS = (".mov", ".mp4", ".webm")
 here = Path(__file__).parent
 plan = json.loads((here / "plan.json").read_text(encoding="utf-8"))
 media = Path(sys.argv[sys.argv.index("--media_dir") + 1])
@@ -165,6 +171,7 @@ if plan["child"]:
     (here / "child.txt").write_text(str(child.pid), encoding="utf-8")
 groups = plan["groups"]
 stamp = 0
+listed = set()
 for number, group in enumerate(groups):
     for name, data in group.items():
         target = Path(name)
@@ -172,10 +179,28 @@ for number, group in enumerate(groups):
         target.write_bytes(bytes.fromhex(data))
         stamp = max(stamp + 1_000_000, time.time_ns())
         os.utime(target, ns=(stamp, stamp))
+        if target.name == "partial_movie_file_list.txt":
+            listed.add(target.parent)
     if number < len(groups) - 1 or plan["hold"]:
         (here / f"held-{number}.txt").write_text("", encoding="utf-8")
         while not (here / f"go-{number}.txt").exists():
             time.sleep(0.02)
+settings = configparser.ConfigParser()
+if "--config_file" in sys.argv:
+    settings.read(sys.argv[sys.argv.index("--config_file") + 1], encoding="utf-8")
+cached = settings.getint("CLI", "max_files_cached", fallback=100)
+for folder in listed:
+    for line in (folder / "partial_movie_file_list.txt").read_text(encoding="utf-8").splitlines():
+        if line.startswith("file "):
+            used = folder / line.rpartition("/")[2].removesuffix("'")
+            stamp = max(stamp + 1_000_000, time.time_ns())
+            os.utime(used, ns=(stamp, used.stat().st_mtime_ns))
+    segments = sorted(
+        (path for path in folder.iterdir() if path.suffix in SEGMENTS), key=lambda path: path.stat().st_atime
+    )
+    excess = len(segments) - cached if cached != -1 else 0
+    for path in segments[: max(excess, 0)]:
+        path.unlink()
 for line in plan["log"]:
     print(line, flush=True)
 sys.exit(plan["exit"])
@@ -347,6 +372,14 @@ def probe_video(path: Path) -> tuple[float, int, int]:
     return duration, width, height
 
 
+def frame_count(path: Path) -> int:
+    """The frames of the video in ``path``, each decoded. Imports PyAV in the test process."""
+    import av
+
+    with av.open(str(path)) as container:
+        return sum(1 for _ in container.decode(video=0))
+
+
 class Stdout:
     """Every line an in-process supervisor wrote, each parsed as strict JSON, the way the shell parses it."""
 
@@ -486,6 +519,15 @@ def handwritten_project(root: Path, scene_file: Path) -> Path:
     destination = scene_path(root)
     destination.parent.mkdir(parents=True)
     shutil.copyfile(scene_file, destination)
+    return root
+
+
+def fixture_project(root: Path, fixture: Path) -> Path:
+    """A new project directory holding a copy of the project.json ``fixture``."""
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    shutil.copyfile(fixture, root / "project.json")
     return root
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.support import REPO, SupervisorClient, media_dir, probe_video, sha256_file, start_supervisor
+from tests.support import REPO, SupervisorClient, frame_count, media_dir, probe_video, sha256_file, start_supervisor
 
 pytestmark = pytest.mark.render
 
@@ -125,6 +125,28 @@ def test_reference_60_mp4_and_second_export_skips_manim() -> None:
             "argv": argv,
         },
     )
+
+
+def test_half_second_beats_export_as_the_frames_of_the_timeline() -> None:
+    """Spec section 7 and D63: 20 beats of 0.5 s export as 300 frames at 30 fps, exactly 10 s."""
+    project = PHASE5 / "fractional-10"
+    log_path = PHASE5 / "logs" / "fractional-10.log"
+    _reset(project)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    client = start_supervisor(project, log_path)
+    try:
+        _open_fixture(client, FIXTURES / "fractional-10" / "project.json", project)
+        client.send({"cmd": "export", "id": "mp4"})
+        done = client.wait_for_end("mp4", 900)
+    finally:
+        client.close()
+    if done.get("event") != "done":
+        raise AssertionError(json.dumps(done, indent=2))
+    path = Path(str(done["path"]))
+    _, width, height = probe_video(path)
+    assert (width, height) == (1920, 1080)
+    assert frame_count(path) == 300
+    _assert_flags(_argv_with(log_path, "mp4"), "mp4", "1920,1080", "30", transparent=False)
 
 
 def test_png_sequence_saves_every_frame_of_a_wait() -> None:

@@ -35,6 +35,8 @@ from tests.support import (
     WORKER,
     SupervisorClient,
     assert_phase1_argv,
+    fixture_project,
+    frame_count,
     handwritten_project,
     manim_pids,
     media_dir,
@@ -49,6 +51,8 @@ PREVIEW_TIMEOUT_S = 60 * 60
 EXPORT_TIMEOUT_S = 3 * 60 * 60
 # What Manim runs for a formula or an axis label.
 TEX_PROGRAMS = frozenset({"latex", "dvisvgm", "pdftex", "xelatex"})
+# Twenty beats of 0.5 s, plays and waits, with no formula and no axis labels.
+FRACTIONAL = REPO / "tests" / "fixtures" / "fractional-10" / "project.json"
 
 
 def test_worker_source_has_no_manim_av_or_win32() -> None:
@@ -327,6 +331,21 @@ def test_last_beat_keeps_the_first_seven_partial_hashes(preview: dict[str, objec
             "seconds": second["seconds"],
         },
     )
+
+
+@pytest.mark.render
+def test_half_second_beats_draw_the_frames_of_the_timeline() -> None:
+    """D63, G3.5: each beat starts on the frame nearest its start, a half frame rounding up.
+
+    At 15 fps a 0.5 s beat is 7.5 frames, so the beats are 8 and 7 frames in
+    turn, plays and waits alike, and the preview is 150 frames.
+    """
+    project = fixture_project(OUT / "fractional-project", FRACTIONAL)
+    rendered = _render(project, OUT / "logs" / "fractional.log", "preview", "job-fractional", PREVIEW_TIMEOUT_S)
+    beats = rendered["beats"]
+    assert isinstance(beats, list)
+    assert [frame_count(Path(str(event["path"]))) for event in beats] == [8, 7] * 10
+    assert frame_count(Path(str(rendered["output"]))) == 150
 
 
 @pytest.mark.render

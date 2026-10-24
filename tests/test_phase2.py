@@ -45,6 +45,8 @@ REFERENCE = FIXTURES / "reference-60" / "project.json"
 LESSON = FIXTURES / "lesson-60" / "project.json"
 # Beat boundaries and the frames they land on, which playback.test.ts checks too (D63).
 TIMING = json.loads((FIXTURES / "timing" / "frame-boundaries.json").read_text(encoding="utf-8"))
+# Twenty beats of 0.5 s, whose frames the render tier counts (G3.5).
+FRACTIONAL = FIXTURES / "fractional-10" / "project.json"
 
 FOUR_LINES = (
     '        self.play(plot_1.animate.set_color("#E07A5F"), run_time=8)\n'
@@ -355,6 +357,21 @@ def test_each_beat_draws_the_frames_the_ui_gives_it() -> None:
     """D63: beat index 2 of [2, 2.1, 1] starts on frame 62 at 15 fps, in the movie and in playback.ts."""
     beats = TIMING["beats"]
     assert _manim_frame_counts(generate(_journey_a(beats["durations"])), beats["fps"]) == beats["frames"]
+
+
+def test_half_second_beats_are_the_frames_the_render_tier_counts() -> None:
+    """D63, G3.5: the fractional fixture's beats are 8 and 7 frames in turn at 15 fps and 15 each at 30.
+
+    Manim draws a plain 0.5 s as 8 frames for a play and 7 for a wait at 15 fps.
+    After the first beat the fixture's plays are 7-frame beats and its waits
+    8-frame ones, so without the frame rule every one of them would be off.
+    """
+    project = load_text(FRACTIONAL.read_text(encoding="utf-8"))
+    assert [beat.duration for beat in project.scene.beats] == [0.5] * 20
+    source = generate(project)
+    assert _manim_frame_counts(source, 15) == [8, 7] * 10
+    assert _manim_frame_counts(source, 30) == [15] * 20
+    assert export_frame_count(project) == 300
 
 
 def test_the_last_beat_ends_at_the_reported_total() -> None:

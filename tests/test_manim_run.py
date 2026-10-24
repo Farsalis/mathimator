@@ -31,7 +31,7 @@ from mathimator_worker.exports import existing_export
 from mathimator_worker.identity import export_folder_name, export_key
 from mathimator_worker.manim_main import concat_manifest_bytes, write_every_frame
 from mathimator_worker.manim_paths import PARTIAL_FILE, TEX_FILE, longest_folder, manim_root, short_path
-from mathimator_worker.progress import read_manifest
+from mathimator_worker.progress import MANIFEST, read_manifest
 from mathimator_worker.project_folder import LinkedFolder
 from mathimator_worker.supervisor import Supervisor, _Job, _remove_tex_inputs
 from tests.support import (
@@ -83,6 +83,58 @@ def test_manim_keeps_every_clip_of_the_longest_document() -> None:
     parser = configparser.ConfigParser()
     assert parser.read(CONFIG_FILE, encoding="utf-8") == [str(CONFIG_FILE)]
     assert parser["CLI"].getint("max_files_cached") >= MAX_TOTAL_SECONDS / MIN_BEAT_SECONDS
+
+
+def test_every_beat_of_a_long_document_stays_fresh_after_one_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
+) -> None:
+    """G2.1: Manim keeps all 101 clips of the render it just finished, where its default bound of 100 would not.
+
+    The fake Manim deletes clips above the bound as Manim does, so without the
+    config file the oldest, beat 0's, would go and the preview would fail.
+    """
+    supervisor = _supervisor(_long(tmp_path / "long", 101), monkeypatch)
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 101))
+    _run(supervisor, cmd="render_preview", id="preview-1")
+    assert stdout.of("preview-1")[-1]["event"] == "done"
+    _run(supervisor, cmd="get_state", id="rendered")
+    beats = stdout.last()["index"]["beats"]
+    assert [beat["fresh"] for beat in beats] == [True] * 101
+    assert all(Path(beat["partial"]).is_file() for beat in beats)
+    # An edit of the last beat leaves every clip before it current, so only that beat renders again.
+    _run(supervisor, cmd="edit", id="last", edit={"op": "set_beat_duration", "beatId": "beat_101", "duration": 2})
+    assert [beat["fresh"] for beat in stdout.last()["index"]["beats"]] == [True] * 100 + [False]
+
+
+@pytest.mark.parametrize(("bound", "lost"), [(101, [100]), (-1, [])])
+def test_the_fake_manim_deletes_the_clips_manim_would(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim, bound: int, lost: list[int]
+) -> None:
+    """The stand-in above keeps the max_files_cached clips used last, and every clip at -1, as Manim does.
+
+    A clip the segment list reuses counts as used, so the clip the edit
+    replaced goes, not beat 0's. It is a clip of the first run, which no poll
+    of the second reads, so Windows never refuses to delete it.
+    """
+    _keep_clips(tmp_path, bound, monkeypatch)
+    supervisor = _supervisor(_long(tmp_path / "long", 101), monkeypatch)
+    fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 101))
+    _run(supervisor, cmd="render_preview", id="preview-1")
+    _run(supervisor, cmd="edit", id="last", edit={"op": "set_beat_duration", "beatId": "beat_101", "duration": 2})
+    # The next render reuses the first 100 clips and adds one for the edited beat: 102 clips in all.
+    folder = supervisor.layout.partial_movie_dir("480p15")
+    clips = [folder / f"{index:064x}.mp4" for index in range(102)]
+    listed = [*clips[:100], clips[101]]
+    fake_manim.plan(
+        {
+            clips[101]: complete_clip(".mp4"),
+            folder / MANIFEST: concat_manifest_bytes([str(clip) for clip in listed]),
+            folder.parent.parent / "MainScene.mp4": complete_clip(".mp4"),
+        }
+    )
+    _run(supervisor, cmd="render_preview", id="preview-2")
+    assert stdout.of("preview-2")[-1]["event"] == "done"
+    assert sorted(folder.glob("*.mp4")) == [clip for index, clip in enumerate(clips) if index not in lost]
 
 
 def test_manim_gets_its_own_home_and_latex_runs_no_shell_command(tmp_path: Path) -> None:
@@ -522,6 +574,26 @@ def _supervisor(project: Path, monkeypatch: pytest.MonkeyPatch) -> Supervisor:
 def _journey(root: Path) -> Path:
     root.mkdir(parents=True)
     (root / "project.json").write_bytes(JOURNEY.read_bytes())
+    return root
+
+
+def _keep_clips(root: Path, bound: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every render a config file in ``root`` that keeps ``bound`` clips."""
+    config = root / "manim.cfg"
+    config.write_text(f"[CLI]\nmax_files_cached = {bound}\n", encoding="utf-8")
+    monkeypatch.setattr("mathimator_worker.argv.CONFIG_FILE", config)
+
+
+def _long(root: Path, beats: int) -> Path:
+    """Journey A followed by one-second waits, ``beats`` beats in all."""
+    document = json.loads(JOURNEY.read_text(encoding="utf-8"))
+    timeline = document["scene"]["beats"]
+    timeline += [
+        {"id": f"beat_{number}", "duration": 1, "action": "wait", "targets": []}
+        for number in range(len(timeline) + 1, beats + 1)
+    ]
+    root.mkdir(parents=True)
+    (root / "project.json").write_text(json.dumps(document), encoding="utf-8")
     return root
 
 

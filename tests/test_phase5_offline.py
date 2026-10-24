@@ -1,7 +1,9 @@
 """Offline proof for the phase 5 bundle. Requires packaging/build-bundle.sh.
 
 Manim runs with the worker's own command line and environment, in a project's
-codegen folder (D60, D61), with the worker from this checkout.
+codegen folder (D60, D61), with the worker from this checkout. runtime.json
+must name the bundled worker, this checkout's uv.lock and the Python the build
+chose, and Typst's LICENSE and NOTICE must ship beside it.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from mathimator_worker.argv import build_manim_argv, manim_environment
-from tests.support import REPO, WORKER
+from tests.support import REPO, WORKER, sha256_file
 
 pytestmark = pytest.mark.offline
 
@@ -48,6 +50,22 @@ def test_bundled_typst_version_is_0_15_0() -> None:
     assert line.startswith("typst 0.15.0")
     assert not line.startswith("typst 0.14")
     assert not line.startswith("typst 0.16")
+
+
+def test_typst_ships_with_its_license_and_notice() -> None:
+    """Typst is Apache-2.0, so its LICENSE and NOTICE ship beside the binary."""
+    typst = BUNDLE / str(_manifest()["typst"])
+    for name in ("LICENSE", "NOTICE"):
+        assert (typst.parent / name).is_file(), f"{name} is not beside {typst}"
+
+
+def test_runtime_json_names_the_worker_the_lock_and_the_python_chosen() -> None:
+    manifest = _manifest()
+    assert (BUNDLE / str(manifest["worker"]) / "mathimator_worker" / "__main__.py").is_file()
+    assert manifest["lockSha256"] == sha256_file(REPO / "uv.lock")
+    # "CPython 3.14.9", or the fallback and why: "CPython 3.13.17: av has no CPython 3.14.9 wheel".
+    chosen = str(manifest["pythonSelection"]).split(":", 1)[0]
+    assert chosen == f"CPython {manifest['pythonVersion']}"
 
 
 @pytest.mark.skipif(
@@ -98,22 +116,7 @@ def test_bundled_runtime_renders_mathtex_with_network_blocked(tmp_path: Path) ->
         ),
         encoding="utf-8",
     )
-    env = manim_environment(os.environ, codegen)
-    for key in (
-        "TEXINPUTS",
-        "TEXMFHOME",
-        "TEXMFLOCAL",
-        "TEXMFCNF",
-        "TEXMFVAR",
-        "TEXMFCONFIG",
-        "TLMGR_REPOSITORY",
-        "PYTHONPATH",
-        "PYTHONHOME",
-    ):
-        env.pop(key, None)
-    env["PATH"] = os.pathsep.join([str(tinytex), "/usr/bin", "/bin"])
-    env["PYTHONPATH"] = str(WORKER)
-    env["PYTHONNOUSERSITE"] = "1"
+    env = _bundle_environment(codegen, [str(tinytex), "/usr/bin", "/bin"])
     result = subprocess.run(
         ["unshare", "--net", "--map-root-user", "--", str(python), str(script)],
         cwd=tmp_path,
@@ -182,24 +185,9 @@ def test_windows_bundled_runtime_renders_mathtex_without_user_tex(tmp_path: Path
         newline="\n",
     )
     system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
-    env = manim_environment(os.environ, codegen)
-    for key in (
-        "TEXINPUTS",
-        "TEXMFHOME",
-        "TEXMFLOCAL",
-        "TEXMFCNF",
-        "TEXMFVAR",
-        "TEXMFCONFIG",
-        "TLMGR_REPOSITORY",
-        "PYTHONPATH",
-        "PYTHONHOME",
-    ):
-        env.pop(key, None)
-    env["PATH"] = os.pathsep.join(
-        [str(tinytex), os.path.join(system_root, "System32"), os.path.join(system_root, "SysWOW64")]
+    env = _bundle_environment(
+        codegen, [str(tinytex), os.path.join(system_root, "System32"), os.path.join(system_root, "SysWOW64")]
     )
-    env["PYTHONPATH"] = str(WORKER)
-    env["PYTHONNOUSERSITE"] = "1"
     env["HTTP_PROXY"] = "http://127.0.0.1:9"
     env["HTTPS_PROXY"] = "http://127.0.0.1:9"
     env["ALL_PROXY"] = "http://127.0.0.1:9"
@@ -220,6 +208,33 @@ def test_windows_bundled_runtime_renders_mathtex_without_user_tex(tmp_path: Path
     movies = list((codegen.parent / "cache" / "media").rglob("MainScene.mp4"))
     assert movies, result.stdout
     assert movies[0].stat().st_size > 0
+
+
+def _bundle_environment(codegen: Path, path: list[str]) -> dict[str, str]:
+    """The worker's Manim environment for ``codegen``, with ``path`` as PATH and no user TeX or Python settings.
+
+    Python writes no bytecode, in the bundle or anywhere else: bytecode there
+    would name this checkout, and scripts/check_bundle.py would refuse the
+    bundle. Unlike ``-B``, the variable reaches the Python that runs Manim.
+    """
+    env = manim_environment(os.environ, codegen)
+    for key in (
+        "TEXINPUTS",
+        "TEXMFHOME",
+        "TEXMFLOCAL",
+        "TEXMFCNF",
+        "TEXMFVAR",
+        "TEXMFCONFIG",
+        "TLMGR_REPOSITORY",
+        "PYTHONPATH",
+        "PYTHONHOME",
+    ):
+        env.pop(key, None)
+    env["PATH"] = os.pathsep.join(path)
+    env["PYTHONPATH"] = str(WORKER)
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
 
 
 def _scene_folder(root: Path) -> Path:
