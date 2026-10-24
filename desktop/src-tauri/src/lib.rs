@@ -10,6 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::webview::PageLoadEvent;
 use tauri::{async_runtime, AppHandle, Emitter, Manager, State, Window, WindowEvent};
 use tauri_plugin_dialog::{
     DialogExt, FileDialogBuilder, FilePath, MessageDialogButtons, MessageDialogKind,
@@ -25,7 +26,7 @@ mod tex;
 mod win32_job;
 mod worker;
 
-use equation::GlyphPreview;
+use equation::{GlyphPreview, GlyphResult};
 use protocol::{ErrorCode, ShellError};
 use runtime::{Runtime, WorkerFiles};
 use worker::{event_of, message_of, Host, Spawned, Spawner, Worker, WorkerProcess};
@@ -905,22 +906,36 @@ async fn open_project_path(worker: State<'_, Worker>, path: String) -> Result<Va
 }
 
 #[tauri::command]
-fn cancel_equation_preview(glyph: State<'_, GlyphPreview>, generation: u64) {
-    glyph.cancel(generation);
+async fn cancel_equation_preview(
+    glyph: State<'_, Arc<GlyphPreview>>,
+    slot: String,
+    generation: u64,
+) -> Result<(), ShellError> {
+    equation::check_arguments(&slot, generation)?;
+    glyph.cancel(&slot, generation);
+    Ok(())
 }
 
+/// Compiles a formula's glyph on the blocking pool, so that a cancel or the next keystroke can
+/// end it, and the window never waits for Typst (C9.9, D20).
 #[tauri::command]
-fn compile_equation_preview(
+async fn compile_equation_preview(
     worker: State<'_, Worker>,
-    runtime: State<'_, Runtime>,
-    glyph: State<'_, GlyphPreview>,
+    glyph: State<'_, Arc<GlyphPreview>>,
     latex: String,
+    slot: String,
     generation: u64,
-) -> Result<Value, String> {
-    let project = worker
-        .project()
-        .ok_or_else(|| "No project is open.".to_string())?;
-    glyph.compile(&runtime, &project, &latex, generation)
+) -> Result<GlyphResult, ShellError> {
+    equation::check_arguments(&slot, generation)?;
+    let Some(project) = worker.project() else {
+        return Ok(GlyphResult::error("No project is open."));
+    };
+    let glyph = Arc::clone(&glyph);
+    async_runtime::spawn_blocking(move || glyph.compile(&project, &latex, &slot, generation))
+        .await
+        .map_err(|err| {
+            ShellError::new(ErrorCode::Io, format!("The equation preview failed: {err}"))
+        })
 }
 
 /// Writes the shell-ready marker, only when MATHIMATOR_SHELL_READY_FILE names a file (D32).
@@ -1020,7 +1035,7 @@ pub fn run() {
                 shell.last_project(),
                 shell.supervisor_err(),
             );
-            app.manage(GlyphPreview::new(runtime.typst.clone()));
+            app.manage(Arc::new(GlyphPreview::new(runtime.typst.clone())));
             app.manage(runtime);
             app.manage(worker);
             app.manage(shell);
@@ -1031,6 +1046,14 @@ pub fn run() {
                 pruning.state::<Worker>().prune_temp_projects().await;
             });
             Ok(())
+        })
+        .on_page_load(|webview, payload| {
+            // A reload, or a renderer restart, starts the UI's glyph generations at 1 again (C9.9).
+            if payload.event() == PageLoadEvent::Started {
+                if let Some(glyph) = webview.try_state::<Arc<GlyphPreview>>() {
+                    glyph.reset();
+                }
+            }
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
