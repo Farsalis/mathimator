@@ -1,0 +1,70 @@
+# GitLab CI/CD for Mathimator on gitlab.com, Free tier (D65, D66, D67).
+#
+#   ci/linux.yml     lint, the fast test lanes, the UI build and the Rust
+#                    pre-checks, on hosted Linux runners
+#   ci/windows.yml   the Windows test lanes, the render lane and the
+#                    installer, on the hosted Windows runner
+#   ci/security.yml  SAST, Secret Detection and the dependency audits (D77)
+#   ci/release.yml   the protected-tag release (D73, D74)
+#   ci/renovate.yml  dependency updates (D76)
+#
+# Pipelines run for merge requests, the default branch, tags and schedules. A
+# branch gets no pipeline of its own, so an open merge request never runs
+# twice. Two pipeline schedules on the default branch drive the rest: a nightly
+# one runs every lane, the slow render suites and the installer included (D68,
+# D73), and one with the variable SCHEDULE_KIND=renovate runs only Renovate.
+
+include:
+  - local: ci/linux.yml
+  - local: ci/windows.yml
+  - local: ci/security.yml
+  - local: ci/release.yml
+  - local: ci/renovate.yml
+
+# build comes first because every cargo job embeds desktop/dist from build:ui.
+stages:
+  - build
+  - lint
+  - test
+  - package
+  - release
+  - maintain
+
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_KIND == "renovate"
+      variables:
+        SAST_DISABLED: "true"
+        SECRET_DETECTION_DISABLED: "true"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+variables:
+  # uv keeps its cache and the CPython builds it manages (the bundle's
+  # interpreters, D70) inside the checkout, where GitLab can cache them, and
+  # syncs uv.lock as committed.
+  UV_CACHE_DIR: $CI_PROJECT_DIR/.uv-cache
+  UV_PYTHON_INSTALL_DIR: $CI_PROJECT_DIR/.uv-python
+  UV_MANAGED_PYTHON: "1"
+  UV_LOCKED: "1"
+  UV_LINK_MODE: copy
+
+default:
+  interruptible: true
+  timeout: 30m
+  # A hosted runner occasionally loses its VM. Test failures are never retried.
+  retry:
+    max: 1
+    when: [runner_system_failure, scheduler_failure]
+
+# The rules of a job that runs in every pipeline but the Renovate one. Jobs
+# with narrower rules start with the same first rule.
+.every-pipeline:
+  rules:
+    - if: $SCHEDULE_KIND == "renovate"
+      when: never
+    - when: on_success

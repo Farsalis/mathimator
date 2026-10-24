@@ -15,6 +15,9 @@ repos:
         args: [--markdown-linebreak-ext=md]
       - id: end-of-file-fixer
       - id: check-yaml
+        # A syntax check, because the GitLab CI files use the !reference tag.
+        # ci/test_pipeline.py loads them in full.
+        args: [--unsafe]
       - id: check-toml
       - id: check-json
       - id: check-merge-conflict

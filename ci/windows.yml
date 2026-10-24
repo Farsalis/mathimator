@@ -1,0 +1,165 @@
+# Jobs on gitlab.com's hosted Windows runner (D67): the Windows test lanes, the
+# render lane and the installer. Jobs run in PowerShell. The runner image
+# brings Git and the Visual Studio C++ Build Tools; ci/windows-tools.ps1
+# installs the pinned uv, Node and Rust into the checkout and puts them on
+# PATH.
+
+.windows:
+  tags: [saas-windows-medium-amd64]
+  needs: []
+  timeout: 1h
+  variables:
+    # The Node release that the Linux jobs' node image carries.
+    # renovate: datasource=node-version depName=node
+    NODE_VERSION: 24.22.1
+
+# The Windows lanes run for changes to the code they cover, the worker, the
+# shell and the tests, and on tags and schedules (D14).
+.on-windows-changes:
+  rules:
+    - if: $SCHEDULE_KIND == "renovate"
+      when: never
+    - if: $CI_COMMIT_TAG || $CI_PIPELINE_SOURCE == "schedule"
+    - changes:
+        - worker/**/*
+        - desktop/src-tauri/**/*
+        - tests/**/*
+        - pytest.ini
+        - pyproject.toml
+        - uv.lock
+        - ci/windows.yml
+        - ci/windows-tools.ps1
+
+# The render, export and offline suites run nightly and on tags, and as a
+# manual job on merge requests (D68).
+.on-slow-lanes:
+  rules:
+    - if: $SCHEDULE_KIND == "renovate"
+      when: never
+    - if: $CI_COMMIT_TAG || $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+
+# The installer is built nightly and on tags, and on demand in any other
+# pipeline (D73).
+.on-installer:
+  rules:
+    - if: $SCHEDULE_KIND == "renovate"
+      when: never
+    - if: $CI_COMMIT_TAG || $CI_PIPELINE_SOURCE == "schedule"
+    - when: manual
+      allow_failure: true
+
+.windows-uv-cache:
+  cache:
+    key:
+      files: [uv.lock]
+      prefix: $CI_JOB_NAME_SLUG
+    paths: [.uv-cache, .uv-python]
+
+# The bundle downloads, checked against packaging/versions.env on every reuse.
+.windows-bundle-cache:
+  cache:
+    key:
+      files: [packaging/versions.env, uv.lock]
+      prefix: bundle-windows
+    paths: [packaging/.cache]
+
+.windows-cargo-cache:
+  cache:
+    key:
+      files: [desktop/src-tauri/Cargo.lock]
+      prefix: cargo-windows
+    paths: [.cargo/registry/index, .cargo/registry/cache, .cargo/git/db]
+
+# The fast lane with the Win32 tests: the process-table walks and the Job
+# Object reap tests (D14).
+test:windows:
+  extends: [.windows, .on-windows-changes, .windows-uv-cache]
+  stage: test
+  variables:
+    MATHIMATOR_WIN32_TESTS: "1"
+    # As on Linux, the fast lane needs no Manim: the dev group carries what
+    # the fast tests import.
+    UV_NO_GROUP: render
+  script:
+    - ./ci/windows-tools.ps1 -Uv
+    - uv run pytest tests scripts ci -m "not render and not export and not offline and not typst" --junitxml=reports/junit-python-windows.xml
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: reports/junit-python-windows.xml
+
+# Only Windows compiles the shell's cfg(windows) code, so Clippy runs here as
+# well as in lint:rust (D37). MATHIMATOR_WIN32_TESTS=1 lets the ignored Job
+# Object reap test run.
+test:rust:windows:
+  extends: [.windows, .on-windows-changes, .windows-cargo-cache]
+  stage: test
+  # The default custom-protocol feature embeds desktop/dist.
+  needs: [build:ui]
+  timeout: 1h 30m
+  variables:
+    MATHIMATOR_WIN32_TESTS: "1"
+  script:
+    - ./ci/windows-tools.ps1 -Rust
+    - cd desktop/src-tauri
+    - cargo clippy --locked --all-targets -- -D warnings
+    - cargo test --locked -- --include-ignored
+
+# The render, export and offline suites, against a bundle built here: the
+# offline tests check it, and its TinyTeX and Typst serve the render tests.
+# Job Objects stay on, as in the app. An xfail that passes fails the lane, so a
+# fixed transparent WebM is noticed (D54).
+test:render:windows:
+  extends: [.windows, .on-slow-lanes]
+  stage: test
+  timeout: 3h
+  variables:
+    MATHIMATOR_WIN32_TESTS: "1"
+  cache:
+    - !reference [.windows-uv-cache, cache]
+    - !reference [.windows-bundle-cache, cache]
+  script:
+    - ./ci/windows-tools.ps1 -Uv
+    - powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/build-bundle.ps1
+    - $runtime = Get-Content -Raw packaging/bundle/runtime.json | ConvertFrom-Json
+    - $env:PATH = "$PWD\packaging\bundle\$($runtime.tinytexBin.Replace('/', '\'));$PWD\packaging\bundle\typst;$env:PATH"
+    - uv run pytest tests -m "render or export or offline" -o xfail_strict=true --junitxml=reports/junit-render-windows.xml
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - out/**/*.json
+      - out/**/*.log
+    reports:
+      junit: reports/junit-render-windows.xml
+
+# The NSIS installer, built as a release ships it (ci/package-windows.ps1):
+# the bundle, its notices and check, tauri build and SHA256SUMS.
+package:windows:
+  extends: [.windows, .on-installer]
+  stage: package
+  timeout: 2h
+  interruptible: false
+  variables:
+    npm_config_cache: $CI_PROJECT_DIR/.npm
+  cache:
+    - !reference [.windows-bundle-cache, cache]
+    - !reference [.windows-cargo-cache, cache]
+    - key:
+        files: [desktop/package-lock.json]
+        prefix: npm-windows
+      paths: [.npm]
+  script:
+    - ./ci/windows-tools.ps1 -Node -Rust
+    - ./ci/package-windows.ps1
+  artifacts:
+    name: mathimator-$CI_COMMIT_REF_SLUG
+    when: always
+    expire_in: 1 week
+    paths:
+      - out/package/
+      - out/bundle.log

@@ -143,7 +143,20 @@ def test_only_the_typst_guard_in_equation_rs_is_the_pin(tmp_path: Path) -> None:
     assert check_versions.pin_problems(repo) == []
     write(src / "equation.rs", 'return Err("Typst 0.15.0 is required");\n')
     assert check_versions.pin_problems(repo) == [
-        'equation.rs has no starts_with("typst X.Y.Z") guard on the Typst version'
+        'equation.rs has no starts_with("typst X.Y.Z") guard or VERSION constant for Typst'
+    ]
+
+
+def test_the_typst_guard_may_compare_with_a_constant(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    equation = repo / "desktop" / "src-tauri" / "src" / "equation.rs"
+    guard = 'if line.starts_with(VERSION) {}\n\n#[test]\nfn rejects() { echo("typst 0.14.2"); }\n'
+
+    write(equation, f'const VERSION: &str = "typst 0.15.0";\n{guard}')
+    assert check_versions.pin_problems(repo) == []
+    write(equation, f'const VERSION: &str = "typst 0.14.2";\n{guard}')
+    assert check_versions.pin_problems(repo) == [
+        "equation.rs requires Typst 0.14.2, but packaging/versions.env pins 0.15.0"
     ]
 
 

@@ -60,6 +60,17 @@ git-cliff generates from the commits.
   checks the app version and toolchain pins. bump-my-version, git-cliff and
   pip-audit join the dev tools.
 
+### CI
+
+- A GitLab CI/CD pipeline for gitlab.com. Hosted Linux runners lint, run the
+  fast pytest lane on Python 3.13 and 3.14, the Typst tests, vitest and the
+  Rust pre-checks, and report JUnit results and worker coverage. The hosted
+  Windows runner runs the Win32 tests, Clippy and cargo test, a nightly render
+  lane, and builds the installer on tags, nightly and on demand.
+- SAST, Secret Detection, pip-audit, npm audit and cargo-deny; a protected-tag
+  release that uploads the installer to the package registry and creates a
+  GitLab Release; Renovate with the spec's pins.
+
 ### Chores
 
 - LF line endings, editor settings and ignore rules.

@@ -988,10 +988,12 @@ dev = [
     { name = "bump-my-version" },
     { name = "git-cliff" },
     { name = "mypy" },
+    { name = "numpy" },
     { name = "pip-audit" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 render = [
@@ -1006,10 +1008,12 @@ dev = [
     { name = "bump-my-version", specifier = "==1.6.3" },
     { name = "git-cliff", specifier = "==2.14.2" },
     { name = "mypy", specifier = "==2.4.0" },
+    { name = "numpy" },
     { name = "pip-audit", specifier = "==2.10.1" },
     { name = "pre-commit", specifier = "==4.7.0" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-cov", specifier = "==7.1.0" },
+    { name = "pyyaml", specifier = "==6.0.3" },
     { name = "ruff", specifier = "==0.17.2" },
 ]
 render = [{ name = "manim", extras = ["typst"], specifier = "==0.22.0" }]

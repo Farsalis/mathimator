@@ -22,7 +22,8 @@ Each toolchain pin must match the source it copies:
 - MANIM_VERSION in mathimator_worker/document.py, the Manim pin in the root
   pyproject.toml's render group and constraint-dependencies;
 - TYPST_VERSION in versions.env, the version that the guard in the shell's
-  equation.rs requires of `typst --version`, its starts_with("typst X.Y.Z").
+  equation.rs requires of `typst --version`: its starts_with("typst X.Y.Z"),
+  or the VERSION constant it compares with ("typst X.Y.Z").
 
 With --tag, as the release pipeline passes $CI_COMMIT_TAG, the tag must be v
 followed by the app version.
@@ -137,9 +138,11 @@ def pin_problems(repo: Path) -> list[str]:
         problems.append(f"the pyproject.toml constraint-dependencies do not pin manim=={manim} (document.py)")
 
     equation = (tauri / "src" / "equation.rs").read_text(encoding="utf-8")
-    required_typst = sorted(set(re.findall(r'starts_with\("typst (\d+\.\d+\.\d+)"\)', equation)))
+    required_typst = sorted(
+        set(re.findall(r'(?:starts_with\(|const VERSION: &str = )"typst (\d+\.\d+\.\d+)"', equation))
+    )
     if not required_typst:
-        problems.append('equation.rs has no starts_with("typst X.Y.Z") guard on the Typst version')
+        problems.append('equation.rs has no starts_with("typst X.Y.Z") guard or VERSION constant for Typst')
     elif required_typst != [pins["TYPST_VERSION"]]:
         problems.append(
             f"equation.rs requires Typst {', '.join(required_typst)}, "

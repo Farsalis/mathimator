@@ -17,6 +17,11 @@ dev = [
   "bump-my-version==1.6.3",
   "git-cliff==2.14.2",
   "pip-audit==2.10.1",
+  # ci/test_pipeline.py reads the GitLab CI files.
+  "pyyaml==6.0.3",
+  # The fast tests count frames with numpy.arange, as Manim does. The
+  # constraint-dependencies below hold it at the render stack's release.
+  "numpy",
 ]
 render = ["manim[typst]==0.22.0"]
 
@@ -80,8 +85,9 @@ members = ["worker"]
 [tool.uv.sources]
 mathimator-worker = { workspace = true }
 
-# Ruff lints and formats worker/, tests/ and scripts/. scenes/ holds the golden
-# codegen output that tests compare byte for byte, so Ruff never touches it.
+# Ruff lints and formats worker/, tests/, scripts/ and ci/. scenes/ holds
+# the golden codegen output that tests compare byte for byte, so Ruff never
+# touches it.
 [tool.ruff]
 target-version = "py313"
 line-length = 120
@@ -99,6 +105,15 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM"]
 
 # Ruff's default style: double quotes, space indents, magic trailing commas.
 [tool.ruff.format]
+
+# Coverage of the CI pytest jobs (`pytest --cov`), reported and never enforced
+# (D78). Most supervisor code runs in the worker child that tests/support.py
+# starts, so Python subprocesses are measured too. Relative paths let GitLab
+# match the Cobertura report to the repository's files.
+[tool.coverage.run]
+source = ["mathimator_worker"]
+patch = ["subprocess"]
+relative_files = true
 
 # mypy checks the worker and scripts/ as they run on Windows, so a Linux runner
 # reproduces the Windows result. CI adds a second pass with --platform linux
