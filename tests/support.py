@@ -22,6 +22,7 @@ OUT = REPO / "out" / "phase1"
 REFERENCE = SCENES / "reference_60.py"
 LAST_BEAT = SCENES / "reference_60_last_beat.py"
 RUNTIME_ERROR = SCENES / "runtime_error.py"
+WIN32_FIXTURES = REPO / "tests" / "fixtures" / "win32"
 
 
 def venv_python() -> Path:
@@ -49,7 +50,8 @@ def write_fake_interpreter(path: Path, sleep_s: float) -> Path:
     """Return an executable that ignores its arguments and sleeps.
 
     Unix can exec a shebang script. Windows ``CreateProcess`` cannot, so the
-    fake interpreter there is a small compiled program.
+    fake interpreter there is the compiled ``sleeper.cs`` fixture, which reads
+    its duration from the ``.ms`` file beside it.
     """
     if os.name != "nt":
         path.write_text(
@@ -58,13 +60,12 @@ def write_fake_interpreter(path: Path, sleep_s: float) -> Path:
         )
         path.chmod(0o755)
         return path
-    exe = path.with_suffix(".exe")
-    source = path.with_suffix(".cs")
-    millis = max(1, int(sleep_s * 1000))
-    source.write_text(
-        f"class Sleeper {{ static void Main() {{ System.Threading.Thread.Sleep({millis}); }} }}\n",
-        encoding="utf-8",
-    )
+    path.with_suffix(".ms").write_text(str(max(1, int(sleep_s * 1000))), encoding="utf-8")
+    return compile_csharp(WIN32_FIXTURES / "sleeper.cs", path.with_suffix(".exe"))
+
+
+def compile_csharp(source: Path, exe: Path) -> Path:
+    """Compile one C# file with the .NET Framework compiler that ships with Windows."""
     windir = os.environ.get("WINDIR", r"C:\Windows")
     compiler = Path(windir) / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
     completed = subprocess.run(

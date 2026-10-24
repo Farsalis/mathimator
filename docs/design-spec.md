@@ -617,7 +617,10 @@ $ y = sin(x) $
 | `\pi` `\theta` `\alpha` `\beta` `\gamma` | `pi` `theta` `alpha` `beta` `gamma` |
 | `\frac{a}{b}` | `frac(a, b)` |
 | `\sqrt{x}` | `sqrt(x)` |
-| `^`, `_`, letters, digits, `+ - = ( ) [ ]` | passed through |
+| `^`, `_`, `+ - = ( ) [ ]` | passed through |
+| ASCII letters and digits | passed through, each as its own atom: a space separates it from a neighboring letter, digit or command name, so `E = mc^2` becomes `E = m c^2` and `\sin\theta` becomes `sin theta` |
+
+`tests/fixtures/equation/translate-cases.json` holds the expected Typst math for each test formula, with `null` where there is no preview.
 
 `\int` and any other command produce no SVG. The editor shows "No live preview for this formula." The scene can still render that formula with `MathTex`. A failed Typst run keeps the last good SVG and shows the error. The caption "Live preview is Typst. The video uses LaTeX and will look different." stays visible whenever a formula is selected.
 

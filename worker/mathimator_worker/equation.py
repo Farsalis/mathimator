@@ -2,11 +2,14 @@
 
 The shell runs ``python -m mathimator_worker.equation`` and then Typst.
 This module does not import the supervisor, and it does not render a scene.
+``tests/fixtures/equation/translate-cases.json`` holds the expected output
+for every case, so a port of this translator can be checked against it.
 """
 
 from __future__ import annotations
 
 import json
+import string
 import sys
 from dataclasses import dataclass
 
@@ -25,7 +28,8 @@ _COMMANDS = {
     "gamma": "gamma",
 }
 
-_PASSTHROUGH = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789^_+-=()[]")
+_ALNUM = frozenset(string.ascii_letters + string.digits)
+_PASSTHROUGH = _ALNUM | frozenset("^_+-=()[]")
 _WHITESPACE = frozenset(" \t\r\n")
 
 
@@ -62,11 +66,20 @@ class _Parser:
         self.index = 0
 
     def parse(self) -> str | None:
+        return self._sequence(None)
+
+    def _sequence(self, closing: str | None) -> str | None:
+        """Translate pieces up to ``closing``, or to the end when it is None."""
         parts: list[str] = []
-        while self.index < self.length:
+        while self.index < self.length and self.source[self.index] != closing:
             piece = self._piece()
             if piece is None:
                 return None
+            # Typst reads a run such as mc or x2 as one name. A space keeps
+            # each letter, digit and command its own atom, as in LaTeX:
+            # mc^2 becomes m c^2.
+            if parts and parts[-1][-1] in _ALNUM and piece[0] in _ALNUM:
+                parts.append(" ")
             parts.append(piece)
         return "".join(parts)
 
@@ -115,16 +128,11 @@ class _Parser:
         if self.index >= self.length or self.source[self.index] != "{":
             return None
         self.index += 1
-        parts: list[str] = []
-        while self.index < self.length and self.source[self.index] != "}":
-            piece = self._piece()
-            if piece is None:
-                return None
-            parts.append(piece)
-        if self.index >= self.length or self.source[self.index] != "}":
+        body = self._sequence("}")
+        if body is None or self.index >= self.length:
             return None
         self.index += 1
-        return "".join(parts)
+        return body
 
 
 def _is_command_letter(char: str) -> bool:

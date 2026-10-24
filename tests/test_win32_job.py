@@ -1,13 +1,14 @@
-"""Job Object cancel and quit. Not executed until Craig approves it.
+"""Job Object cancel and quit.
 
 Set ``MATHIMATOR_WIN32_TESTS=1`` to run these. They set
 ``MATHIMATOR_WIN32_JOBS=1`` so the supervisor assigns each Manim child to a
-kill-on-close job. Do not set either variable on this machine until then.
+kill-on-close job.
 
-The stand-in named ``manim.exe`` waits until a go file exists, then starts
-``latex.exe`` and ``dvisvgm.exe`` with ``UseShellExecute`` false. The
-supervisor logs ``job assigned`` before the test creates that file, so both
-helpers are born inside the job.
+The stand-ins are compiled from ``tests/fixtures/win32``. The one named
+``manim.exe`` waits until a go file exists, then starts ``latex.exe`` and
+``dvisvgm.exe`` with ``UseShellExecute`` false. The supervisor logs
+``job assigned`` before the test creates that file, so both helpers are born
+inside the job.
 """
 
 from __future__ import annotations
@@ -22,11 +23,11 @@ from pathlib import Path
 import pytest
 
 from mathimator_worker.process_group import process_alive
-from tests.support import SupervisorClient, start_supervisor, venv_python
+from tests.support import WIN32_FIXTURES, SupervisorClient, compile_csharp, start_supervisor, venv_python
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MATHIMATOR_WIN32_TESTS") != "1",
-    reason=("Win32 job-object tests are written but not executed until Craig approves running them on this machine"),
+    reason="Win32 job-object tests run only with MATHIMATOR_WIN32_TESTS=1",
 )
 
 
@@ -147,60 +148,7 @@ def _read_child_pids(path: Path, timeout: float) -> tuple[int, int]:
 
 
 def _compile_tree(root: Path) -> tuple[Path, Path, Path]:
-    manim = _compile(root, "manim.exe", _TREE_PARENT)
-    latex = _compile(root, "latex.exe", _SLEEPER)
-    dvisvgm = _compile(root, "dvisvgm.exe", _SLEEPER)
+    manim = compile_csharp(WIN32_FIXTURES / "job_tree.cs", root / "manim.exe")
+    latex = compile_csharp(WIN32_FIXTURES / "sleeper.cs", root / "latex.exe")
+    dvisvgm = compile_csharp(WIN32_FIXTURES / "sleeper.cs", root / "dvisvgm.exe")
     return manim, latex, dvisvgm
-
-
-def _compile(root: Path, name: str, source: str) -> Path:
-    exe = root / name
-    source_path = root / f"{exe.stem}.cs"
-    source_path.write_text(source, encoding="utf-8")
-    windir = os.environ.get("WINDIR", r"C:\Windows")
-    compiler = Path(windir) / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
-    completed = subprocess.run(
-        [str(compiler), "/nologo", "/t:exe", f"/out:{exe}", str(source_path)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if completed.returncode != 0 or not exe.is_file():
-        detail = (completed.stdout + completed.stderr).strip()
-        raise RuntimeError(f"csc failed for {exe}: {detail}")
-    return exe
-
-
-_SLEEPER = "class Sleeper { static void Main() { System.Threading.Thread.Sleep(30000); } }\n"
-
-_TREE_PARENT = r"""using System;
-using System.Diagnostics;
-using System.IO;
-using System.Threading;
-class JobTree {
-    static int Main() {
-        string go = Environment.GetEnvironmentVariable("MATHIMATOR_TEST_GO");
-        string pids = Environment.GetEnvironmentVariable("MATHIMATOR_TEST_PIDS");
-        string latex = Environment.GetEnvironmentVariable("MATHIMATOR_TEST_LATEX");
-        string dvi = Environment.GetEnvironmentVariable("MATHIMATOR_TEST_DVISVGM");
-        if (go == null || pids == null || latex == null || dvi == null) return 2;
-        var deadline = DateTime.UtcNow.AddSeconds(20);
-        while (!File.Exists(go)) {
-            if (DateTime.UtcNow > deadline) return 3;
-            Thread.Sleep(20);
-        }
-        var latexProc = StartHidden(latex);
-        var dviProc = StartHidden(dvi);
-        File.WriteAllText(pids, latexProc.Id + "\n" + dviProc.Id + "\n");
-        Thread.Sleep(30000);
-        return 0;
-    }
-    static Process StartHidden(string path) {
-        var info = new ProcessStartInfo();
-        info.FileName = path;
-        info.UseShellExecute = false;
-        info.CreateNoWindow = true;
-        return Process.Start(info);
-    }
-}
-"""

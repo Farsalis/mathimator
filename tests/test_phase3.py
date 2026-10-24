@@ -27,52 +27,55 @@ SINE_DOCUMENT = "#set page(width: auto, height: auto, margin: 8pt, fill: none)\n
 INTEGRAL = r"\int_0^1 x dx"
 PHASE3 = REPO / "out" / "phase3"
 
-_COMMANDS = [
-    (r"\sin", "sin"),
-    (r"\cos", "cos"),
-    (r"\tan", "tan"),
-    (r"\log", "log"),
-    (r"\exp", "exp"),
-    (r"\pi", "pi"),
-    (r"\theta", "theta"),
-    (r"\alpha", "alpha"),
-    (r"\beta", "beta"),
-    (r"\gamma", "gamma"),
-    (r"\frac{a}{b}", "frac(a, b)"),
-    (r"\sqrt{x}", "sqrt(x)"),
+# The golden translator cases, shared with the shell's translator tests. A null
+# "typst" is a formula with no live preview.
+_CASES = json.loads((REPO / "tests" / "fixtures" / "equation" / "translate-cases.json").read_text(encoding="utf-8"))
+_SUPPORTED = [(case["latex"], case["typst"]) for case in _CASES if case["typst"] is not None]
+_UNSUPPORTED = [case["latex"] for case in _CASES if case["typst"] is None]
+
+# Everyday formulas whose letter runs Typst would read as one unknown name.
+_SPLIT_LETTERS = [
+    "E = mc^2",
+    "y = mx + b",
+    "ax^2+bx+c",
+    r"\frac{dy}{dx}",
+    r"\sin\theta",
+    r"x\sin(x)",
+    r"x\frac{a}{b}",
+    "x2",
+    "x_ab",
+    r"\pi2",
 ]
 
 
-@pytest.mark.parametrize(("latex", "math"), _COMMANDS)
-def test_supported_command(latex: str, math: str) -> None:
+@pytest.mark.parametrize(("latex", "math"), _SUPPORTED)
+def test_supported_formula_matches_the_golden_file(latex: str, math: str) -> None:
     result = translate(latex)
     assert result.supported is True
     assert result.math == math
-    assert result.document == (f"#set page(width: auto, height: auto, margin: 8pt, fill: none)\n$ {math} $\n")
+    assert result.document == f"#set page(width: auto, height: auto, margin: 8pt, fill: none)\n$ {math} $\n"
 
 
-def test_passthrough_and_nested_groups() -> None:
-    letters = translate("aZ09^_+-=()[]")
-    assert letters.supported is True
-    assert letters.math == "aZ09^_+-=()[]"
-    spaced = translate(r"y = \sin(x)")
-    assert spaced.math == "y = sin(x)"
-    nested = translate(r"\frac{\sqrt{x}}{\pi}")
-    assert nested.math == "frac(sqrt(x), pi)"
-    empty_root = translate(r"\sqrt{}")
-    assert empty_root.supported is True
-    assert empty_root.math == "sqrt()"
-
-
-@pytest.mark.parametrize(
-    "latex",
-    [r"\int", INTEGRAL, r"\sum", r"y = \sin(x) + \int", r"\frac{\int}{1}", "*", "#", r"\frac{a}"],
-)
+@pytest.mark.parametrize("latex", _UNSUPPORTED)
 def test_unsupported_formula_has_no_document(latex: str) -> None:
     result = translate(latex)
     assert result.supported is False
     assert result.math is None
     assert result.document is None
+
+
+def test_golden_file_has_the_split_letter_formulas() -> None:
+    assert set(_SPLIT_LETTERS) <= {latex for latex, _ in _SUPPORTED}
+
+
+@pytest.mark.typst
+@pytest.mark.parametrize("latex", _SPLIT_LETTERS)
+def test_split_letter_formula_compiles_to_an_svg(latex: str, tmp_path: Path) -> None:
+    result = translate(latex)
+    assert result.document is not None
+    svg = tmp_path / "formula.svg"
+    _compile(result.document, tmp_path / "formula.typ", svg)
+    assert "<svg" in svg.read_text(encoding="utf-8")
 
 
 def test_sine_document_matches_the_spec() -> None:
@@ -273,7 +276,7 @@ def test_unsupported_integral_still_renders_through_mathtex() -> None:
 def _compile(document: str, source: Path, svg: Path) -> None:
     source.write_text(document, encoding="utf-8")
     completed = subprocess.run(
-        ["typst", "compile", str(source), str(svg)],
+        ["typst", "compile", "--ignore-system-fonts", str(source), str(svg)],
         check=False,
         capture_output=True,
     )
