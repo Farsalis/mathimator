@@ -1,6 +1,5 @@
 """Translate the supported LaTeX subset into a Typst math document.
 
-The shell runs ``python -m mathimator_worker.equation`` and then Typst.
 This module does not import the supervisor, and it does not render a scene.
 ``tests/fixtures/equation/translate-cases.json`` holds the expected output
 for every case, so a port of this translator can be checked against it.
@@ -8,12 +7,13 @@ for every case, so a port of this translator can be checked against it.
 
 from __future__ import annotations
 
-import json
 import string
-import sys
 from dataclasses import dataclass
 
 _PAGE = "#set page(width: auto, height: auto, margin: 8pt, fill: none)"
+# \frac and \sqrt groups nested deeper than this are unsupported, as in the
+# shell's translator. The bound keeps the recursion inside Python's limit.
+MAX_DEPTH = 100
 
 _COMMANDS = {
     "sin": "sin",
@@ -64,6 +64,7 @@ class _Parser:
         self.source = source
         self.length = len(source)
         self.index = 0
+        self.depth = 0
 
     def parse(self) -> str | None:
         return self._sequence(None)
@@ -125,10 +126,12 @@ class _Parser:
         return None
 
     def _group(self) -> str | None:
-        if self.index >= self.length or self.source[self.index] != "{":
+        if self.index >= self.length or self.source[self.index] != "{" or self.depth == MAX_DEPTH:
             return None
         self.index += 1
+        self.depth += 1
         body = self._sequence("}")
+        self.depth -= 1
         if body is None or self.index >= self.length:
             return None
         self.index += 1
@@ -137,30 +140,3 @@ class _Parser:
 
 def _is_command_letter(char: str) -> bool:
     return char.isascii() and char.isalpha()
-
-
-def main() -> int:
-    """Read one JSON object ``{"latex": "..."}`` and write the translation."""
-    raw = sys.stdin.read()
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.stderr.write("equation translator expected a JSON object\n")
-        return 2
-    if not isinstance(payload, dict):
-        sys.stderr.write("equation translator expected a JSON object\n")
-        return 2
-    latex = payload.get("latex")
-    if not isinstance(latex, str):
-        sys.stderr.write("equation translator expected a latex string\n")
-        return 2
-    result = translate(latex)
-    if not result.supported or result.document is None:
-        sys.stdout.write(json.dumps({"supported": False}) + "\n")
-        return 0
-    sys.stdout.write(json.dumps({"supported": True, "document": result.document}) + "\n")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

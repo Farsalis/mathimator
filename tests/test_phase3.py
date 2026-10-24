@@ -8,7 +8,6 @@ budget is not judged here. ``compile_seconds`` is the Typst process only.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import time
@@ -18,9 +17,9 @@ import pytest
 
 from mathimator_worker.codegen import generate
 from mathimator_worker.document import dumps_project, empty_project, load_text
-from mathimator_worker.equation import translate
+from mathimator_worker.equation import MAX_DEPTH, translate
 from mathimator_worker.session import Session
-from tests.support import REPO, media_dir, probe_video, scene_path, start_supervisor, venv_python
+from tests.support import REPO, media_dir, probe_video, scene_path, start_supervisor
 
 SINE = r"y = \sin(x)"
 SINE_DOCUMENT = "#set page(width: auto, height: auto, margin: 8pt, fill: none)\n$ y = sin(x) $\n"
@@ -62,6 +61,15 @@ def test_unsupported_formula_has_no_document(latex: str) -> None:
     assert result.supported is False
     assert result.math is None
     assert result.document is None
+
+
+def test_groups_nested_deeper_than_the_bound_are_unsupported() -> None:
+    def nested(depth: int) -> str:
+        return r"\sqrt{" * depth + "x" + "}" * depth
+
+    assert translate(nested(MAX_DEPTH)).math == "sqrt(" * MAX_DEPTH + "x" + ")" * MAX_DEPTH
+    assert translate(nested(MAX_DEPTH + 1)).supported is False
+    assert translate(nested(100_000)).supported is False
 
 
 def test_golden_file_has_the_split_letter_formulas() -> None:
@@ -133,33 +141,6 @@ def test_sine_svg_compiles(tmp_path: Path) -> None:
             "note": "compile_seconds is the typst process only. The 100 ms debounce is the inspector timer. The 200 ms budget was not judged.",
         },
     )
-
-
-def test_cli_returns_the_sine_document() -> None:
-    completed = subprocess.run(
-        [str(venv_python()), "-m", "mathimator_worker.equation"],
-        input=json.dumps({"latex": SINE}).encode(),
-        capture_output=True,
-        check=False,
-        cwd=REPO,
-        env={**os.environ, "PYTHONPATH": str(REPO / "worker"), "PYTHONUNBUFFERED": "1"},
-    )
-    assert completed.returncode == 0, completed.stderr.decode()
-    payload = json.loads(completed.stdout)
-    assert payload == {"supported": True, "document": SINE_DOCUMENT}
-
-
-def test_cli_refuses_an_integral() -> None:
-    completed = subprocess.run(
-        [str(venv_python()), "-m", "mathimator_worker.equation"],
-        input=json.dumps({"latex": INTEGRAL}).encode(),
-        capture_output=True,
-        check=False,
-        cwd=REPO,
-        env={**os.environ, "PYTHONPATH": str(REPO / "worker"), "PYTHONUNBUFFERED": "1"},
-    )
-    assert completed.returncode == 0, completed.stderr.decode()
-    assert json.loads(completed.stdout) == {"supported": False}
 
 
 def test_translator_is_outside_the_supervisor() -> None:
