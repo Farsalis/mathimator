@@ -955,6 +955,15 @@ fn write_ready_marker(file: &Path) -> Result<(), ShellError> {
     })
 }
 
+/// The THIRD_PARTY_NOTICES.txt the installer ships, read-only, for the Notices panel (D75).
+#[tauri::command]
+async fn third_party_notices(runtime: State<'_, Runtime>) -> Result<String, ShellError> {
+    runtime
+        .notices
+        .read()
+        .map_err(|message| ShellError::new(ErrorCode::Io, message))
+}
+
 /// Runs the TeX self-test once the launch is done (C8.5 launch step 5, C9.7).
 async fn check_tex(app: AppHandle) {
     let (worker, shell) = (app.state::<Worker>(), app.state::<Arc<Shell>>());
@@ -1008,6 +1017,7 @@ commands![
     cancel_equation_preview,
     compile_equation_preview,
     note_shell_ready,
+    third_party_notices,
 ];
 
 pub fn run() {
@@ -1074,6 +1084,7 @@ mod tests {
     use std::ffi::OsStr;
 
     use super::*;
+    use crate::runtime::NoticesFile;
 
     #[test]
     fn the_registered_commands_are_the_commands_json_list() {
@@ -1448,6 +1459,10 @@ mod tests {
             tinytex_bin: None,
             tex_error: None,
             work_dir: PathBuf::from("C:\\Users\\me\\AppData\\Local\\com.mathimator.desktop"),
+            notices: NoticesFile {
+                path: None,
+                missing: "none".to_owned(),
+            },
         }
     }
 

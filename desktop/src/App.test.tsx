@@ -130,6 +130,17 @@ describe("App", () => {
     expect(control("open-button").disabled).toBe(false);
   });
 
+  it("shows the shipped third-party notices while the worker is unavailable (C9.5, D75)", async () => {
+    const notices = "Third-party notices for Mathimator 0.1.0\n";
+    script({ app_status: [{ ...READY, worker: "unavailable", reason: REASON }], third_party_notices: [notices] });
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("Worker unavailable"));
+
+    fireEvent.click(control("notices-button"));
+    expect((await screen.findByTestId("notices-text")).textContent).toBe(notices);
+    expect(commands()).toEqual(["app_status", "third_party_notices"]);
+  });
+
   it("shows a startup notice once when its notice event comes too, and Dismiss calls dismiss_notice (C9.5)", async () => {
     const notice = { id: 7, message: "Could not reopen C:/Users/Ana/Old: gone. A new project was started." };
     script({ app_status: [{ ...READY, notices: [notice] }], get_state: [stateReply()] });

@@ -25,6 +25,7 @@
     {"name": "compile_equation_preview", "args": ["latex", "slot", "generation"], "worker": null},
     {"name": "cancel_equation_preview", "args": ["slot", "generation"], "worker": null},
     {"name": "note_shell_ready", "args": [], "worker": null},
+    {"name": "third_party_notices", "args": [], "worker": null},
     {"name": "open_project_path", "args": ["path"], "worker": "open_project", "debugOnly": true}
   ]
 }

@@ -37,7 +37,7 @@ The user adds a template or an object, edits parameters and beat durations, scru
 
 The `manim[typst]` extra is installed because of the pin above. Scene code does not use the `Typst` or `TypstMath` mobjects that extra provides. Those mobjects render Typst to SVG and will not match Computer Modern or arbitrary LaTeX packages. The equation editor calls the Typst 0.15.0 binary for a live glyph. The scene and the export use `MathTex` and classic LaTeX.
 
-Bundled programs keep their own licenses and run as separate programs: CPython, Manim and its dependencies, TinyTeX, Typst, and the WebView2 runtime. TinyTeX contains TeX programs under their own licenses. WebView2 is Microsoft software, not part of Mathimator's source. The Windows shell uses it. The phase 5 installer includes a third-party notices view. Approving MIT approves this split. It is not a legal opinion.
+Bundled programs keep their own licenses and run as separate programs: CPython, Manim and its dependencies, TinyTeX, Typst, and the WebView2 runtime. TinyTeX contains TeX programs under their own licenses. WebView2 is Microsoft software, not part of Mathimator's source. The Windows shell uses it. The Notices panel shows a short summary and then the THIRD_PARTY_NOTICES.txt the installer ships (section 6). Approving MIT approves this split. It is not a legal opinion.
 
 Other Manim front ends exist (manim-slides, manim-editor, manim-studio, JAnim). v1 does not use them as a base or as a library.
 
@@ -930,6 +930,7 @@ Every command that needs the supervisor is asynchronous, so the window keeps rep
 | `compile_equation_preview` | `latex`, `slot`, `generation` | a glyph result | none; Typst, 10 s |
 | `cancel_equation_preview` | `slot`, `generation` | null | none |
 | `note_shell_ready` | | null | none; writes the ready marker only when `MATHIMATOR_SHELL_READY_FILE` names a file |
+| `third_party_notices` | | the text of the shipped `THIRD_PARTY_NOTICES.txt` | none; reads the file only |
 | `open_project_path` | `path` | `state` or `rejected` | `open_project`, 30 s; only in debug builds and builds with the `test-hooks` feature |
 
 `tests/fixtures/protocol/commands.json` lists every supervisor command, and every Tauri command with its arguments and the supervisor command it sends; the worker's, the shell's and the UI's tests all check against it. The webview gets Tauri's `core:default` capability and nothing more.
@@ -994,6 +995,8 @@ At mount the UI subscribes to `worker-event`, calls `app_status`, and shows each
 **Logs.** `shell.log` and `supervisor.err` are in the log folder: `<repo>/out/logs` in a debug build, `%LOCALAPPDATA%\com.mathimator.desktop\logs` in a release build. `shell.log` records the runtime paths, each spawn and exit with its exit code, a protocol mismatch, Job Object failures, the TeX self-test, prune and Save As deletions, ignored overrides, and supervisor lines that are not JSON. `supervisor.err` appends the supervisor's stderr under a header for each start, and moves to `supervisor.err.1` above 1 MiB. `worker.log` stays in the project (section 4).
 
 **View code, colors and export settings.** View code shows the latest applied `state.source`, or `sourceError` when there is no source, so it follows every edit, undo and redo without a request of its own. Export code asks for `code`, which comes from the same document, so the two match. The color picker commits once, when it closes, so one use is one edit and one undo step; the hex field commits on blur. `set_export_profile` is sent before every export (above).
+
+**Notices.** The Notices panel shows a short summary, then the text `third_party_notices` returns in an area that scrolls on its own and can be selected. The summary says that Mathimator is MIT and names the main third-party parts: PyAV with FFmpeg's libraries (LGPL-3.0-or-later), among them the x264 and x265 encoders (GPL-2.0-or-later) and LAME (LGPL-2.0-or-later); pycairo (LGPL-2.1 or MPL-1.1); Typst, whose LICENSE and NOTICE are in `runtime\typst`; TinyTeX; and WebView2. It says the full licence texts and the source offer are in `runtime\THIRD_PARTY_NOTICES.txt` in the install folder. The shell reads the file each time the panel opens. A release build reads it from the installed runtime, even when the worker is unavailable, and without it answers `io` with "The installed runtime is incomplete (THIRD_PARTY_NOTICES.txt). Reinstall Mathimator." A debug build reads `packaging/bundle/THIRD_PARTY_NOTICES.txt` and, when it is missing, answers `io` with a message saying the notices are not built. The panel shows that message in place of the file.
 
 ### Equation preview
 

@@ -105,6 +105,7 @@ fn first_error(log: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::NoticesFile;
 
     #[test]
     fn the_first_bang_line_of_the_log_is_the_error() {
@@ -138,6 +139,10 @@ mod tests {
             tinytex_bin: Some(empty.clone()),
             tex_error: None,
             work_dir: std::env::temp_dir(),
+            notices: NoticesFile {
+                path: None,
+                missing: "none".to_owned(),
+            },
         };
         let result = self_test(&runtime);
         let _ = fs::remove_dir_all(&empty);

@@ -38,7 +38,8 @@ button:disabled {
 
 button:focus-visible,
 input:focus-visible,
-select:focus-visible {
+select:focus-visible,
+.notices-file:focus-visible {
   outline: 2px solid #58c4dd;
   outline-offset: 1px;
 }
@@ -471,7 +472,31 @@ legend {
   white-space: pre;
 }
 
-.notices-view pre {
+/* The summary keeps its height; the notices file fills the rest and scrolls on its own. */
+.notices-view {
+  display: flex;
+  flex-direction: column;
+}
+
+.notices-summary {
+  font-size: 12px;
+}
+
+.notices-summary p,
+.notices-summary ul {
+  margin: 0 0 8px;
+}
+
+.notices-summary ul {
+  padding-left: 18px;
+}
+
+.notices-summary code {
+  font-family: "Cascadia Code", "Consolas", monospace;
+}
+
+.notices-file {
+  flex: 1 0 16em;
   margin: 0;
   padding: 8px;
   overflow: auto;

@@ -23,7 +23,9 @@ The notices list, each with its version and declared licence:
 - the Rust crates the shell links, from `cargo metadata` for the bundle's
   platform (normal and build dependencies, not dev ones);
 - the npm packages the UI bundles: the non-dev entries of
-  desktop/package-lock.json, read from desktop/node_modules.
+  desktop/package-lock.json, read from desktop/node_modules;
+- on Windows, the Microsoft Edge WebView2 Runtime, whose offline installer
+  the installer embeds (webviewInstallMode in tauri.windows.conf.json).
 
 Each distinct licence text is printed once at the end and cited as [Tn]. A
 component that ships no licence file gets the standard text of its declared
@@ -162,6 +164,15 @@ through the Mathimator issue tracker a complete machine-readable copy of the
 corresponding source code of the libraries above that are licensed under the
 GNU GPL or LGPL, for a charge no more than the cost of physically performing
 the source distribution."""
+# The Windows installer embeds Microsoft's WebView2 offline installer
+# (webviewInstallMode in tauri.windows.conf.json), whose version is whatever
+# Microsoft publishes when the installer is built.
+WEBVIEW2 = (
+    "The installer embeds Microsoft's offline installer of the Microsoft Edge WebView2 Runtime, and runs it when "
+    "the PC lacks that runtime. Mathimator draws its window with WebView2. WebView2 is Microsoft software under "
+    "Microsoft's own licence terms, distributed from https://developer.microsoft.com/microsoft-edge/webview2/, and "
+    "is not covered by Mathimator's MIT licence."
+)
 
 
 class NoticeError(Exception):
@@ -287,6 +298,8 @@ def generate(bundle: Path, repo: Path, runtime: dict[str, str], metadata: dict[s
         ("Rust crates", _rows(rust_crates(metadata), texts)),
         ("npm packages", _rows(npm_packages(repo / "desktop"), texts)),
     ]
+    if runtime["platform"].startswith("windows-"):
+        sections.append(("Microsoft Edge WebView2 Runtime", textwrap.wrap(WEBVIEW2, 79, break_on_hyphens=False)))
 
     root = metadata["resolve"]["root"]
     version = next(package["version"] for package in metadata["packages"] if package["id"] == root)

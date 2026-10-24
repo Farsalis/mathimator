@@ -34,6 +34,7 @@ export const SHELL_COMMANDS = {
   compile_equation_preview: ["latex", "slot", "generation"],
   cancel_equation_preview: ["slot", "generation"],
   note_shell_ready: [],
+  third_party_notices: [],
 } as const satisfies CommandTable;
 
 export type WorkerCommand = keyof typeof WORKER_COMMANDS;

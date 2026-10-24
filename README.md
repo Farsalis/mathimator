@@ -237,8 +237,9 @@ Microsoft software under Microsoft's own terms. PyAV's FFmpeg libraries in the
 render stack include the GPL-licensed x264 and x265 encoders.
 `THIRD_PARTY_NOTICES.txt`, which `scripts/generate_notices.py` writes from the
 built bundle, covers the bundled runtime, the Rust crates and the npm packages,
-each with its licence, and includes a written offer of the FFmpeg source. It
-ships with the installer and with every release.
+each with its licence, names WebView2 as Microsoft software under Microsoft's
+terms, and includes a written offer of the FFmpeg source. It ships with the
+installer and with every release, and the app's Notices panel shows it.
 
 Report security problems as [SECURITY.md](SECURITY.md) describes, and see
 [CONTRIBUTING.md](CONTRIBUTING.md) before you open a merge request.

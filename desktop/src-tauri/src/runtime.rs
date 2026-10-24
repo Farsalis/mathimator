@@ -1,10 +1,12 @@
 //! The tools the shell runs and how it starts them (contract C9.6): Python with the worker, Typst
-//! for the glyph preview, TinyTeX, and the sample. Debug builds use the repository; release builds
-//! use only the installed bundle, as its runtime.json describes it (D30, D33).
+//! for the glyph preview, TinyTeX, and the sample; and the third-party notices the bundle ships
+//! (D75). Debug builds use the repository; release builds use only the installed bundle, as its
+//! runtime.json describes it (D30, D33).
 
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io;
 use std::iter;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -20,9 +22,15 @@ use crate::tex;
 const PYTHON_OVERRIDE: &str = "MATHIMATOR_PYTHON";
 const TYPST_OVERRIDE: &str = "MATHIMATOR_TYPST";
 const TINYTEX_OVERRIDE: &str = "MATHIMATOR_TINYTEX_BIN";
+/// The notices scripts/generate_notices.py writes into the bundle, which the installer ships as
+/// runtime/THIRD_PARTY_NOTICES.txt (D75).
+const NOTICES: &str = "THIRD_PARTY_NOTICES.txt";
+/// Why a debug build has no notices to show.
+const NOTICES_NOT_BUILT: &str = "The third-party notices are not built: packaging/bundle has no \
+    THIRD_PARTY_NOTICES.txt. Build the bundle, then run scripts/generate_notices.py.";
 
-/// What the shell runs. Each part is resolved on its own, so a missing piece disables only what
-/// needs it (D31).
+/// What the shell runs, and the notices it ships. Each part is resolved on its own, so a missing
+/// piece disables only what needs it (D31).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Runtime {
     /// Python and the worker, or why the worker cannot start.
@@ -35,6 +43,18 @@ pub struct Runtime {
     pub tex_error: Option<String>,
     /// The working directory of every child (C9.6).
     pub work_dir: PathBuf,
+    /// The third-party notices the Notices panel shows (D75).
+    pub notices: NoticesFile,
+}
+
+/// The third-party notices file and what the shell says when it is missing (D75). It is read each
+/// time the Notices panel asks, so notices written while the app runs show without a restart.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NoticesFile {
+    /// Where the file is, or None when there is no bundle to look in.
+    pub path: Option<PathBuf>,
+    /// Why there is nothing to show when the file is missing.
+    pub missing: String,
 }
 
 /// What starting the worker takes.
@@ -139,8 +159,8 @@ pub fn repo_root() -> Option<PathBuf> {
     None
 }
 
-/// Debug builds: the repository's worker, .venv and sample, the overrides, and the Typst and
-/// TinyTeX of packaging/bundle when it has them (C9.6, F055).
+/// Debug builds: the repository's worker, .venv and sample, the overrides, and the Typst, TinyTeX
+/// and notices of packaging/bundle when it has them (C9.6, F055).
 fn development(repo: &Path, overrides: &Overrides) -> Runtime {
     let bundle = repo.join("packaging").join("bundle");
     let manifest = read_manifest(&bundle)
@@ -190,11 +210,16 @@ fn development(repo: &Path, overrides: &Overrides) -> Runtime {
         tinytex_bin,
         tex_error,
         work_dir: repo.to_owned(),
+        notices: NoticesFile {
+            path: Some(bundle.join(NOTICES)),
+            missing: NOTICES_NOT_BUILT.to_owned(),
+        },
     }
 }
 
 /// Release builds: only the bundle, as its runtime.json describes it (C9.6, D30, D33). Without a
 /// resource folder there is no bundle: nothing is looked up from the working directory (F124).
+/// The notices need no runtime.json, so they stay readable when the worker cannot start.
 fn installed(
     bundle: tauri::Result<PathBuf>,
     work_dir: PathBuf,
@@ -206,19 +231,23 @@ fn installed(
             "Ignored {name}: release builds use only the installed runtime."
         ));
     }
+    let notices = NoticesFile {
+        path: bundle.as_ref().ok().map(|bundle| bundle.join(NOTICES)),
+        missing: incomplete(NOTICES),
+    };
     let bundle = match &bundle {
         Ok(bundle) => bundle.as_path(),
         Err(err) => {
             log(&format!("Could not find the resource folder: {err}."));
-            return Runtime::unusable(incomplete("runtime.json"), work_dir);
+            return Runtime::unusable(incomplete("runtime.json"), notices, work_dir);
         }
     };
     let Some((manifest, text)) = read_manifest(bundle) else {
-        return Runtime::unusable(incomplete("runtime.json"), work_dir);
+        return Runtime::unusable(incomplete("runtime.json"), notices, work_dir);
     };
     log(&format!("runtime.json: {text}"));
     if manifest.platform != Some(platform()) {
-        return Runtime::unusable(incomplete("platform"), work_dir);
+        return Runtime::unusable(incomplete("platform"), notices, work_dir);
     }
     let python = file_in(bundle, manifest.python.as_deref()).ok_or_else(|| incomplete("python"));
     let source = folder_in(bundle, manifest.worker.as_deref())
@@ -242,23 +271,25 @@ fn installed(
         tinytex_bin,
         tex_error,
         work_dir,
+        notices,
     }
 }
 
-/// Why the worker cannot start from an installed runtime that lacks `field` (C9.6).
+/// What the shell says of an installed runtime that lacks `field` (C9.6).
 fn incomplete(field: &str) -> String {
     format!("The installed runtime is incomplete ({field}). Reinstall Mathimator.")
 }
 
 impl Runtime {
-    /// A runtime whose bundle cannot be used at all.
-    fn unusable(reason: String, work_dir: PathBuf) -> Self {
+    /// A runtime whose tools cannot be used at all, with the notices it may still have.
+    fn unusable(reason: String, notices: NoticesFile, work_dir: PathBuf) -> Self {
         Self {
             worker: Err(reason.clone()),
             typst: Err(reason),
             tinytex_bin: None,
             tex_error: Some(tex::MISSING.to_owned()),
             work_dir,
+            notices,
         }
     }
 
@@ -340,6 +371,17 @@ impl Runtime {
             "Runtime: {worker}; typst {typst}; TinyTeX {tex}; working folder {}.",
             self.work_dir.display()
         )
+    }
+}
+
+impl NoticesFile {
+    /// The text of the notices, or why there is none to show (D75).
+    pub fn read(&self) -> Result<String, String> {
+        let path = self.path.as_ref().ok_or_else(|| self.missing.clone())?;
+        fs::read_to_string(path).map_err(|err| match err.kind() {
+            io::ErrorKind::NotFound => self.missing.clone(),
+            _ => format!("Could not read {}: {err}.", path.display()),
+        })
     }
 }
 
@@ -462,7 +504,8 @@ mod tests {
         }
     }
 
-    /// An installed bundle with every file today's bundle scripts write, and runtime.json.
+    /// An installed bundle with every file today's bundle scripts and generate_notices.py write,
+    /// and runtime.json.
     fn bundle(manifest: &Value) -> Scratch {
         let scratch = Scratch::new();
         scratch.file("python/python.exe");
@@ -470,6 +513,7 @@ mod tests {
         scratch.file("samples/reference-60/project.json");
         scratch.file("typst/typst.exe");
         scratch.folder("tinytex/bin/windows");
+        scratch.file(NOTICES);
         fs::write(scratch.0.join("runtime.json"), manifest.to_string()).unwrap();
         scratch
     }
@@ -500,6 +544,14 @@ mod tests {
 
     fn install(scratch: &Scratch, overrides: &Overrides) -> (Runtime, Vec<String>) {
         install_from(Ok(scratch.0.clone()), overrides)
+    }
+
+    /// What an installed runtime knows of its notices before it reads them.
+    fn installed_notices(path: Option<PathBuf>) -> NoticesFile {
+        NoticesFile {
+            path,
+            missing: incomplete(NOTICES),
+        }
     }
 
     fn install_from(
@@ -536,6 +588,7 @@ mod tests {
                 tinytex_bin: Some(root.join("tinytex").join("bin").join("windows")),
                 tex_error: None,
                 work_dir: PathBuf::from("C:\\work"),
+                notices: installed_notices(Some(root.join(NOTICES))),
             }
         );
         assert_eq!(logs, [format!("runtime.json: {}", manifest())]);
@@ -578,7 +631,11 @@ mod tests {
         let (runtime, _) = install(&scratch, &Overrides::default());
         assert_eq!(
             runtime,
-            Runtime::unusable(incomplete("platform"), PathBuf::from("C:\\work"))
+            Runtime::unusable(
+                incomplete("platform"),
+                installed_notices(Some(scratch.0.join(NOTICES))),
+                PathBuf::from("C:\\work")
+            )
         );
         assert_eq!(runtime.tex_error.as_deref(), Some(tex::MISSING));
     }
@@ -601,7 +658,11 @@ mod tests {
         let (runtime, logs) = install_from(Err(tauri::Error::UnknownPath), &Overrides::default());
         assert_eq!(
             runtime,
-            Runtime::unusable(incomplete("runtime.json"), PathBuf::from("C:\\work"))
+            Runtime::unusable(
+                incomplete("runtime.json"),
+                installed_notices(None),
+                PathBuf::from("C:\\work")
+            )
         );
         assert_eq!(logs, ["Could not find the resource folder: unknown path."]);
     }
@@ -707,7 +768,57 @@ mod tests {
                 tinytex_bin: Some(tinytex),
                 tex_error: None,
                 work_dir: repo.0.clone(),
+                notices: NoticesFile {
+                    path: Some(repo.0.join("packaging").join("bundle").join(NOTICES)),
+                    missing: NOTICES_NOT_BUILT.to_owned(),
+                },
             }
+        );
+    }
+
+    #[test]
+    fn debug_says_the_notices_are_not_built_until_generate_notices_writes_them() {
+        let repo = Scratch::new();
+        let runtime = development(&repo.0, &Overrides::default());
+        assert_eq!(runtime.notices.read(), Err(NOTICES_NOT_BUILT.to_owned()));
+        let text = "Third-party notices for Mathimator 0.1.0\n";
+        fs::write(repo.file("packaging/bundle/THIRD_PARTY_NOTICES.txt"), text).unwrap();
+        assert_eq!(runtime.notices.read().as_deref(), Ok(text));
+    }
+
+    #[test]
+    fn the_installed_notices_stay_readable_when_the_worker_cannot_start() {
+        let scratch = bundle(&manifest());
+        let text = "Third-party notices for Mathimator 0.1.0\n\nPyAV 19.0.2: BSD-3-Clause [T3]\n";
+        fs::write(scratch.0.join(NOTICES), text).unwrap();
+        fs::remove_file(scratch.0.join("runtime.json")).unwrap();
+        let (runtime, _) = install(&scratch, &Overrides::default());
+        assert_eq!(runtime.worker, Err(incomplete("runtime.json")));
+        assert_eq!(runtime.notices.read().as_deref(), Ok(text));
+    }
+
+    #[test]
+    fn missing_installed_notices_ask_for_a_reinstall_and_leave_the_tools_alone() {
+        let scratch = bundle(&manifest());
+        fs::remove_file(scratch.0.join(NOTICES)).unwrap();
+        let (runtime, _) = install(&scratch, &Overrides::default());
+        assert_eq!(
+            runtime.notices.read(),
+            Err("The installed runtime is incomplete (THIRD_PARTY_NOTICES.txt). Reinstall Mathimator.".to_owned())
+        );
+        assert!(runtime.worker.is_ok() && runtime.typst.is_ok() && runtime.tex_error.is_none());
+    }
+
+    #[test]
+    fn notices_that_cannot_be_read_say_which_file_failed() {
+        let scratch = bundle(&manifest());
+        let (runtime, _) = install(&scratch, &Overrides::default());
+        let file = scratch.0.join(NOTICES);
+        fs::write(&file, b"\xFF is not UTF-8").unwrap();
+        let message = runtime.notices.read().unwrap_err();
+        assert!(
+            message.starts_with(&format!("Could not read {}: ", file.display())),
+            "{message}"
         );
     }
 
@@ -767,6 +878,7 @@ mod tests {
             tinytex_bin,
             tex_error: None,
             work_dir: PathBuf::from("C:\\Users\\me\\AppData\\Local\\com.mathimator.desktop"),
+            notices: installed_notices(None),
         }
     }
 

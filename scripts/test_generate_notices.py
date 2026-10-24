@@ -10,6 +10,7 @@ from typing import Any
 
 import check_bundle
 import generate_notices
+import pytest
 from generate_notices import Component, NoticeError, Texts
 
 AVCODEC = (
@@ -216,6 +217,9 @@ def test_the_notices_cover_every_part_of_the_installer(tmp_path: Path) -> None:
     assert "libraries: x264, mp3lame." in prose
     assert "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz" in prose
     assert "Written offer:" in prose
+    assert "8. Microsoft Edge WebView2 Runtime" in lines
+    assert "embeds Microsoft's offline installer of the Microsoft Edge WebView2 Runtime" in prose
+    assert " https://developer.microsoft.com/microsoft-edge/webview2/, " in prose
     assert missing == ["zlib (zlib1-4d767210.dll)", "webview2-com 1.0.0"]
 
     texts = (generate_notices.STANDARD_TEXTS / "LGPL-2.1.txt").read_text(encoding="utf-8")
@@ -227,6 +231,17 @@ def test_the_notices_cover_every_part_of_the_installer(tmp_path: Path) -> None:
     assert "[T13] LICENSE-MIT\nUsed by: cc 1.0.0, serde 1.0.0\n" in notices
     assert notices.endswith("\n") and not notices.endswith("\n\n")
     assert generate_notices.generate(bundle, repo, RUNTIME, make_metadata(tmp_path))[0] == notices
+
+
+def test_only_windows_notices_name_the_embedded_webview2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the Windows installer embeds the WebView2 offline installer (tauri.windows.conf.json)."""
+    monkeypatch.setitem(generate_notices.CPYTHON_LINKED, "linux-x86_64", {})
+    linux = {**RUNTIME, "platform": "linux-x86_64"}
+
+    notices, _ = generate_notices.generate(make_bundle(tmp_path), make_repo(tmp_path), linux, make_metadata(tmp_path))
+
+    assert "7. npm packages" in notices.splitlines()
+    assert "WebView2 Runtime" not in notices
 
 
 def test_check_bundle_accepts_the_notices_until_a_lockfile_changes(tmp_path: Path) -> None:

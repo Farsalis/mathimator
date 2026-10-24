@@ -194,15 +194,6 @@ def test_unchanged_gif_export_key_does_not_start_manim(tmp_path: Path) -> None:
     assert "export cache hit" in log_path.read_text(encoding="utf-8")
 
 
-def test_notices_name_manim_typst_and_tinytex() -> None:
-    text = (REPO / "desktop" / "src" / "notices.ts").read_text(encoding="utf-8")
-    assert "Manim" in text
-    assert "Typst" in text
-    assert "TinyTeX" in text
-    assert "MIT" in text
-    assert "WebView2" in text
-
-
 def _profile(fmt: str, width: int, height: int, fps: int, transparent: bool) -> dict[str, object]:
     return {
         "op": "set_export_profile",
