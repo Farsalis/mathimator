@@ -16,7 +16,7 @@ from mathimator_worker.document import dumps_project, empty_project, load_text
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.progress import discard_unfinished_partials
 from mathimator_worker.session import Session
-from mathimator_worker.supervisor import Supervisor
+from mathimator_worker.supervisor import Supervisor, _Job
 from mathimator_worker.tex_failure import format_render_failure
 from mathimator_worker.win32_job import jobs_enabled
 from tests.support import read_argv, start_supervisor, write_fake_interpreter
@@ -98,14 +98,16 @@ def test_other_manim_failures_keep_the_status(tmp_path: Path) -> None:
     assert "boom" in message
 
 
-def test_stop_process_joins_for_one_second(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_stop_joins_for_one_second(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MATHIMATOR_SKIP_PROCESS_TABLE", "1")
     supervisor = Supervisor(tmp_path / "join", sys.executable, tmp_path / "join.log", True)
     thread = threading.Thread(target=time.sleep, args=(3,), daemon=True)
     thread.start()
+    job = _Job(job_id="preview-1", profile="preview", thread=thread, cancel=threading.Event())
     started = time.perf_counter()
-    assert supervisor._stop_process(None, thread, "job") is False
-    assert time.perf_counter() - started < 1.5
+    assert supervisor._stop(job) is False
+    assert 0.9 < time.perf_counter() - started < 1.5
+    assert job.cancel.is_set()
 
 
 def test_clear_cache_keeps_project_and_exports(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

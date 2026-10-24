@@ -78,6 +78,12 @@ class Session:
         self.rendered: dict[str, Rendered] = {}
 
     def edit(self, raw: dict[str, object]) -> EditResult:
+        project, result = self.edited(raw)
+        self.commit(project)
+        return result
+
+    def edited(self, raw: dict[str, object]) -> tuple[Project, EditResult]:
+        """The document ``raw`` makes, and what to focus. Raises DocumentError; the session is unchanged."""
         trial = load_text(dumps_project(self.project))
         try:
             result = apply_edit(trial, raw)
@@ -88,24 +94,39 @@ class Session:
         except DocumentError as exc:
             # A whole-document rule, such as plot sampling, has no edit field to name.
             raise _edit_refusal(exc, None) from exc
+        return trial, result
+
+    def commit(self, project: Project) -> None:
+        """Make ``project`` the document as one undo step. Redo is cleared."""
         self._undo.append(self.project)
         if len(self._undo) > UNDO_LIMIT:
             del self._undo[0]
         self._redo.clear()
-        self.project = trial
-        return result
+        self.project = project
 
-    def undo(self) -> None:
+    def undo_target(self) -> Project:
+        """The document undo goes back to. Raises DocumentError when there is none."""
         if not self._undo:
             raise DocumentError("Nothing to undo.", code="nothing_to_undo")
-        self._redo.append(self.project)
-        self.project = self._undo.pop()
+        return self._undo[-1]
 
-    def redo(self) -> None:
+    def redo_target(self) -> Project:
+        """The document redo goes forward to. Raises DocumentError when there is none."""
         if not self._redo:
             raise DocumentError("Nothing to redo.", code="nothing_to_redo")
+        return self._redo[-1]
+
+    def undo(self) -> None:
+        project = self.undo_target()
+        self._undo.pop()
+        self._redo.append(self.project)
+        self.project = project
+
+    def redo(self) -> None:
+        project = self.redo_target()
+        self._redo.pop()
         self._undo.append(self.project)
-        self.project = self._redo.pop()
+        self.project = project
 
     def can_undo(self) -> bool:
         return bool(self._undo)
@@ -160,11 +181,11 @@ class Session:
     def state_event(self, job_id: str, project_path: str) -> dict[str, object]:
         durations = [beat.duration for beat in self.project.scene.beats]
         try:
-            code: str | None = generate(self.project)
-            code_error = None
+            source: str | None = generate(self.project)
+            source_error = None
         except CodegenError as exc:
-            code = None
-            code_error = str(exc)
+            source = None
+            source_error = str(exc)
         payload: dict[str, object] = {
             "event": "state",
             "jobId": job_id,
@@ -178,10 +199,11 @@ class Session:
                 "canRedo": self.can_redo(),
             },
             "index": self.preview_index,
-            "code": code,
+            # The generated scene.py, which View code shows (D25).
+            "source": source,
         }
-        if code_error is not None:
-            payload["codeError"] = code_error
+        if source_error is not None:
+            payload["sourceError"] = source_error
         return payload
 
 

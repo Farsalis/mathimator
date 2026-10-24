@@ -1,8 +1,8 @@
-"""Phase 2 document, codegen, invalidation, and quiet scrub tests.
+"""Phase 2 document, codegen, invalidation, and job queue tests.
 
 These tests do not start a GUI and they do not measure the 50 ms or 100 ms
-budgets. A scrub assertion here only shows that the scrub command does not
-spawn Manim.
+budgets. Scrub belongs to the UI (D44); its acceptance test is a vitest over
+``playbackAt``.
 """
 
 from __future__ import annotations
@@ -36,14 +36,12 @@ from mathimator_worker.process_group import (
     process_alive,
     process_command_line,
 )
-from mathimator_worker.scrub import IndexBeat, PreviewIndex, scrub_at
 from mathimator_worker.session import Session
 from tests.support import (
     REPO,
     SupervisorClient,
     read_argv,
     start_supervisor,
-    write_clip,
     write_fake_interpreter,
 )
 
@@ -363,52 +361,6 @@ def test_manim_draws_whole_seconds_exactly() -> None:
             assert int(seconds / step) == seconds * fps
 
 
-def test_scrub_choice_does_not_describe_a_latency_budget(tmp_path: Path) -> None:
-    """Pure file choice for 9.0 s. This is not a 100 ms UI measurement."""
-    movie = tmp_path / "MainScene.mp4"
-    movie.write_bytes(b"movie")
-    partials = []
-    beats = []
-    starts = [0.0, 8.0, 18.0, 24.0, 28.0, 36.0, 44.0, 52.0]
-    durations = [8.0, 10.0, 6.0, 4.0, 8.0, 8.0, 8.0, 8.0]
-    for index, (start, duration) in enumerate(zip(starts, durations, strict=True)):
-        path = tmp_path / f"partial-{index}.mp4"
-        path.write_bytes(f"part-{index}".encode())
-        partials.append(path)
-        beats.append(
-            IndexBeat(
-                id=f"beat_{index + 1}",
-                index=index,
-                derived_start=start,
-                duration=duration,
-                partial=str(path),
-                last_good=None,
-                fresh=True,
-            )
-        )
-    fresh = scrub_at(PreviewIndex(output=str(movie), beats=beats), 9.0)
-    assert fresh["mode"] == "movie"
-    assert fresh["time"] == 9.0
-    assert fresh["beatIndex"] == 1
-    assert fresh["badge"] is False
-
-    beats[1].fresh = False
-    beats[1].partial = None
-    last_good = tmp_path / "last-good.mp4"
-    last_good.write_bytes(b"previous")
-    beats[1].last_good = str(last_good)
-    dirty = scrub_at(PreviewIndex(output=str(movie), beats=beats), 9.0)
-    assert dirty["mode"] == "partial"
-    assert dirty["path"] == str(last_good)
-    assert dirty["time"] == 1.0
-    assert dirty["badge"] is True
-
-    beats[1].last_good = None
-    blank = scrub_at(PreviewIndex(output=str(movie), beats=beats), 9.0)
-    assert blank["mode"] == "blank"
-    assert blank["badge"] is True
-
-
 @pytest.mark.process_table
 def test_expression_rejection_does_not_spawn_manim(tmp_path: Path) -> None:
     project = tmp_path / "expr-project"
@@ -440,31 +392,6 @@ def test_expression_rejection_does_not_spawn_manim(tmp_path: Path) -> None:
     finally:
         client.close()
     log = log_path.read_text(encoding="utf-8")
-    assert "argv:" not in log
-    assert " -m manim" not in log
-
-
-@pytest.mark.process_table
-def test_scrub_command_does_not_spawn_manim(tmp_path: Path) -> None:
-    project = tmp_path / "scrub-project"
-    shutil.copytree(FIXTURES / "reference-60", project)
-    _install_fresh_index(project)
-    log_path = tmp_path / "scrub.log"
-    client = start_supervisor(project, log_path)
-    try:
-        _ready(client)
-        client.send({"cmd": "scrub", "id": "scrub-9", "time": 9})
-        result = client.wait_for(lambda event: event.get("jobId") == "scrub-9", 10)
-        assert result["event"] == "scrub"
-        assert result["mode"] == "movie"
-        assert result["beatIndex"] == 1
-        assert result["time"] == 9.0
-        assert result["badge"] is False
-        assert _fake_pids(client.proc.pid, "manim") == []
-    finally:
-        client.close()
-    log = log_path.read_text(encoding="utf-8")
-    assert "scrub time=9.0" in log
     assert "argv:" not in log
     assert " -m manim" not in log
 
@@ -612,43 +539,6 @@ def _manim_frame_counts(source: str, fps: int) -> list[int]:
 
 def _evaluate(node: ast.expr, namespace: dict[str, object]) -> float:
     return float(eval(compile(ast.Expression(body=node), "scene.py", "eval"), namespace))
-
-
-def _install_fresh_index(project: Path) -> None:
-    project_text = (project / "project.json").read_text(encoding="utf-8")
-    loaded = load_text(project_text)
-    session = Session(loaded)
-    session.mark_rendered("preview")
-    cache = project / ".mathimator" / "cache"
-    media = cache / "media" / "videos" / "scene" / "480p15"
-    media.mkdir(parents=True)
-    movie = media / "MainScene.mp4"
-    movie.write_bytes(b"movie")
-    partial_dir = media / "partial_movie_files" / "MainScene"
-    partial_dir.mkdir(parents=True)
-    beats: list[IndexBeat] = []
-    starts = _starts(loaded)
-    for index, beat in enumerate(loaded.scene.beats):
-        partial = partial_dir / f"partial-{index}.mp4"
-        write_clip(partial)
-        beats.append(
-            IndexBeat(
-                id=beat.id,
-                index=index,
-                derived_start=starts[index],
-                duration=float(beat.duration),
-                partial=str(partial),
-                last_good=None,
-                fresh=True,
-            )
-        )
-    index_path = cache / "preview-index.json"
-    rendered_path = cache / "rendered.json"
-    index_path.write_text(
-        json.dumps(PreviewIndex(output=str(movie), beats=beats).to_dict(), indent=2) + "\n",
-        encoding="utf-8",
-    )
-    rendered_path.write_text(json.dumps(session.rendered_payload(), indent=2) + "\n", encoding="utf-8")
 
 
 def _ready(client: SupervisorClient) -> None:

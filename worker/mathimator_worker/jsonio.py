@@ -1,6 +1,7 @@
-"""Stable project.json bytes and the separate canonical hash form.
+"""Strict JSON reading, stable project.json bytes, and the separate canonical hash form.
 
-Saved documents use two-space indentation, stable key order, and a trailing
+project.json and protocol lines are read with finite numbers only. Saved
+documents use two-space indentation, stable key order, and a trailing
 newline. Short arrays of scalars stay on one line so the Journey A document
 round-trips. The hash form sorts keys, drops insignificant whitespace, keeps
 array order, and writes every number with three decimal places.
@@ -11,9 +12,19 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping, Sequence
+from typing import NoReturn
 
 JsonScalar = str | int | float | bool | None
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+
+
+def loads(text: str) -> object:
+    """Parse JSON whose numbers are all finite.
+
+    ``NaN``, ``Infinity`` and a number too large for a float raise ValueError,
+    like any other invalid JSON. Nesting too deep raises RecursionError.
+    """
+    return json.loads(text, parse_int=_finite_int, parse_float=_finite_float, parse_constant=_not_a_number)
 
 
 def dumps_document(value: JsonValue) -> str:
@@ -96,3 +107,20 @@ def _canonical(value: object) -> str:
         ]
         return "{" + ",".join(parts) + "}"
     raise TypeError(f"cannot hash {type(value).__name__}")
+
+
+def _finite_float(literal: str) -> float:
+    number = float(literal)
+    if math.isinf(number):
+        raise ValueError("a number is too large")
+    return number
+
+
+def _finite_int(literal: str) -> int:
+    """An integer literal that a float can hold, which also keeps int() under its digit limit."""
+    _finite_float(literal)
+    return int(literal)
+
+
+def _not_a_number(name: str) -> NoReturn:
+    raise ValueError(f"{name} is not a JSON number")

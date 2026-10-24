@@ -127,7 +127,7 @@ def assign_kill_on_close(pid: int) -> int:
 
 
 def terminate_job(handle: int) -> None:
-    """End every process in the job, then close the handle."""
+    """End every process in the job. The caller still owns the handle and closes it with ``close_job``."""
     if sys.platform != "win32" or not jobs_enabled():
         raise OSError("Job Object termination is disabled")
     if handle <= 0:
@@ -135,14 +135,8 @@ def terminate_job(handle: int) -> None:
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
     kernel.TerminateJobObject.restype = wintypes.BOOL
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel.CloseHandle.restype = wintypes.BOOL
-    job = wintypes.HANDLE(handle)
-    if not kernel.TerminateJobObject(job, 1):
-        error = ctypes.get_last_error()
-        kernel.CloseHandle(job)
-        raise OSError(error, "TerminateJobObject failed")
-    kernel.CloseHandle(job)
+    if not kernel.TerminateJobObject(wintypes.HANDLE(handle), 1):
+        raise OSError(ctypes.get_last_error(), "TerminateJobObject failed")
 
 
 def close_job(handle: int) -> None:

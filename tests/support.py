@@ -1,7 +1,8 @@
 """Helpers shared by every test module.
 
 Repo paths, the render interpreter, the supervisor client, fake interpreters,
-minimal complete clips, and video probes. ``OUT`` and the scene paths belong to the phase 1 tests.
+the fake ``manim`` package, minimal complete clips, and video probes. ``OUT``
+and the scene paths belong to the phase 1 tests.
 """
 
 from __future__ import annotations
@@ -15,6 +16,11 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import Any
+
+import pytest
+
+from mathimator_worker.supervisor import partial_movie_dir
 
 REPO = Path(__file__).resolve().parents[1]
 WORKER = REPO / "worker"
@@ -103,6 +109,86 @@ def complete_clip(suffix: str) -> bytes:
 def write_clip(path: Path) -> Path:
     path.write_bytes(complete_clip(path.suffix.lower()))
     return path
+
+
+_FAKE_MANIM = '''\
+"""Write the files plan.json lists, print its log and exit with its code.
+
+seen.json records what the media folder held when this process started. A
+held plan writes held.txt after its files and waits for go.txt before it logs.
+"""
+import json
+import sys
+import time
+from pathlib import Path
+
+here = Path(__file__).parent
+plan = json.loads((here / "plan.json").read_text(encoding="utf-8"))
+media = Path(sys.argv[sys.argv.index("--media_dir") + 1])
+seen = {
+    "marker": (media.parent / "manim-run.json").is_file(),
+    "files": sorted(path.relative_to(media).as_posix() for path in media.rglob("*") if path.is_file()),
+}
+(here / "seen.json").write_text(json.dumps(seen), encoding="utf-8")
+for name, data in plan["files"].items():
+    target = Path(name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(bytes.fromhex(data))
+if plan["hold"]:
+    (here / "held.txt").write_text("", encoding="utf-8")
+    while not (here / "go.txt").exists():
+        time.sleep(0.02)
+for line in plan["log"]:
+    print(line, flush=True)
+sys.exit(plan["exit"])
+'''
+
+
+class FakeManim:
+    """A ``manim`` package on PYTHONPATH that stands in for ``python -m manim``."""
+
+    def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.package = root / "manim"
+        self.package.mkdir(parents=True)
+        (self.package / "__init__.py").write_text("", encoding="utf-8")
+        (self.package / "__main__.py").write_text(_FAKE_MANIM, encoding="utf-8")
+        monkeypatch.setenv("PYTHONPATH", str(root))
+
+    def plan(
+        self, files: dict[Path, bytes], log: list[str] | None = None, exit_code: int = 0, *, hold: bool = False
+    ) -> None:
+        payload = {
+            "files": {str(path): data.hex() for path, data in files.items()},
+            "log": log or [],
+            "exit": exit_code,
+            "hold": hold,
+        }
+        (self.package / "plan.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def seen(self) -> dict[str, Any]:
+        return json.loads((self.package / "seen.json").read_text(encoding="utf-8"))
+
+    def ran(self) -> bool:
+        return (self.package / "seen.json").exists()
+
+    def wait_until_held(self) -> None:
+        deadline = time.monotonic() + 60
+        while not (self.package / "held.txt").exists():
+            assert time.monotonic() < deadline, "the fake manim never reached its hold"
+            time.sleep(0.02)
+
+    def release(self) -> None:
+        (self.package / "go.txt").write_text("", encoding="utf-8")
+
+
+def video_render(media: Path, quality: str, clips: list[bytes], suffix: str = ".mp4") -> dict[Path, bytes]:
+    """The files of one finished video render: a partial per beat, the segment list and the movie."""
+    folder = partial_movie_dir(media, "scene", quality)
+    files = {folder / f"{index:064x}{suffix}": data for index, data in enumerate(clips)}
+    listing = "".join(f"file 'file:{path.as_posix()}'\n" for path in files)
+    files[folder / "partial_movie_file_list.txt"] = listing.encode("utf-8")
+    files[folder.parent.parent / f"MainScene{suffix}"] = complete_clip(suffix)
+    return files
 
 
 def sha256_file(path: Path) -> str:

@@ -102,13 +102,13 @@ public static class MathimatorProc {
     public static string Snapshot() {
         IntPtr snap = CreateToolhelp32Snapshot(SNAPPROCESS, 0);
         if (snap == IntPtr.Zero || snap == new IntPtr(-1)) {
-            return "";
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
         }
         try {
             var entry = new PROCESSENTRY32();
             entry.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
             if (!Process32First(snap, ref entry)) {
-                return "";
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
             }
             var builder = new StringBuilder();
             do {
@@ -165,6 +165,8 @@ class _WindowsProcessTable:
             lines = self._ask("PIDS")
             rows: list[tuple[int, int, str, str]] = []
             for line in lines:
+                if line.startswith("ERROR "):
+                    raise OSError(f"process table helper failed: {line[6:]}")
                 parts = line.split("\t", 3)
                 if len(parts) < 3:
                     continue
@@ -176,6 +178,9 @@ class _WindowsProcessTable:
                 name = parts[2].strip()
                 command = parts[3].strip() if len(parts) == 4 else ""
                 rows.append((pid, ppid, name, command))
+            if not rows:
+                # A live system always lists System and Idle, so an empty table is a failed snapshot (F098).
+                raise OSError("process table helper listed no processes")
             self._pids = rows
             self._pids_at = now
             return list(rows)
@@ -357,20 +362,26 @@ def process_command_line(pid: int) -> str:
 
 
 def _terminate_windows(proc: subprocess.Popen[str]) -> None:
+    """Kill the tree under ``proc``. When the process table fails, kill the root anyway, then raise (F025)."""
     pid = proc.pid
-    if _TABLE is None:
-        _terminate_pid(pid)
-    else:
-        rows = _TABLE.pids(fresh=True)
-        parents = {row_pid: ppid for row_pid, ppid, _name, _command in rows}
-        victims = _descendants_from_parents(pid, parents)
-        victims.add(pid)
-        for victim in _deepest_first(pid, victims, parents):
-            _terminate_pid(victim)
+    failure: OSError | None = None
+    rows: list[tuple[int, int, str, str]] = []
+    if _TABLE is not None:
+        try:
+            rows = _TABLE.pids(fresh=True)
+        except OSError as exc:
+            failure = exc
+    parents = {row_pid: ppid for row_pid, ppid, _name, _command in rows}
+    victims = _descendants_from_parents(pid, parents)
+    victims.add(pid)
+    for victim in _deepest_first(pid, victims, parents):
+        _terminate_pid(victim)
     try:
         proc.wait(timeout=1)
     except subprocess.TimeoutExpired:
         _terminate_pid(pid)
+    if failure is not None:
+        raise failure
 
 
 def _terminate_pid(pid: int) -> None:

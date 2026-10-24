@@ -2,8 +2,7 @@
 
 The generated-code folder, the startup project path, PNG-sequence frames, the
 interrupted-run marker, and the completeness check for partial movies. No test
-here starts Manim. Jobs run a stand-in ``manim`` package from PYTHONPATH that
-writes the files a test plans, prints its log lines and exits with its code.
+here starts Manim. Jobs run the ``fake_manim`` stand-in (``support.FakeManim``).
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ import threading
 import time
 from pathlib import Path
 from types import ModuleType
-from typing import Any
 
 import pytest
 
@@ -29,87 +27,12 @@ from mathimator_worker.document import dumps_project, export_artifact_name, expo
 from mathimator_worker.progress import ManimProgress
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import Supervisor, _Job, _remove_tree, partial_movie_dir, png_frames_dir
-from tests.support import REPO, complete_clip, ebml_element, iso_box, write_clip
+from tests.support import REPO, FakeManim, complete_clip, ebml_element, iso_box, video_render, write_clip
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 SUFFIXES = (".mp4", ".mov", ".webm")
 _PNG_PROFILE = {"format": "png_sequence", "width": 1280, "height": 720, "fps": 30, "transparent": False}
 _WEBM_PROFILE = {"format": "webm", "width": 1920, "height": 1080, "fps": 30, "transparent": False}
-
-_FAKE_MANIM = '''\
-"""Write the files plan.json lists, print its log and exit with its code.
-
-seen.json records what the media folder held when this process started. A
-held plan writes held.txt after its files and waits for go.txt before it logs.
-"""
-import json
-import sys
-import time
-from pathlib import Path
-
-here = Path(__file__).parent
-plan = json.loads((here / "plan.json").read_text(encoding="utf-8"))
-media = Path(sys.argv[sys.argv.index("--media_dir") + 1])
-seen = {
-    "marker": (media.parent / "manim-run.json").is_file(),
-    "files": sorted(path.relative_to(media).as_posix() for path in media.rglob("*") if path.is_file()),
-}
-(here / "seen.json").write_text(json.dumps(seen), encoding="utf-8")
-for name, data in plan["files"].items():
-    target = Path(name)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(bytes.fromhex(data))
-if plan["hold"]:
-    (here / "held.txt").write_text("", encoding="utf-8")
-    while not (here / "go.txt").exists():
-        time.sleep(0.02)
-for line in plan["log"]:
-    print(line, flush=True)
-sys.exit(plan["exit"])
-'''
-
-
-class FakeManim:
-    """A ``manim`` package on PYTHONPATH that stands in for ``python -m manim``."""
-
-    def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.package = root / "manim"
-        self.package.mkdir(parents=True)
-        (self.package / "__init__.py").write_text("", encoding="utf-8")
-        (self.package / "__main__.py").write_text(_FAKE_MANIM, encoding="utf-8")
-        monkeypatch.setenv("PYTHONPATH", str(root))
-
-    def plan(
-        self, files: dict[Path, bytes], log: list[str] | None = None, exit_code: int = 0, *, hold: bool = False
-    ) -> None:
-        payload = {
-            "files": {str(path): data.hex() for path, data in files.items()},
-            "log": log or [],
-            "exit": exit_code,
-            "hold": hold,
-        }
-        (self.package / "plan.json").write_text(json.dumps(payload), encoding="utf-8")
-
-    def seen(self) -> dict[str, Any]:
-        return json.loads((self.package / "seen.json").read_text(encoding="utf-8"))
-
-    def ran(self) -> bool:
-        return (self.package / "seen.json").exists()
-
-    def wait_until_held(self) -> None:
-        deadline = time.monotonic() + 60
-        while not (self.package / "held.txt").exists():
-            assert time.monotonic() < deadline, "the fake manim never reached its hold"
-            time.sleep(0.02)
-
-    def release(self) -> None:
-        (self.package / "go.txt").write_text("", encoding="utf-8")
-
-
-@pytest.fixture
-def fake_manim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeManim:
-    return FakeManim(tmp_path / "fake-manim", monkeypatch)
-
 
 # Completeness check (owner answer Q3)
 
@@ -173,6 +96,7 @@ def test_clip_check_refuses_extra_bytes_and_other_files(tmp_path: Path) -> None:
     assert not clip_is_complete(gif)
     assert not clip_is_complete(tmp_path / "missing.mp4")
     assert not clip_is_complete(tmp_path)
+    assert not clip_is_complete(tmp_path / "x\u0000y.mp4")
 
 
 def test_clip_checker_reads_a_clip_again_only_when_it_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,6 +115,7 @@ def test_clip_checker_reads_a_clip_again_only_when_it_changes(tmp_path: Path, mo
     clip.write_bytes(_cut_off_clip(".mp4"))
     assert not checker.complete(clip)
     assert not checker.complete(tmp_path / "missing.mp4")
+    assert not checker.complete(tmp_path / "x\u0000y.mp4")
 
 
 def test_progress_stops_at_an_incomplete_partial(tmp_path: Path) -> None:
@@ -256,7 +181,7 @@ def test_a_cut_off_cached_clip_is_removed_before_manim_starts(
     cut_off = folder / ("d" * 64 + ".mp4")
     cut_off.write_bytes(_cut_off_clip(".mp4"))
     _aged(cut_off, time.time() - 600)
-    fake_manim.plan(_video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4))
     _run(supervisor, "render_preview", "preview-1")
     assert _terminal(events, "preview-1")["event"] == "done"
     seen = fake_manim.seen()["files"]
@@ -272,7 +197,7 @@ def test_an_export_that_used_an_incomplete_clip_is_not_published(
     project = _project(tmp_path / "webm", export=_WEBM_PROFILE)
     supervisor, events = _supervisor(project, monkeypatch)
     clips = [complete_clip(".webm"), _cut_off_clip(".webm"), complete_clip(".webm"), complete_clip(".webm")]
-    files = _video_render(supervisor.media_dir, "1080p30", clips, suffix=".webm")
+    files = video_render(supervisor.media_dir, "1080p30", clips, suffix=".webm")
     fake_manim.plan(files)
     _run(supervisor, "export", "export-1")
     failed = _terminal(events, "export-1")
@@ -293,7 +218,7 @@ def test_an_incomplete_clip_in_another_quality_folder_is_removed(
     digest = "9" * 64
     cut_off = folder / f"{digest}.mp4"
     cut_off.write_bytes(_cut_off_clip(".mp4"))
-    files = _video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4)
+    files = video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4)
     fake_manim.plan(files, [f"Animation 0 : Using cached data (hash : {digest})"])
     _run(supervisor, "export", "export-1")
     failed = _terminal(events, "export-1")
@@ -413,7 +338,7 @@ def test_open_project_leaves_a_running_export_alone(
 ) -> None:
     project = _project(tmp_path / "busy")
     supervisor, events = _supervisor(project, monkeypatch)
-    files = _video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4)
+    files = video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4)
     fake_manim.plan(files, hold=True)
     supervisor.handle_line(json.dumps({"cmd": "export", "id": "export-1"}))
     job = supervisor._current
@@ -436,7 +361,7 @@ def test_the_run_marker_exists_only_while_manim_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
 ) -> None:
     supervisor, events = _supervisor(_project(tmp_path / "preview"), monkeypatch)
-    fake_manim.plan(_video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.media_dir, "480p15", [complete_clip(".mp4")] * 4))
     _run(supervisor, "render_preview", "preview-1")
     assert _terminal(events, "preview-1")["event"] == "done"
     assert fake_manim.seen()["marker"] is True
@@ -560,7 +485,7 @@ def test_mp4_export_publishes_from_a_project_under_a_480p15_folder(
 ) -> None:
     project = _project(tmp_path / "480p15" / "lesson")
     supervisor, events = _supervisor(project, monkeypatch)
-    fake_manim.plan(_video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4))
+    fake_manim.plan(video_render(supervisor.media_dir, "1080p30", [complete_clip(".mp4")] * 4))
     _run(supervisor, "export", "export-1")
     done = _terminal(events, "export-1")
     assert done["event"] == "done", done
@@ -626,19 +551,10 @@ def _run(supervisor: Supervisor, command: str, job_id: str) -> None:
 
 
 def _terminal(events: list[dict[str, object]], job_id: str) -> dict[str, object]:
-    ends = [event for event in events if event.get("jobId") == job_id and event.get("event") in {"done", "error"}]
+    terminal = {"done", "error", "rejected"}
+    ends = [event for event in events if event.get("jobId") == job_id and event.get("event") in terminal]
     assert len(ends) == 1, events
     return ends[0]
-
-
-def _video_render(media: Path, quality: str, clips: list[bytes], suffix: str = ".mp4") -> dict[Path, bytes]:
-    """The files of one finished video render: a partial per beat, the segment list and the movie."""
-    folder = partial_movie_dir(media, "scene", quality)
-    files = {folder / f"{index:064x}{suffix}": data for index, data in enumerate(clips)}
-    listing = "".join(f"file 'file:{path.as_posix()}'\n" for path in files)
-    files[folder / "partial_movie_file_list.txt"] = listing.encode("utf-8")
-    files[folder.parent.parent / f"MainScene{suffix}"] = complete_clip(suffix)
-    return files
 
 
 def _png_render(frames: Path, count: int) -> dict[Path, bytes]:

@@ -22,11 +22,11 @@ import keyword
 import math
 import re
 from dataclasses import dataclass, field
-from typing import NoReturn, TypeIs
+from typing import TypeIs
 
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import assert_supported
-from mathimator_worker.jsonio import JsonValue, canonical_dumps, dumps_document
+from mathimator_worker.jsonio import JsonValue, canonical_dumps, dumps_document, loads
 from mathimator_worker.latex import check_latex
 
 MANIM_VERSION = "0.22.0"
@@ -309,7 +309,7 @@ def load_text(text: str) -> Project:
     A number too large for a float, ``NaN`` and ``Infinity`` are invalid JSON.
     """
     try:
-        raw = json.loads(text, parse_int=_finite_int, parse_float=_finite_float, parse_constant=_not_a_number)
+        raw = loads(text)
     except json.JSONDecodeError as exc:
         raise _invalid_json(f"{exc.msg} at line {exc.lineno} column {exc.colno}") from exc
     except ValueError as exc:
@@ -1449,23 +1449,6 @@ def _object_without_name(item: SceneObject) -> dict[str, JsonValue]:
 
 def _invalid_json(detail: str) -> DocumentError:
     return DocumentError(f"project.json is not valid JSON: {detail}.", code="invalid_json")
-
-
-def _finite_float(literal: str) -> float:
-    number = float(literal)
-    if math.isinf(number):
-        raise ValueError("a number is too large")
-    return number
-
-
-def _finite_int(literal: str) -> int:
-    """An integer literal that a float can hold, which also keeps int() under its digit limit."""
-    _finite_float(literal)
-    return int(literal)
-
-
-def _not_a_number(name: str) -> NoReturn:
-    raise ValueError(f"{name} is not a JSON number")
 
 
 def _shown(value: object) -> str:

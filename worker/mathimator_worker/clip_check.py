@@ -28,7 +28,11 @@ _SEGMENT = 0x18538067
 
 
 def clip_is_complete(path: Path) -> bool:
-    """Return True when ``path`` is a structurally complete MP4, MOV or WebM file."""
+    """Return True when ``path`` is a structurally complete MP4, MOV or WebM file.
+
+    A path the OS refuses, such as one with a NUL from a stored preview index,
+    is not a complete clip (ValueError).
+    """
     suffix = path.suffix.lower()
     if suffix not in SEGMENT_SUFFIXES:
         return False
@@ -38,7 +42,7 @@ def clip_is_complete(path: Path) -> bool:
             if suffix == ".webm":
                 return _matroska_complete(handle, size)
             return _boxes_complete(handle, size)
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
@@ -51,7 +55,7 @@ class ClipChecker:
     def complete(self, path: Path) -> bool:
         try:
             info = path.stat()
-        except OSError:
+        except (OSError, ValueError):
             return False
         stamp = (info.st_size, info.st_mtime_ns)
         if self._passed.get(path) == stamp:
