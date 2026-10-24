@@ -127,6 +127,30 @@ def test_reference_60_mp4_and_second_export_skips_manim() -> None:
     )
 
 
+def test_png_sequence_saves_every_frame_of_a_wait() -> None:
+    """Spec section 7: one PNG per frame, the frames a wait beat holds included."""
+    project = PHASE5 / "journey-a-png"
+    log_path = PHASE5 / "logs" / "journey-a-png.log"
+    _reset(project)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    client = start_supervisor(project, log_path)
+    try:
+        _open_fixture(client, FIXTURES / "journey-a" / "project.json", project)
+        client.send({"cmd": "edit", "id": "png-profile", "edit": _profile("png_sequence", 854, 480, 15, False)})
+        assert _wait_state(client, "png-profile")["event"] == "state"
+        client.send({"cmd": "export", "id": "png"})
+        done = client.wait_for_end("png", 900)
+    finally:
+        client.close()
+    if done.get("event") != "done":
+        raise AssertionError(json.dumps(done, indent=2))
+    pngs = sorted(Path(str(done["path"])).glob("*.png"))
+    # Journey A lasts 8 s and ends with a 1 s wait: 120 frames at 15 fps, the last 15 of them held.
+    assert len(pngs) == 120
+    assert len({sha256_file(path) for path in pngs[-15:]}) == 1
+    _assert_flags(_argv_with(log_path, "png-sequence"), "png-sequence", "854,480", "15", transparent=False)
+
+
 @pytest.fixture(scope="module")
 def surface() -> dict[str, Path]:
     """The default 3D surface exported once as a transparent WebM and once as a transparent PNG sequence."""
@@ -188,7 +212,7 @@ def test_surface_transparent_webm_and_png_sequence(surface: dict[str, Path]) -> 
     )
     assert png_alpha["size"] == [1280, 720]
     assert png_alpha_ok
-    assert abs(len(pngs) - 120) <= 2
+    assert len(pngs) == 120
     _assert_flags(_argv_with(log_path, "webm"), "webm", "1280,720", "30", transparent=True)
     _assert_flags(_argv_with(log_path, "png-sequence"), "png-sequence", "1280,720", "30", transparent=True)
 

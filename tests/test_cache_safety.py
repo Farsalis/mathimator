@@ -44,6 +44,8 @@ from tests.support import (
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 SUFFIXES = (".mp4", ".mov", ".webm")
 _PNG_PROFILE = {"format": "png_sequence", "width": 1280, "height": 720, "fps": 30, "transparent": False}
+# Journey A's 8 s at the 30 fps of _PNG_PROFILE: one PNG per frame.
+_PNG_FRAMES = 240
 _WEBM_PROFILE = {"format": "webm", "width": 1920, "height": 1080, "fps": 30, "transparent": False}
 
 # Completeness check (owner answer Q3)
@@ -211,7 +213,7 @@ def test_png_export_ignores_the_segment_list_of_another_render(
     cut_off.write_bytes(_cut_off_clip(".mp4"))
     (folder / "partial_movie_file_list.txt").write_text(f"file 'file:{cut_off.as_posix()}'\n", encoding="utf-8")
     frames = supervisor.layout.png_frames_dir
-    fake_manim.plan(_png_render(frames, 3), _wrapped_images_ready(3, frames))
+    fake_manim.plan(_png_render(frames, _PNG_FRAMES), _wrapped_images_ready(_PNG_FRAMES, frames))
     _run(supervisor, "export", "export-1")
     assert _terminal(events, "export-1")["event"] == "done"
     assert not [event for event in events if event["event"] == "beat_ready"]
@@ -409,9 +411,9 @@ def test_png_export_publishes_only_the_frames_of_this_run(
     supervisor, events = _supervisor(project, monkeypatch)
     frames = supervisor.layout.png_frames_dir
     frames.mkdir(parents=True)
-    for index in range(6):
+    for index in range(_PNG_FRAMES + 3):
         (frames / f"{index:04d}.png").write_bytes(b"stale")
-    fake_manim.plan(_png_render(frames, 3), _wrapped_images_ready(3, frames))
+    fake_manim.plan(_png_render(frames, _PNG_FRAMES), _wrapped_images_ready(_PNG_FRAMES, frames))
     _run(supervisor, "export", "export-1")
     done = _terminal(events, "export-1")
     assert done["event"] == "done", done
@@ -421,7 +423,7 @@ def test_png_export_publishes_only_the_frames_of_this_run(
     captured = supervisor.session.project
     published = project / ".mathimator" / "exports" / export_folder_name(captured) / "frames"
     assert done["path"] == str(published)
-    assert sorted(path.name for path in published.iterdir()) == ["0000.png", "0001.png", "0002.png"]
+    assert sorted(path.name for path in published.iterdir()) == [f"{index:04d}.png" for index in range(_PNG_FRAMES)]
 
 
 def test_png_export_with_a_frame_count_mismatch_is_not_published(
@@ -430,11 +432,26 @@ def test_png_export_with_a_frame_count_mismatch_is_not_published(
     project = _project(tmp_path / "mismatch", export=_PNG_PROFILE)
     supervisor, events = _supervisor(project, monkeypatch)
     frames = supervisor.layout.png_frames_dir
-    fake_manim.plan(_png_render(frames, 3), _wrapped_images_ready(4, frames))
+    fake_manim.plan(_png_render(frames, _PNG_FRAMES), _wrapped_images_ready(_PNG_FRAMES + 1, frames))
     _run(supervisor, "export", "export-1")
     failed = _terminal(events, "export-1")
     assert failed["event"] == "error"
-    assert "reported 4 PNG frames" in str(failed["message"])
+    assert failed["message"] == f"manim reported {_PNG_FRAMES + 1} PNG frames, but {frames} holds {_PNG_FRAMES}"
+    assert not (project / ".mathimator" / "exports").exists()
+
+
+def test_png_export_short_of_the_documents_frames_is_not_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_manim: FakeManim
+) -> None:
+    # Manim 0.22 saved the 30 frames of Journey A's 1 s wait as one PNG, and counted that one.
+    project = _project(tmp_path / "short", export=_PNG_PROFILE)
+    supervisor, events = _supervisor(project, monkeypatch)
+    frames = supervisor.layout.png_frames_dir
+    fake_manim.plan(_png_render(frames, _PNG_FRAMES - 29), _wrapped_images_ready(_PNG_FRAMES - 29, frames))
+    _run(supervisor, "export", "export-1")
+    failed = _terminal(events, "export-1")
+    assert (failed["event"], failed["code"]) == ("error", "render_failed")
+    assert failed["message"] == f"the scene has 240 frames, but manim wrote 211 PNG frames to {frames}"
     assert not (project / ".mathimator" / "exports").exists()
 
 
@@ -444,7 +461,7 @@ def test_png_export_without_a_frame_count_is_not_published(
     project = _project(tmp_path / "uncounted", export=_PNG_PROFILE)
     supervisor, events = _supervisor(project, monkeypatch)
     frames = supervisor.layout.png_frames_dir
-    fake_manim.plan(_png_render(frames, 3))
+    fake_manim.plan(_png_render(frames, _PNG_FRAMES))
     _run(supervisor, "export", "export-1")
     failed = _terminal(events, "export-1")
     assert failed["message"] == f"manim did not report how many PNG frames it wrote to {frames}"

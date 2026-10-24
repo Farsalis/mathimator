@@ -63,6 +63,7 @@ from mathimator_worker.document_error import DocumentError
 from mathimator_worker.exports import (
     PublishFailed,
     existing_export,
+    export_frame_count,
     find_export_output,
     frame_count_problem,
     publish_export,
@@ -1218,7 +1219,8 @@ class Supervisor:
             self._end(job, error(job.job_id, "render_failed", "manim exited 0 without a movie"))
             return
         if job.output_format == "png_sequence":
-            problem = frame_count_problem(movie, output)
+            assert job.captured is not None
+            problem = frame_count_problem(movie, output, export_frame_count(job.captured))
             if problem is not None:
                 self._end(job, error(job.job_id, "render_failed", problem))
                 return

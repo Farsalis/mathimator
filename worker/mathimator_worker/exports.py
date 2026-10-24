@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from mathimator_worker.argv import SCENE_CLASS
-from mathimator_worker.document import FORMATS, MANIM_VERSION, PREVIEW_FPS, PREVIEW_HEIGHT, Project
+from mathimator_worker.document import FORMATS, MANIM_VERSION, PREVIEW_FPS, PREVIEW_HEIGHT, Project, total_duration
 from mathimator_worker.identity import export_key, scene_hash
 from mathimator_worker.jsonio import dumps_record, read_record
 from mathimator_worker.layout import ProjectLayout
@@ -58,11 +58,22 @@ def find_export_output(layout: ProjectLayout, quality: str, fmt: str) -> Path | 
     return matches[0]
 
 
-def frame_count_problem(frames: Path, output: str) -> str | None:
-    """Describe why a PNG sequence cannot be published, or return None (F021).
+def export_frame_count(project: Project) -> int:
+    """The frames of an export of ``project``: its total, to the nearest frame at the export rate (D63).
+
+    The total is whole milliseconds and a half frame rounds up, as for every
+    beat boundary, so this is integer math: in floats, 4.1 s at 15 fps is
+    61.4999... frames and would round down.
+    """
+    return (round(total_duration(project) * 1000) * project.export_profile.fps + 500) // 1000
+
+
+def frame_count_problem(frames: Path, output: str, expected: int) -> str | None:
+    """Describe why a PNG sequence cannot be published, or return None (F021, spec section 7).
 
     The frames in the folder must be as many as Manim reports in ``output``,
     the last lines it wrote, which guards against frames left from before.
+    They must also be the ``expected`` frames of the document, one PNG each.
     """
     written = sum(1 for _ in frames.glob("*.png"))
     reported = _IMAGES_READY.findall(output)
@@ -70,6 +81,8 @@ def frame_count_problem(frames: Path, output: str) -> str | None:
         return f"manim did not report how many PNG frames it wrote to {frames}"
     if written != int(reported[-1]):
         return f"manim reported {reported[-1]} PNG frames, but {frames} holds {written}"
+    if written != expected:
+        return f"the scene has {expected} frames, but manim wrote {written} PNG frames to {frames}"
     return None
 
 

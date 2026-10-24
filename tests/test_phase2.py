@@ -22,6 +22,7 @@ from mathimator_worker.argv import LAUNCHER
 from mathimator_worker.codegen import generate
 from mathimator_worker.document import Project, derived_starts, dumps_project, load_text, total_duration
 from mathimator_worker.document_error import DocumentError
+from mathimator_worker.exports import export_frame_count
 from mathimator_worker.expr import expression_to_python
 from mathimator_worker.identity import export_folder_name, export_key, scene_hash
 from mathimator_worker.process_group import process_alive
@@ -330,6 +331,9 @@ def test_every_beat_boundary_lands_on_the_nearest_frame(fps: int) -> None:
         drawn += frames
         # The nearest frame from whole milliseconds, halves up, as in playback.ts.
         assert drawn == (round(boundaries[index + 1] * 1000) * fps + 500) // 1000, f"beat index {index} at {fps} fps"
+    # An export at this rate publishes a PNG sequence only when it holds every frame drawn (spec section 7).
+    project.export_profile.fps = fps
+    assert export_frame_count(project) == drawn
 
 
 @pytest.mark.parametrize(
@@ -337,8 +341,14 @@ def test_every_beat_boundary_lands_on_the_nearest_frame(fps: int) -> None:
     [(boundary["seconds"], boundary["fps"], boundary["frame"]) for boundary in TIMING["boundaries"]],
 )
 def test_a_boundary_on_a_half_frame_rounds_up_as_in_the_ui(seconds: float, fps: int, frame: int) -> None:
-    """D63: in floats each of these boundaries comes to just under a half frame and would round down."""
+    """D63: in floats each of these boundaries comes to just under a half frame and would round down.
+
+    The first beat ends there, and so does an export of that length, whose PNG sequence has as many frames.
+    """
     assert _manim_frame_counts(generate(_journey_a([seconds, 1, 1])), fps)[0] == frame
+    export = _journey_a([0.5, 0.5, round(seconds - 1, 3)])
+    export.export_profile.fps = fps
+    assert export_frame_count(export) == frame
 
 
 def test_each_beat_draws_the_frames_the_ui_gives_it() -> None:

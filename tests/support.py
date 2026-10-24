@@ -125,8 +125,9 @@ def write_clip(path: Path) -> Path:
 _FAKE_MANIM = '''\
 """Write the groups of files plan.json lists, print its log and exit with its code.
 
-seen.json records what the media folder held when this process started, and
-the folder, arguments and environment it started with. Like Manim, it writes
+seen.json records what the media folder held when this process started,
+the folder, arguments and environment it started with, and the function behind
+each scene writer method that manim_main replaces. Like Manim, it writes
 one file after another, so each file gets a later mtime than the one before.
 After each group but the last, and after the last too in a held plan, it
 writes held-<n>.txt and waits for go-<n>.txt. A plan with a child first
@@ -152,7 +153,7 @@ seen = {
     "cwd": os.getcwd(),
     "argv": sys.argv[1:],
     "env": {name: os.environ.get(name) for name in ENVIRONMENT},
-    "writer": SceneFileWriter._concat_manifest_bytes.__qualname__,
+    "writer": {name: getattr(SceneFileWriter, name).__name__ for name in ("_concat_manifest_bytes", "write_frame")},
 }
 (here / "seen.json").write_text(json.dumps(seen), encoding="utf-8")
 if plan["child"]:
@@ -183,13 +184,16 @@ class SceneFileWriter:
     @staticmethod
     def _concat_manifest_bytes(input_files):
         raise NotImplementedError
+
+    def write_frame(self, pixels, *, repeat=1):
+        raise NotImplementedError
 """
 
 
 class FakeManim:
     """A ``manim`` package on PYTHONPATH that stands in for Manim under ``mathimator_worker.manim_main``.
 
-    Its scene writer has only the method that ``manim_main`` replaces.
+    Its scene writer has only the methods that ``manim_main`` replaces.
     """
 
     def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:

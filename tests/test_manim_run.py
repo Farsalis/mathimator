@@ -1,9 +1,10 @@
 """How Manim and LaTeX are run (contract C7.2 job start; fix-plan S39, S40, S42; D18, D31, D60, D61, C14 Q4).
 
 The command line, the folder and environment Manim gets, the TeX folder it
-finds, the segment list FFmpeg reads, and the checks a job passes before
-Manim starts: codegen, TeX and the project path. Jobs run the ``fake_manim``
-stand-in; only the render-tier test starts Manim.
+finds, the segment list FFmpeg reads, the PNG a sequence saves for each frame,
+and the checks a job passes before Manim starts: codegen, TeX and the project
+path. Jobs run the ``fake_manim`` stand-in; only the render-tier test starts
+Manim.
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -26,7 +29,7 @@ from mathimator_worker.document import MAX_TOTAL_SECONDS, MIN_BEAT_SECONDS, Proj
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.exports import existing_export
 from mathimator_worker.identity import export_folder_name, export_key
-from mathimator_worker.manim_main import concat_manifest_bytes
+from mathimator_worker.manim_main import concat_manifest_bytes, write_every_frame
 from mathimator_worker.manim_paths import PARTIAL_FILE, TEX_FILE, longest_folder, manim_root, short_path
 from mathimator_worker.progress import read_manifest
 from mathimator_worker.supervisor import Supervisor, _Job, _remove_tex_inputs
@@ -141,6 +144,30 @@ def test_the_segment_list_matches_manims_for_plain_paths() -> None:
     assert concat_manifest_bytes(files) == original.__func__(files)
 
 
+# One PNG per frame (spec section 7)
+
+
+def test_a_png_sequence_saves_every_frame_a_wait_holds() -> None:
+    writer = _scene_writer()
+    write_every_frame(writer)
+    sequence = writer(image_sequence=True)
+    sequence.write_frame("drawn")
+    sequence.write_frame("held", repeat=30)
+    sequence.write_frame("last", repeat=1)
+    assert sequence.images == ["drawn", *["held"] * 30, "last"]
+    assert sequence.encoded == []
+
+
+def test_a_movie_still_encodes_a_held_frame_once_with_its_repeat_count() -> None:
+    writer = _scene_writer()
+    write_every_frame(writer)
+    movie = writer(image_sequence=False)
+    movie.write_frame("drawn")
+    movie.write_frame("held", repeat=30)
+    assert movie.encoded == [("drawn", 1), ("held", 30)]
+    assert movie.images == []
+
+
 # Where Manim runs, and what it gets (D60, D61, D18)
 
 
@@ -162,8 +189,8 @@ def test_manim_runs_in_the_scene_folder_with_its_own_home(
         "openin_any": "p",
         "openout_any": "p",
     }
-    # manim_main replaced the segment list writer of the fake.
-    assert seen["writer"] == "concat_manifest_bytes"
+    # manim_main replaced the segment list and frame writers of the fake.
+    assert seen["writer"] == {"_concat_manifest_bytes": "concat_manifest_bytes", "write_frame": "write_each_frame"}
     assert f"cwd: {codegen}" in supervisor.log_path.read_text(encoding="utf-8")
     *_, done = stdout.of("preview-1")
     assert done["path"] == str(media / "videos" / "scene" / "480p15" / "MainScene.mp4")
@@ -503,6 +530,31 @@ def _formula(root: Path) -> Path:
     root.mkdir(parents=True)
     (root / "project.json").write_text(json.dumps(document), encoding="utf-8")
     return root
+
+
+def _scene_writer() -> type[Any]:
+    """A new class with the parts of Manim 0.22's scene writer that ``write_every_frame`` patches.
+
+    Like Manim's, ``write_frame`` hands a movie the frame and its repeat count,
+    and saves it once for an image sequence.
+    """
+
+    class SceneFileWriter:
+        def __init__(self, *, image_sequence: bool) -> None:
+            self.output_spec = SimpleNamespace(is_video=not image_sequence, is_image_sequence=image_sequence)
+            self.encoded: list[tuple[object, int]] = []
+            self.images: list[object] = []
+
+        def write_frame(self, pixels: object, *, repeat: int = 1) -> None:
+            if self.output_spec.is_video:
+                self.encoded.append((pixels, repeat))
+            if self.output_spec.is_image_sequence:
+                self.output_image(pixels)
+
+        def output_image(self, image: object) -> None:
+            self.images.append(image)
+
+    return SceneFileWriter
 
 
 def _cache_export(root: Path, project: Project) -> None:
