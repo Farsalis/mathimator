@@ -1,3 +1,5 @@
+import { asBoolean, asInteger, fieldsOf, oneOf } from "./parse";
+
 export type ExportFormat = "mp4" | "gif" | "webm" | "png_sequence";
 
 export interface ExportProfile {
@@ -74,27 +76,13 @@ export function isExportFormat(value: unknown): value is ExportFormat {
   return typeof value === "string" && EXPORT_FORMATS.some((item) => item === value);
 }
 
-export function parseExportProfile(value: unknown): ExportProfile | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  if (!isExportFormat(record.format)) {
-    return null;
-  }
-  if (
-    typeof record.width !== "number" ||
-    typeof record.height !== "number" ||
-    typeof record.fps !== "number" ||
-    typeof record.transparent !== "boolean"
-  ) {
-    return null;
-  }
+export function asExportProfile(value: unknown, path: string): ExportProfile {
+  const read = fieldsOf(value, path);
   return {
-    format: record.format,
-    width: record.width,
-    height: record.height,
-    fps: record.fps,
-    transparent: record.transparent,
+    format: read("format", oneOf(EXPORT_FORMATS)),
+    width: read("width", asInteger),
+    height: read("height", asInteger),
+    fps: read("fps", asInteger),
+    transparent: read("transparent", asBoolean),
   };
 }

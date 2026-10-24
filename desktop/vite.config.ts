@@ -27,7 +27,8 @@ export default defineConfig({
     sourcemap: false,
   },
   test: {
+    // Component and hook tests opt into jsdom with a `// @vitest-environment jsdom` comment.
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
   },
 });

@@ -627,8 +627,12 @@ function pairParam(value: unknown): [number, number] {
 }
 
 function tripleStrings(value: unknown): [string, string, string] {
-  if (Array.isArray(value) && value.length === 3 && value.every((item) => typeof item === "string")) {
-    return [value[0], value[1], value[2]];
+  if (Array.isArray(value) && value.length === 3) {
+    const items: unknown[] = value;
+    const [x, y, z] = items;
+    if (typeof x === "string" && typeof y === "string" && typeof z === "string") {
+      return [x, y, z];
+    }
   }
   return ["cos(t)", "sin(t)", "t / 3"];
 }

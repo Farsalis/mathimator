@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { derivedStarts } from "./format";
@@ -13,10 +13,24 @@ import {
   requestCancel,
   type Handshake,
 } from "./jobSession";
+import { asString, fieldsOf } from "./parse";
 import { patchBeat } from "./playback";
 import { parseEditorState, parseWorkerEvent, type Edit, type EditorState, type WorkerEvent } from "./types";
+import { errorMessage, invokeWorker, WorkerFailure, WorkerQueue, WorkerRefusal } from "./workerQueue";
 
 const PREVIEW_DEBOUNCE_MS = 300;
+
+/** Edits whose refusal is shown under the expression field. */
+const FIELD_EDITS: ReadonlySet<Edit["op"]> = new Set(["set_expression", "set_curve_component", "set_resolution"]);
+
+/** Refusal codes that point at the edited field (C9.3). */
+const FIELD_CODES: ReadonlySet<string> = new Set([
+  "invalid_edit",
+  "invalid_text",
+  "unsupported_expression",
+  "limit_exceeded",
+  "untrusted_latex",
+]);
 
 export type Selection = { kind: "none" } | { kind: "beat"; id: string } | { kind: "object"; id: string };
 
@@ -39,97 +53,48 @@ export function useEditor() {
   const [exportNote, setExportNote] = useState<string | null>(null);
   const [exportPath, setExportPath] = useState<string | null>(null);
   const [rendering, setRendering] = useState(false);
+  const [queue] = useState(
+    () => new WorkerQueue({ report: (reason) => setError(errorMessage(reason)), resync: refreshState }),
+  );
   const jobs = useRef<Handshake>(createHandshake());
   const armingExport = useRef(false);
   const notedReady = useRef(false);
   const epoch = useRef(0);
   const debounce = useRef<number | null>(null);
   const stateRef = useRef<EditorState | null>(null);
+  const projectPath = useRef<string | null>(null);
 
   useLayoutEffect(() => {
     stateRef.current = state;
   }, [state]);
 
-  async function refreshState(): Promise<boolean> {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      try {
-        const value = await invoke<unknown>("get_state");
-        const parsed = parseEditorState(value);
-        if (parsed) {
-          setState(parsed);
-          setStatus((current) => (current === "Starting" ? "Ready" : current));
-          return true;
-        }
-      } catch {
-        // The supervisor may still be starting.
+  const onWorkerLine = useEffectEvent((payload: unknown) => {
+    try {
+      const parsed = parseWorkerEvent(payload);
+      if (parsed) {
+        onWorkerEvent(parsed);
       }
-      await delay(100);
+    } catch (reason: unknown) {
+      setError(errorMessage(reason));
     }
-    return false;
-  }
+  });
+
+  const onListening = useEffectEvent(() => {
+    void queue.enqueue(refreshState);
+    void queue.enqueue(requestReady);
+  });
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
     let stopped = false;
 
-    function publish(next: Handshake): void {
-      jobs.current = next;
-      setStatus(next.status);
-      setRendering(next.rendering);
-      setExporting(next.exporting);
-      setExportLabel(next.exportLabel);
-      setExportNote(next.exportNote);
-      setExportPath(next.exportPath);
-      if (next.error) {
-        setError(next.error);
-      }
-    }
-
-    function onEvent(message: WorkerEvent): void {
-      if (message.event === "ready") {
-        setReady(true);
-      }
-      const previewDone = message.event === "done" && message.jobId === jobs.current.previewJobId;
-      const step = receive(jobs.current, message);
-      publish(step.session);
-      applyPlayback(step.applied, previewDone);
-    }
-
-    function applyPlayback(applied: WorkerEvent[], previewDone: boolean): void {
-      for (const event of applied) {
-        if (event.event === "beat_ready") {
-          setState((current) => patchBeat(current, event.beatIndex, event.path));
-        }
-      }
-      if (previewDone) {
-        void refreshState();
-      }
-    }
-
     void (async () => {
-      unlisten = await listen<unknown>("worker-event", (event) => {
-        const parsed = parseWorkerEvent(event.payload);
-        if (parsed) {
-          onEvent(parsed);
-        }
-      });
+      unlisten = await listen<unknown>("worker-event", (event) => onWorkerLine(event.payload));
       if (stopped) {
         unlisten();
         return;
       }
-      const loaded = await refreshState();
-      if (!loaded && !stopped) {
-        setError("The project did not load.");
-        setStatus("Worker unavailable");
-      }
-      try {
-        await invoke("worker_status");
-      } catch (reason: unknown) {
-        if (!stopped) {
-          setError(reason instanceof Error ? reason.message : String(reason));
-          setStatus("Worker unavailable");
-        }
-      }
+      onListening();
     })();
 
     return () => {
@@ -150,6 +115,87 @@ export function useEditor() {
     }
   }, [ready, state]);
 
+  /**
+   * Asks the worker for `ready`. It is queued after the startup `get_state` and runs even when that load failed, so a
+   * startup timeout recovers through the resync.
+   */
+  async function requestReady(): Promise<void> {
+    try {
+      await invokeWorker("worker_status");
+    } catch (reason: unknown) {
+      setStatus("Worker unavailable");
+      throw reason;
+    }
+  }
+
+  async function refreshState(): Promise<void> {
+    applyState(parseEditorState(await invokeWorker("get_state")));
+    setStatus((current) => (current === "Starting" ? "Ready" : current));
+  }
+
+  /** Applies a state reply. A state for another folder, such as a late Open reply, runs the Open reset (C9.2). */
+  function applyState(next: EditorState): void {
+    if (projectPath.current !== null && projectPath.current !== next.projectPath) {
+      resetView();
+    }
+    projectPath.current = next.projectPath;
+    setState(next);
+  }
+
+  /** Applies the reply of Open or Sample, which always runs the Open reset. */
+  function applyOpened(next: EditorState): void {
+    resetView();
+    applyState(next);
+    setError(null);
+  }
+
+  /** The Open reset (C9.2). */
+  function resetView(): void {
+    setSelection({ kind: "none" });
+    setDrafts({});
+    setPlayhead(0);
+    setPlaying(false);
+    setCodeOpen(false);
+    setFieldError(null);
+    jobs.current = { ...jobs.current, exportPath: null, exportNote: null };
+    setExportPath(null);
+    setExportNote(null);
+  }
+
+  function publish(next: Handshake): void {
+    jobs.current = next;
+    setStatus(next.status);
+    setRendering(next.rendering);
+    setExporting(next.exporting);
+    setExportLabel(next.exportLabel);
+    setExportNote(next.exportNote);
+    setExportPath(next.exportPath);
+    if (next.error) {
+      setError(next.error);
+    }
+  }
+
+  function onWorkerEvent(message: WorkerEvent): void {
+    if (message.event === "ready") {
+      setReady(true);
+    }
+    const previewDone = message.event === "done" && message.jobId === jobs.current.previewJobId;
+    const step = receive(jobs.current, message);
+    publish(step.session);
+    applyBeats(step.applied);
+    if (previewDone) {
+      void queue.enqueue(refreshState);
+    }
+  }
+
+  function applyBeats(events: WorkerEvent[]): void {
+    for (const event of events) {
+      if (event.event === "beat_ready") {
+        setState((current) => patchBeat(current, event.beatIndex, event.path));
+      }
+    }
+  }
+
   function schedulePreview(): void {
     epoch.current += 1;
     const token = epoch.current;
@@ -159,90 +205,71 @@ export function useEditor() {
     }
     debounce.current = window.setTimeout(() => {
       debounce.current = null;
-      if (token !== epoch.current) {
-        return;
-      }
-      void (async () => {
-        try {
-          const jobId = await invoke<string>("reserve_job_id", { prefix: "preview" });
-          if (token !== epoch.current) {
-            return;
-          }
-          const step = beginPreview(jobs.current, jobId, token);
-          jobs.current = step.session;
-          setStatus(step.session.status);
-          setRendering(step.session.rendering);
-          for (const event of step.applied) {
-            if (event.event === "beat_ready") {
-              setState((current) => patchBeat(current, event.beatIndex, event.path));
-            }
-          }
-          await invoke("render_preview", { jobId });
-        } catch (reason: unknown) {
-          setRendering(false);
-          setError(reason instanceof Error ? reason.message : String(reason));
-        }
-      })();
+      void queue.enqueue(() => runPreview(token));
     }, PREVIEW_DEBOUNCE_MS);
   }
 
-  async function commit(edit: Edit, preview: boolean): Promise<void> {
+  /** The preview task (C9.2). A later schedulePreview supersedes it until its id is recorded. */
+  async function runPreview(token: number): Promise<void> {
+    if (token !== epoch.current) {
+      return;
+    }
+    const jobId = await invoke<string>("reserve_job_id", { prefix: "preview" });
+    if (token !== epoch.current) {
+      return;
+    }
+    const step = beginPreview(jobs.current, jobId, token);
+    jobs.current = step.session;
+    setStatus(step.session.status);
+    setRendering(step.session.rendering);
+    applyBeats(step.applied);
     try {
-      const value = await invoke<unknown>("edit_document", { edit });
-      const rejected = parseWorkerEvent(value);
-      if (rejected?.event === "rejected") {
-        setError(rejected.message);
-        if (edit.op === "set_expression" || edit.op === "set_curve_component" || edit.op === "set_resolution") {
-          setFieldError(rejected.message);
-        }
-        return;
-      }
-      const parsed = parseEditorState(value);
-      if (!parsed) {
-        setError("The edit did not return a document.");
-        return;
-      }
-      setState(parsed);
-      setError(null);
-      setFieldError(null);
-      if (parsed.focus?.beatId) {
-        setSelection({ kind: "beat", id: parsed.focus.beatId });
-      }
-      if (preview) {
-        schedulePreview();
-      }
+      await invokeWorker("render_preview", { jobId });
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (reason instanceof WorkerFailure) {
+        // A failed send ends the preview as if its terminal line were this error (C7.4).
+        onWorkerEvent({ event: "error", jobId, code: reason.code, message: reason.message, details: reason.details });
+      }
+      throw reason;
     }
   }
 
-  async function undo(): Promise<void> {
-    await runHistory("undo_document");
+  function commit(edit: Edit, preview: boolean): Promise<void> {
+    return queue.enqueue(async () => {
+      try {
+        const next = parseEditorState(await invokeWorker("edit_document", { edit }));
+        applyState(next);
+        setError(null);
+        setFieldError(null);
+        if (next.focus?.beatId) {
+          setSelection({ kind: "beat", id: next.focus.beatId });
+        }
+        if (preview) {
+          schedulePreview();
+        }
+      } catch (reason: unknown) {
+        if (reason instanceof WorkerRefusal && FIELD_CODES.has(reason.code) && FIELD_EDITS.has(edit.op)) {
+          setFieldError(reason.message);
+        }
+        throw reason;
+      }
+    });
   }
 
-  async function redo(): Promise<void> {
-    await runHistory("redo_document");
+  function undo(): Promise<void> {
+    return runHistory("undo_document");
   }
 
-  async function runHistory(command: "undo_document" | "redo_document"): Promise<void> {
-    try {
-      const value = await invoke<unknown>(command);
-      const rejected = parseWorkerEvent(value);
-      if (rejected?.event === "rejected") {
-        setError(rejected.message);
-        return;
-      }
-      const parsed = parseEditorState(value);
-      if (!parsed) {
-        setError("History did not return a document.");
-        return;
-      }
-      setState(parsed);
+  function redo(): Promise<void> {
+    return runHistory("redo_document");
+  }
+
+  function runHistory(command: "undo_document" | "redo_document"): Promise<void> {
+    return queue.enqueue(async () => {
+      applyState(parseEditorState(await invokeWorker(command)));
       setError(null);
       setDrafts({});
-    } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
+    });
   }
 
   function onExport(): void {
@@ -274,85 +301,49 @@ export function useEditor() {
       fps: profile.fps,
       transparent: profile.transparent,
     };
-    void (async () => {
-      try {
-        const jobId = await invoke<string>("reserve_job_id", { prefix: "export" });
-        const begun = beginExport(jobs.current, jobId);
-        jobs.current = begun.session;
-        setStatus(begun.session.status);
-        setExporting(begun.session.exporting);
-        setExportLabel(begun.session.exportLabel);
-        setExportPath(begun.session.exportPath);
-        setExportNote(begun.session.exportNote);
-        for (const event of begun.applied) {
-          if (event.event === "beat_ready") {
-            setState((current) => patchBeat(current, event.beatIndex, event.path));
-          }
-        }
-        if (!begun.session.exporting) {
-          armingExport.current = false;
-          return;
-        }
-        const value = await invoke<unknown>("edit_document", { edit });
-        const rejected = parseWorkerEvent(value);
-        if (rejected?.event === "rejected") {
-          jobs.current = {
-            ...jobs.current,
-            exportJobId: null,
-            exporting: false,
-            exportLabel: "Export",
-            status: "Ready",
-            error: rejected.message,
-          };
-          armingExport.current = false;
-          setExporting(false);
-          setExportLabel("Export");
-          setStatus("Ready");
-          setError(rejected.message);
-          return;
-        }
-        const parsed = parseEditorState(value);
-        if (parsed) {
-          setState(parsed);
-        }
-        if (jobs.current.pendingCancel) {
-          jobs.current = {
-            ...jobs.current,
-            exportJobId: null,
-            pendingCancel: false,
-            exporting: false,
-            exportCommandSent: false,
-            exportLabel: "Export",
-            status: "Cancelled",
-          };
-          armingExport.current = false;
-          setExporting(false);
-          setExportLabel("Export");
-          setStatus("Cancelled");
-          return;
-        }
-        await invoke("export_movie", { jobId });
-        const sent = markExportSent(jobs.current);
-        jobs.current = sent.session;
+    void queue.enqueue(() => runExport(edit));
+  }
+
+  /** The Export task (C9.2): reserve an id, save the profile, then send the export unless Cancel came first. */
+  async function runExport(edit: Edit): Promise<void> {
+    try {
+      const jobId = await invoke<string>("reserve_job_id", { prefix: "export" });
+      const begun = beginExport(jobs.current, jobId);
+      publish(begun.session);
+      applyBeats(begun.applied);
+      if (!begun.session.exporting) {
         armingExport.current = false;
-        if (sent.cancelJobId) {
-          await invoke("cancel_render", { jobId: sent.cancelJobId });
-        }
-      } catch (reason: unknown) {
-        jobs.current = {
-          ...jobs.current,
-          exportJobId: null,
-          exporting: false,
-          exportLabel: "Export",
-          status: "Ready",
-        };
-        armingExport.current = false;
-        setExporting(false);
-        setExportLabel("Export");
-        setStatus("Ready");
-        setError(reason instanceof Error ? reason.message : String(reason));
+        return;
       }
-    })();
+      applyState(parseEditorState(await invokeWorker("edit_document", { edit })));
+      if (jobs.current.pendingCancel) {
+        stopExport("Cancelled");
+        return;
+      }
+      await invokeWorker("export_movie", { jobId });
+      const sent = markExportSent(jobs.current);
+      jobs.current = sent.session;
+      armingExport.current = false;
+      if (sent.cancelJobId) {
+        await invokeWorker("cancel_render", { jobId: sent.cancelJobId });
+      }
+    } catch (reason: unknown) {
+      stopExport("Ready");
+      throw reason;
+    }
+  }
+
+  function stopExport(status: string): void {
+    armingExport.current = false;
+    publish({
+      ...jobs.current,
+      exportJobId: null,
+      exportCommandSent: false,
+      pendingCancel: false,
+      exporting: false,
+      exportLabel: "Export",
+      status,
+    });
   }
 
   function onCancelExport(): void {
@@ -362,33 +353,19 @@ export function useEditor() {
     }
     const step = requestCancel(jobs.current);
     jobs.current = step.session;
-    if (step.cancelJobId === null) {
-      return;
+    const jobId = step.cancelJobId;
+    if (jobId !== null) {
+      void queue.enqueue(() => invokeWorker("cancel_render", { jobId }));
     }
-    void invoke("cancel_render", { jobId: step.cancelJobId }).catch((reason: unknown) => {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    });
   }
 
-  async function onClearCache(): Promise<void> {
-    try {
-      const value = await invoke<unknown>("clear_cache");
-      const rejected = parseWorkerEvent(value);
-      if (rejected?.event === "rejected") {
-        setError(rejected.message);
-        return;
-      }
-      const parsed = parseEditorState(value);
-      if (!parsed) {
-        setError("Clear cache did not return a document.");
-        return;
-      }
-      setState(parsed);
-      setError(null);
+  function onClearCache(): Promise<void> {
+    return queue.enqueue(async () => {
+      const next = parseEditorState(await invokeWorker("clear_cache"));
+      applyState(next);
+      setError(next.warning?.message ?? null);
       setExportPath(null);
-    } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
+    });
   }
 
   function onNotices(): void {
@@ -396,98 +373,41 @@ export function useEditor() {
     setNoticesOpen(true);
   }
 
-  async function onOpenSample(): Promise<void> {
-    try {
-      const value = await invoke<unknown>("open_sample");
-      const rejected = parseWorkerEvent(value);
-      if (rejected?.event === "rejected") {
-        setError(rejected.message);
-        return;
-      }
-      const parsed = parseEditorState(value);
-      if (!parsed) {
-        setError("The reference-60 sample did not open.");
-        return;
-      }
-      setState(parsed);
-      setSelection({ kind: "none" });
-      setDrafts({});
-      setPlayhead(0);
-      setPlaying(false);
-      setCodeOpen(false);
+  function onOpenSample(): Promise<void> {
+    return queue.enqueue(async () => {
+      applyOpened(parseEditorState(await invokeWorker("open_sample")));
       setNoticesOpen(false);
-      setError(null);
-      setExportPath(null);
-    } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
+    });
   }
 
-  async function onViewCode(): Promise<void> {
+  function onViewCode(): Promise<void> {
     setNoticesOpen(false);
     setCodeOpen(true);
-    try {
-      const value = await invoke<unknown>("view_code");
-      if (isRecord(value) && value.event === "code" && typeof value.source === "string") {
-        setCodeText(value.source);
-        return;
-      }
-      const rejected = parseWorkerEvent(value);
-      if (rejected?.event === "rejected") {
-        setError(rejected.message);
-      }
-    } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
+    return queue.enqueue(async () => {
+      const read = fieldsOf(await invokeWorker("view_code"), "code");
+      setCodeText(read("source", asString));
+    });
   }
 
-  async function onExportCode(): Promise<void> {
-    try {
-      const value = await invoke<unknown>("export_code_dialog");
-      if (isRecord(value) && value.cancelled === true) {
+  function onExportCode(): Promise<void> {
+    return queue.enqueue(async () => {
+      const reply = await invokeWorker("export_code_dialog");
+      if (reply === null) {
         return;
       }
-      if (isRecord(value) && typeof value.path === "string") {
-        setExportNote(`Code exported to ${value.path}`);
-        setError(null);
-        return;
-      }
-      const rejected = parseWorkerEvent(value);
-      if (rejected?.event === "rejected") {
-        setError(rejected.message);
-      }
-    } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
-  }
-
-  async function onOpen(): Promise<void> {
-    try {
-      const value = await invoke<unknown>("open_project_dialog");
-      if (isRecord(value) && value.cancelled === true) {
-        return;
-      }
-      const rejected = parseWorkerEvent(value);
-      if (rejected?.event === "rejected") {
-        setError(rejected.message);
-        return;
-      }
-      const parsed = parseEditorState(value);
-      if (!parsed) {
-        setError("That folder is not a Mathimator project.");
-        return;
-      }
-      setState(parsed);
-      setSelection({ kind: "none" });
-      setDrafts({});
-      setPlayhead(0);
-      setPlaying(false);
-      setCodeOpen(false);
+      const read = fieldsOf(reply, "export_code_dialog");
+      setExportNote(`Code exported to ${read("path", asString)}`);
       setError(null);
-      setExportPath(null);
-    } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
+    });
+  }
+
+  function onOpen(): Promise<void> {
+    return queue.enqueue(async () => {
+      const reply = await invokeWorker("open_project_dialog");
+      if (reply !== null) {
+        applyOpened(parseEditorState(reply));
+      }
+    });
   }
 
   function onDraftDuration(beatId: string, duration: number): void {
@@ -557,14 +477,4 @@ export function useEditor() {
     onDraftDuration,
     onCommitDuration,
   };
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

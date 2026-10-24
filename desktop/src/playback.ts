@@ -1,4 +1,4 @@
-import type { EditorState, PreviewIndex } from "./types";
+import type { EditorState, IndexBeat, PreviewIndex } from "./types";
 
 export type Playback =
   | { mode: "empty"; badge: false; path: null; time: number; beatIndex: null }
@@ -11,11 +11,11 @@ export function playbackAt(
   time: number,
   fileExists: (path: string) => boolean = () => true,
 ): Playback {
-  if (!index || index.beats.length === 0) {
+  const clamped = time < 0 ? 0 : time;
+  const beat = index ? beatAt(index.beats, clamped) : undefined;
+  if (!index || !beat) {
     return { mode: "empty", badge: false, path: null, time: 0, beatIndex: null };
   }
-  const clamped = time < 0 ? 0 : time;
-  const beat = beatAt(index, clamped);
   const offset = Math.max(0, Math.round((clamped - beat.derivedStart) * 1000) / 1000);
   const allFresh = index.beats.every((item) => item.fresh);
   if (allFresh && exists(index.output, fileExists)) {
@@ -72,11 +72,7 @@ function exists(path: string | null, fileExists: (path: string) => boolean): pat
   return path !== null && path.length > 0 && fileExists(path);
 }
 
-function beatAt(index: PreviewIndex, time: number) {
-  for (const beat of index.beats) {
-    if (time < beat.derivedStart + beat.duration) {
-      return beat;
-    }
-  }
-  return index.beats[index.beats.length - 1];
+/** The beat playing at `time`, or the last beat past the end. Undefined only when there are no beats. */
+function beatAt(beats: readonly IndexBeat[], time: number): IndexBeat | undefined {
+  return beats.find((beat) => time < beat.derivedStart + beat.duration) ?? beats.at(-1);
 }

@@ -1,4 +1,18 @@
-import { parseExportProfile, type ExportProfile } from "./exportProfile";
+import { asExportProfile, type ExportProfile } from "./exportProfile";
+import {
+  asBoolean,
+  asInteger,
+  asNumber,
+  asRecord,
+  asString,
+  fieldsOf,
+  isRecord,
+  listOf,
+  nullable,
+  oneOf,
+  optional,
+  ParseError,
+} from "./parse";
 
 export type { ExportProfile };
 
@@ -81,19 +95,27 @@ export interface EditorState {
     canRedo: boolean;
   };
   index: PreviewIndex | null;
-  code: string | null;
+  /** The generated scene.py, or null when codegen refused the document; `sourceError` then says why. */
+  source: string | null;
+  sourceError?: string;
   focus?: {
     beatId: string | null;
     objectId: string | null;
   };
+  /** Edit replies only: false for an edit that changed nothing (D08). */
+  changed?: boolean;
+  /** Clear cache only: some files could not be removed. */
+  warning?: { code: string; message: string };
 }
 
 export type WorkerEvent =
-  | { event: "ready"; jobId: string | null }
+  | { event: "ready"; jobId: string }
+  | { event: "queued"; jobId: string; code: string; message: string }
+  | { event: "started"; jobId: string }
   | { event: "beat_ready"; jobId: string; beatIndex: number; path: string }
   | { event: "done"; jobId: string; path: string; current?: boolean }
-  | { event: "error"; jobId: string | null; message: string }
-  | { event: "rejected"; jobId: string | null; message: string };
+  | { event: "error"; jobId: string | null; code: string; message: string; details?: string }
+  | { event: "rejected"; jobId: string; code: string; message: string; field?: string };
 
 export type Edit =
   | { op: "set_project_name"; name: string }
@@ -140,268 +162,178 @@ const OBJECT_TYPES: readonly ObjectType[] = [
   "parametric_curve",
 ];
 const ACTIONS: readonly BeatAction[] = ["create", "fade_in", "write", "wait", "transform_formula", "set_color", "move"];
+const SCENE_KINDS: readonly SceneKind[] = ["scene", "three_d_scene"];
 
-export function parseEditorState(value: unknown): EditorState | null {
-  if (!isRecord(value) || value.event !== "state") {
-    return null;
-  }
-  const document = parseDocument(value.document);
-  const derived = parseDerived(value.derived);
-  if (!document || !derived || typeof value.projectPath !== "string") {
-    return null;
-  }
-  const index = value.index === null ? null : parseIndex(value.index);
-  if (value.index !== null && index === null) {
-    return null;
-  }
-  const focus = parseFocus(value.focus);
+/** Parses a `state` reply (C5.1). Throws ParseError naming the first field that does not match. */
+export function parseEditorState(value: unknown): EditorState {
+  const read = fieldsOf(value, "state");
   return {
-    event: "state",
-    projectPath: value.projectPath,
-    document,
-    derived,
-    index,
-    code: typeof value.code === "string" ? value.code : null,
-    focus,
+    event: read("event", oneOf(["state"] as const)),
+    projectPath: read("projectPath", asString),
+    document: read("document", asDocument),
+    derived: read("derived", asDerived),
+    index: read("index", nullable(asIndex)),
+    source: read("source", nullable(asString)),
+    sourceError: read("sourceError", optional(asString)),
+    focus: read("focus", optional(asFocus)),
+    changed: read("changed", optional(asBoolean)),
+    warning: read("warning", optional(asWarning)),
   };
 }
 
+/**
+ * Parses a line from the `worker-event` channel. Returns null for an event the UI does not read (C2: unknown
+ * events are ignored) and throws ParseError naming the field when a known event is malformed.
+ */
 export function parseWorkerEvent(value: unknown): WorkerEvent | null {
   if (!isRecord(value) || typeof value.event !== "string") {
     return null;
   }
-  const event = value.event;
-  if (event === "ready") {
-    return { event: "ready", jobId: typeof value.jobId === "string" ? value.jobId : null };
+  const read = fieldsOf(value, value.event);
+  switch (value.event) {
+    case "ready":
+      return { event: "ready", jobId: read("jobId", asString) };
+    case "queued":
+      return {
+        event: "queued",
+        jobId: read("jobId", asString),
+        code: read("code", asString),
+        message: read("message", asString),
+      };
+    case "started":
+      return { event: "started", jobId: read("jobId", asString) };
+    case "beat_ready":
+      return {
+        event: "beat_ready",
+        jobId: read("jobId", asString),
+        beatIndex: read("beatIndex", asInteger),
+        path: read("path", asString),
+      };
+    case "done":
+      return {
+        event: "done",
+        jobId: read("jobId", asString),
+        path: read("path", asString),
+        current: read("current", optional(asBoolean)),
+      };
+    case "error":
+      return {
+        event: "error",
+        jobId: read("jobId", nullable(asString)),
+        code: read("code", asString),
+        message: read("message", asString),
+        details: read("details", optional(asString)),
+      };
+    case "rejected":
+      return {
+        event: "rejected",
+        jobId: read("jobId", asString),
+        code: read("code", asString),
+        message: read("message", asString),
+        field: read("field", optional(asString)),
+      };
+    default:
+      return null;
   }
-  if (
-    event === "beat_ready" &&
-    typeof value.jobId === "string" &&
-    typeof value.beatIndex === "number" &&
-    typeof value.path === "string"
-  ) {
-    return { event: "beat_ready", jobId: value.jobId, beatIndex: value.beatIndex, path: value.path };
-  }
-  if (event === "done" && typeof value.jobId === "string" && typeof value.path === "string") {
-    return {
-      event: "done",
-      jobId: value.jobId,
-      path: value.path,
-      current: typeof value.current === "boolean" ? value.current : undefined,
-    };
-  }
-  if (event === "error" && typeof value.message === "string") {
-    return {
-      event: "error",
-      jobId: typeof value.jobId === "string" ? value.jobId : null,
-      message: value.message,
-    };
-  }
-  if (event === "rejected" && typeof value.message === "string") {
-    return {
-      event: "rejected",
-      jobId: typeof value.jobId === "string" ? value.jobId : null,
-      message: value.message,
-    };
-  }
-  return null;
 }
 
-function parseDocument(value: unknown): ProjectDocument | null {
-  if (!isRecord(value) || typeof value.name !== "string" || !isRecord(value.scene)) {
-    return null;
-  }
-  const objects = parseObjects(value.scene.objects);
-  const beats = parseBeats(value.scene.beats);
-  const templateInstances = parseTemplates(value.scene.templateInstances);
-  if (!objects || !beats || !templateInstances) {
-    return null;
-  }
-  const kind = value.scene.kind === "three_d_scene" ? "three_d_scene" : value.scene.kind === "scene" ? "scene" : null;
-  if (!kind) {
-    return null;
-  }
-  const camera =
-    value.scene.camera === undefined || value.scene.camera === null ? null : parseCamera(value.scene.camera);
-  if (value.scene.camera !== undefined && value.scene.camera !== null && camera === null) {
-    return null;
-  }
+function asDocument(value: unknown, path: string): ProjectDocument {
+  const read = fieldsOf(value, path);
+  return {
+    name: read("name", asString),
+    scene: read("scene", asScene),
+    exportProfile: read("exportProfile", asExportProfile),
+  };
+}
+
+function asScene(value: unknown, path: string): ProjectDocument["scene"] {
+  const read = fieldsOf(value, path);
+  const kind = read("kind", oneOf(SCENE_KINDS));
+  const camera = read("camera", optional(nullable(asCamera))) ?? null;
   if (kind === "three_d_scene" && camera === null) {
-    return null;
-  }
-  const exportProfile = parseExportProfile(value.exportProfile);
-  if (!exportProfile) {
-    return null;
-  }
-  return { name: value.name, scene: { kind, camera, objects, beats, templateInstances }, exportProfile };
-}
-
-function parseObjects(value: unknown): SceneObject[] | null {
-  if (!Array.isArray(value)) {
-    return null;
-  }
-  const objects: SceneObject[] = [];
-  for (const item of value) {
-    if (!isRecord(item) || typeof item.id !== "string" || typeof item.name !== "string") {
-      return null;
-    }
-    if (!isObjectType(item.type) || !isRecord(item.params)) {
-      return null;
-    }
-    objects.push({ id: item.id, name: item.name, type: item.type, params: item.params });
-  }
-  return objects;
-}
-
-function parseBeats(value: unknown): Beat[] | null {
-  if (!Array.isArray(value)) {
-    return null;
-  }
-  const beats: Beat[] = [];
-  for (const item of value) {
-    if (
-      !isRecord(item) ||
-      typeof item.id !== "string" ||
-      typeof item.duration !== "number" ||
-      !isAction(item.action) ||
-      !Array.isArray(item.targets) ||
-      !item.targets.every((target) => typeof target === "string")
-    ) {
-      return null;
-    }
-    const beat: Beat = {
-      id: item.id,
-      duration: item.duration,
-      action: item.action,
-      targets: item.targets,
-    };
-    if (item.params !== undefined) {
-      if (!isRecord(item.params)) {
-        return null;
-      }
-      beat.params = item.params;
-    }
-    beats.push(beat);
-  }
-  return beats;
-}
-
-function parseCamera(value: unknown): Camera | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  if (typeof value.phi !== "number" || typeof value.theta !== "number" || typeof value.zoom !== "number") {
-    return null;
-  }
-  return { phi: value.phi, theta: value.theta, zoom: value.zoom };
-}
-
-function parseTemplates(value: unknown): TemplateInstance[] | null {
-  if (value === undefined) {
-    return [];
-  }
-  if (!Array.isArray(value)) {
-    return null;
-  }
-  const templates: TemplateInstance[] = [];
-  for (const item of value) {
-    if (
-      !isRecord(item) ||
-      typeof item.id !== "string" ||
-      typeof item.templateId !== "string" ||
-      !isRecord(item.params) ||
-      !Array.isArray(item.objectIds) ||
-      !item.objectIds.every((id) => typeof id === "string") ||
-      !Array.isArray(item.beatIds) ||
-      !item.beatIds.every((id) => typeof id === "string")
-    ) {
-      return null;
-    }
-    templates.push({
-      id: item.id,
-      templateId: item.templateId,
-      params: item.params,
-      objectIds: item.objectIds,
-      beatIds: item.beatIds,
-    });
-  }
-  return templates;
-}
-
-function parseDerived(value: unknown): EditorState["derived"] | null {
-  if (!isRecord(value) || !isNumberList(value.starts) || !isBooleanList(value.dirty)) {
-    return null;
-  }
-  if (typeof value.total !== "number" || typeof value.canUndo !== "boolean" || typeof value.canRedo !== "boolean") {
-    return null;
+    throw new ParseError(`${path}.camera`, "must be set in a 3D scene");
   }
   return {
-    starts: value.starts,
-    total: value.total,
-    dirty: value.dirty,
-    canUndo: value.canUndo,
-    canRedo: value.canRedo,
+    kind,
+    camera,
+    objects: read("objects", listOf(asObject)),
+    beats: read("beats", listOf(asBeat)),
+    templateInstances: read("templateInstances", optional(listOf(asTemplate))) ?? [],
   };
 }
 
-function parseIndex(value: unknown): PreviewIndex | null {
-  if (!isRecord(value) || !Array.isArray(value.beats)) {
-    return null;
-  }
-  const beats: IndexBeat[] = [];
-  for (const item of value.beats) {
-    if (
-      !isRecord(item) ||
-      typeof item.id !== "string" ||
-      typeof item.index !== "number" ||
-      typeof item.derivedStart !== "number" ||
-      typeof item.duration !== "number" ||
-      typeof item.fresh !== "boolean"
-    ) {
-      return null;
-    }
-    beats.push({
-      id: item.id,
-      index: item.index,
-      derivedStart: item.derivedStart,
-      duration: item.duration,
-      partial: typeof item.partial === "string" ? item.partial : null,
-      lastGood: typeof item.lastGood === "string" ? item.lastGood : null,
-      fresh: item.fresh,
-    });
-  }
+function asObject(value: unknown, path: string): SceneObject {
+  const read = fieldsOf(value, path);
   return {
-    output: typeof value.output === "string" ? value.output : null,
-    beats,
+    id: read("id", asString),
+    name: read("name", asString),
+    type: read("type", oneOf(OBJECT_TYPES)),
+    params: read("params", asRecord),
   };
 }
 
-function parseFocus(value: unknown): EditorState["focus"] | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
+function asBeat(value: unknown, path: string): Beat {
+  const read = fieldsOf(value, path);
   return {
-    beatId: typeof value.beatId === "string" ? value.beatId : null,
-    objectId: typeof value.objectId === "string" ? value.objectId : null,
+    id: read("id", asString),
+    duration: read("duration", asNumber),
+    action: read("action", oneOf(ACTIONS)),
+    targets: read("targets", listOf(asString)),
+    params: read("params", optional(asRecord)),
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function asCamera(value: unknown, path: string): Camera {
+  const read = fieldsOf(value, path);
+  return { phi: read("phi", asNumber), theta: read("theta", asNumber), zoom: read("zoom", asNumber) };
 }
 
-function isObjectType(value: unknown): value is ObjectType {
-  return typeof value === "string" && OBJECT_TYPES.some((item) => item === value);
+function asTemplate(value: unknown, path: string): TemplateInstance {
+  const read = fieldsOf(value, path);
+  return {
+    id: read("id", asString),
+    templateId: read("templateId", asString),
+    params: read("params", asRecord),
+    objectIds: read("objectIds", listOf(asString)),
+    beatIds: read("beatIds", listOf(asString)),
+  };
 }
 
-function isAction(value: unknown): value is BeatAction {
-  return typeof value === "string" && ACTIONS.some((item) => item === value);
+function asDerived(value: unknown, path: string): EditorState["derived"] {
+  const read = fieldsOf(value, path);
+  return {
+    starts: read("starts", listOf(asNumber)),
+    total: read("total", asNumber),
+    dirty: read("dirty", listOf(asBoolean)),
+    canUndo: read("canUndo", asBoolean),
+    canRedo: read("canRedo", asBoolean),
+  };
 }
 
-function isNumberList(value: unknown): value is number[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "number");
+function asIndex(value: unknown, path: string): PreviewIndex {
+  const read = fieldsOf(value, path);
+  return { output: read("output", nullable(asString)), beats: read("beats", listOf(asIndexBeat)) };
 }
 
-function isBooleanList(value: unknown): value is boolean[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "boolean");
+function asIndexBeat(value: unknown, path: string): IndexBeat {
+  const read = fieldsOf(value, path);
+  return {
+    id: read("id", asString),
+    index: read("index", asInteger),
+    derivedStart: read("derivedStart", asNumber),
+    duration: read("duration", asNumber),
+    partial: read("partial", nullable(asString)),
+    lastGood: read("lastGood", nullable(asString)),
+    fresh: read("fresh", asBoolean),
+  };
+}
+
+function asFocus(value: unknown, path: string): NonNullable<EditorState["focus"]> {
+  const read = fieldsOf(value, path);
+  return { beatId: read("beatId", nullable(asString)), objectId: read("objectId", nullable(asString)) };
+}
+
+function asWarning(value: unknown, path: string): NonNullable<EditorState["warning"]> {
+  const read = fieldsOf(value, path);
+  return { code: read("code", asString), message: read("message", asString) };
 }

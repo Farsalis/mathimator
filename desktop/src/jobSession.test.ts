@@ -46,7 +46,7 @@ function state(): EditorState {
     },
     derived: { starts: [], total: 0, dirty: [], canUndo: false, canRedo: false },
     index,
-    code: null,
+    source: null,
   };
 }
 
@@ -100,6 +100,22 @@ describe("export handshake", () => {
     expect(preview.session.exportJobId).toBe("export-4");
     expect(preview.session.previewJobId).toBe("preview-4");
   });
+
+  it("keeps Rendering export when a preview fails during the export", () => {
+    const begun = beginExport(createHandshake(), "export-5");
+    const preview = beginPreview(begun.session, "preview-5", 1);
+    const failed = receive(preview.session, {
+      event: "error",
+      jobId: "preview-5",
+      code: "worker_exited",
+      message: "The worker stopped (exit code 1).",
+    });
+    expect(failed.session.status).toBe("Rendering export");
+    expect(failed.session.error).toBe("The worker stopped (exit code 1).");
+    expect(failed.session.previewJobId).toBeNull();
+    expect(failed.session.rendering).toBe(false);
+    expect(failed.session.exporting).toBe(true);
+  });
 });
 
 describe("playback", () => {
@@ -111,6 +127,11 @@ describe("playback", () => {
     const choice = playbackAt(fresh, 0.2, (path) => path !== fresh.output);
     expect(choice.mode).toBe("partial");
     expect(choice.path).toBe("C:/old/partial-0.mp4");
+  });
+
+  it("holds the last beat past the end and shows nothing without beats", () => {
+    expect(playbackAt(index, 9).beatIndex).toBe(1);
+    expect(playbackAt({ output: null, beats: [] }, 1).mode).toBe("empty");
   });
 
   it("uses a blank canvas when the partial file is missing", () => {

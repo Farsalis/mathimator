@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { isRecord } from "../parse";
+import { errorMessage } from "../workerQueue";
 
 const EQUATION_DEBOUNCE_MS = 100;
 const CAPTION = "Live preview is Typst. The video uses LaTeX and will look different.";
@@ -44,7 +46,7 @@ export function FormulaPreview({ latex }: FormulaPreviewProps) {
           if (token.current !== request) {
             return;
           }
-          setMessage(reason instanceof Error ? reason.message : String(reason));
+          setMessage(errorMessage(reason));
         });
     }, EQUATION_DEBOUNCE_MS);
     return () => {
@@ -82,7 +84,7 @@ export function FormulaPreview({ latex }: FormulaPreviewProps) {
       })
       .catch((reason: unknown) => {
         if (!cancelled) {
-          setMessage(reason instanceof Error ? reason.message : String(reason));
+          setMessage(errorMessage(reason));
         }
       });
     return () => {
@@ -150,8 +152,4 @@ function parseGlyph(value: unknown): GlyphResult | null {
     default:
       return null;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

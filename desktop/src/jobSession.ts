@@ -159,6 +159,8 @@ function applyWorkerEvent(session: Handshake, message: WorkerEvent): Handshake {
       return session;
     case "error":
       return applyError(session, message.jobId, message.message);
+    case "queued":
+    case "started":
     case "rejected":
       return session;
     default: {
@@ -178,7 +180,8 @@ function applyError(session: Handshake, jobId: string | null, message: string): 
       next = { ...next, status: "Cancelled" };
     }
   } else if (jobId === null || session.epoch === session.previewEpoch || jobId === session.exportJobId) {
-    next = { ...next, error: message, status: "Ready" };
+    const exportRuns = session.exportJobId !== null && jobId !== session.exportJobId;
+    next = { ...next, error: message, status: exportRuns ? session.status : "Ready" };
   }
   if (jobId === session.previewJobId) {
     next = { ...next, previewJobId: null, rendering: false };

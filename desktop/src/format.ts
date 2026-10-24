@@ -25,16 +25,3 @@ export function clampDuration(beats: Beat[], beatId: string, next: number): numb
   const max = Math.max(0.1, Math.round((120 - others) * 1000) / 1000);
   return Math.min(max, Math.max(0.1, quantized));
 }
-
-export function beatAt(starts: number[], durations: number[], time: number): number {
-  if (durations.length === 0) {
-    return 0;
-  }
-  for (let index = 0; index < durations.length; index += 1) {
-    const end = starts[index] + durations[index];
-    if (time < end) {
-      return index;
-    }
-  }
-  return durations.length - 1;
-}
