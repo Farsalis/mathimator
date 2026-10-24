@@ -34,9 +34,9 @@ repos:
       - id: ruff-format
 
   # mypy reads its files and its win32 platform from pyproject.toml; the second
-  # pass checks the POSIX branches, as CI does. The worker is stdlib-only, so
-  # the isolated hook environment needs only mypy. Keep the pin equal to the
-  # mypy pin in the dev dependency group.
+  # pass checks the POSIX branches, as CI does. The worker and scripts/ are
+  # stdlib-only, so the isolated hook environment needs only mypy. Keep the
+  # pin equal to the mypy pin in the dev dependency group.
   - repo: local
     hooks:
       - id: mypy
@@ -44,7 +44,7 @@ repos:
         entry: mypy
         language: python
         additional_dependencies: [mypy==2.4.0]
-        files: ^(worker/|pyproject\.toml$)
+        files: ^(worker/|scripts/|pyproject\.toml$)
         pass_filenames: false
       - id: mypy-linux
         name: mypy --strict (linux)
@@ -52,7 +52,7 @@ repos:
         args: [--platform, linux]
         language: python
         additional_dependencies: [mypy==2.4.0]
-        files: ^(worker/|pyproject\.toml$)
+        files: ^(worker/|scripts/|pyproject\.toml$)
         pass_filenames: false
 
   # Scans the staged changes for secrets at commit time.

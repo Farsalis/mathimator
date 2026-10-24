@@ -19,15 +19,16 @@ render = ["manim[typst]==0.22.0"]
 
 [tool.uv]
 package = false
-# The uv release the bundle build uses. Every machine and CI job reads and
-# rewrites uv.lock with this one release.
+# The uv release the bundle build uses (UV_VERSION in packaging/versions.env).
+# Every machine and CI job reads and rewrites uv.lock with this one release.
 required-version = "==0.13.5"
 # Plain `uv sync` installs the render stack as well: the debug shell and the
 # render tests run Manim from .venv. Jobs that only lint or type-check can use
 # `uv sync --locked --no-default-groups --group dev`.
 default-groups = ["dev", "render"]
-# The render stack shipped in packaging/bundle/venv, read from its .dist-info
+# The render stack of the audited 2026-10-22 bundle, read from its .dist-info
 # folders, so the lock resolves to the versions the bundle was tested with.
+# The bundle scripts install the render group from this lock, with its hashes.
 constraint-dependencies = [
   "audioop-lts==0.2.2",
   "av==19.0.2",
@@ -76,8 +77,8 @@ members = ["worker"]
 [tool.uv.sources]
 mathimator-worker = { workspace = true }
 
-# Ruff lints and formats worker/ and tests/. scenes/ holds the golden codegen
-# output that tests compare byte for byte, so Ruff never touches it.
+# Ruff lints and formats worker/, tests/ and scripts/. scenes/ holds the golden
+# codegen output that tests compare byte for byte, so Ruff never touches it.
 [tool.ruff]
 target-version = "py313"
 line-length = 120
@@ -96,11 +97,11 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM"]
 # Ruff's default style: double quotes, space indents, magic trailing commas.
 [tool.ruff.format]
 
-# mypy checks the worker as it runs on Windows, so a Linux runner reproduces
-# the Windows result. CI adds a second pass with --platform linux for the
-# POSIX branches behind the sys.platform guards.
+# mypy checks the worker and scripts/ as they run on Windows, so a Linux runner
+# reproduces the Windows result. CI adds a second pass with --platform linux
+# for the POSIX branches behind the sys.platform guards.
 [tool.mypy]
 strict = true
 python_version = "3.13"
 platform = "win32"
-files = ["worker/mathimator_worker"]
+files = ["worker/mathimator_worker", "scripts"]
