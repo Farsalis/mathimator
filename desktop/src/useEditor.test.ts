@@ -157,7 +157,7 @@ async function editAfterTimeout(first: string, resynced: string): Promise<Return
   await exported(result);
   emit({ event: "done", jobId: "export-1", path: `${first}/scene.mp4`, current: true });
   act(() => {
-    result.current.select({ kind: "object", id: "plot_1" });
+    result.current.selectObject("plot_1");
     result.current.setPlayhead(1.5);
     result.current.setPlaying(true);
     result.current.onViewCode();
@@ -304,7 +304,7 @@ describe("useEditor timeout resync", () => {
     const editor = await editAfterTimeout("C:/first", "C:/second");
     expect(editor.state?.projectPath).toBe("C:/second");
     expect(editor.error?.message).toBe(TIMEOUT_TEXT);
-    expect(editor.selection).toEqual({ kind: "none" });
+    expect(editor.selection).toEqual({ beatId: null, objectId: null });
     expect(editor.playhead).toBe(0);
     expect(editor.playing).toBe(false);
     expect(editor.panel).toBe("inspector");
@@ -317,7 +317,7 @@ describe("useEditor timeout resync", () => {
     const editor = await editAfterTimeout("C:/first", "C:/first");
     expect(editor.state?.projectPath).toBe("C:/first");
     expect(editor.error?.message).toBe(TIMEOUT_TEXT);
-    expect(editor.selection).toEqual({ kind: "object", id: "plot_1" });
+    expect(editor.selection).toEqual({ beatId: null, objectId: "plot_1" });
     expect(editor.playhead).toBe(1.5);
     expect(editor.playing).toBe(true);
     expect(editor.panel).toBe("code");
@@ -486,12 +486,12 @@ describe("useEditor projects", () => {
   ] as const)("changes nothing when %s is cancelled (C14 Q2)", async (action, command) => {
     script({ get_state: [stateReply("C:/first")], [command]: [{ cancelled: true }] });
     const result = await started();
-    act(() => result.current.select({ kind: "object", id: "plot_1" }));
+    act(() => result.current.selectObject("plot_1"));
     await act(() => result.current[action]());
     await afterDebounce();
     expect(callsOf(command)).toBe(1);
     expect(result.current.state?.projectPath).toBe("C:/first");
-    expect(result.current.selection).toEqual({ kind: "object", id: "plot_1" });
+    expect(result.current.selection).toEqual({ beatId: null, objectId: "plot_1" });
     expect(result.current.error).toBeNull();
     expect(callsOf("render_preview")).toBe(0);
   });
@@ -508,7 +508,7 @@ describe("useEditor projects", () => {
     await exported(result);
     emit({ event: "done", jobId: "export-1", path: EXPORTED, current: false });
     act(() => {
-      result.current.select({ kind: "object", id: "plot_1" });
+      result.current.selectObject("plot_1");
       result.current.setPlayhead(1);
       result.current.onViewCode();
     });
@@ -517,7 +517,7 @@ describe("useEditor projects", () => {
     await act(() => result.current.commit(RENAME, false));
     expect(result.current.state?.projectPath).toBe("C:/kept");
     expect(result.current.state?.document.name).toBe("Renamed");
-    expect(result.current.selection).toEqual({ kind: "object", id: "plot_1" });
+    expect(result.current.selection).toEqual({ beatId: null, objectId: "plot_1" });
     expect(result.current.playhead).toBe(1);
     expect(result.current.panel).toBe("code");
     // The worker copied the exports along, and a temp project's old folder is gone.
@@ -537,13 +537,13 @@ describe("useEditor projects", () => {
       script({ get_state: [stateReply("C:/temp")], [command]: [{ savedAs: stateReply("C:/kept") }] });
       const result = await started();
       act(() => {
-        result.current.select({ kind: "object", id: "plot_1" });
+        result.current.selectObject("plot_1");
         result.current.setPlayhead(1);
         result.current.onViewCode();
       });
       await act(() => result.current[action]());
       expect(result.current.state?.projectPath).toBe("C:/kept");
-      expect(result.current.selection).toEqual({ kind: "object", id: "plot_1" });
+      expect(result.current.selection).toEqual({ beatId: null, objectId: "plot_1" });
       expect(result.current.playhead).toBe(1);
       expect(result.current.panel).toBe("code");
       expect(result.current.error).toBeNull();
@@ -882,7 +882,7 @@ describe("useEditor project_changed prompt", () => {
     });
     const result = await started();
     act(() => {
-      result.current.select({ kind: "object", id: "formula_9" });
+      result.current.selectObject("formula_9");
       result.current.onDraftDuration("beat_1", 3);
     });
     await act(() => result.current.commit(RENAME, false));
@@ -890,7 +890,7 @@ describe("useEditor project_changed prompt", () => {
     await waitFor(() => expect(callsOf("render_preview")).toBe(1));
     expect(result.current.state?.document.name).toBe("From disk");
     expect(result.current.changedPrompt).toBeNull();
-    expect(result.current.selection).toEqual({ kind: "none" });
+    expect(result.current.selection).toEqual({ beatId: null, objectId: null });
     expect(result.current.drafts).toEqual({});
     expect(callsOf("edit_document")).toBe(1);
   });
@@ -919,7 +919,7 @@ describe("useEditor worker exit", () => {
     });
     const result = await started();
     act(() => {
-      result.current.select({ kind: "beat", id: "beat_9" });
+      result.current.selectBeat("beat_9");
       result.current.onDraftDuration("beat_1", 3);
     });
     await exported(result);
@@ -930,7 +930,7 @@ describe("useEditor worker exit", () => {
     expect(result.current.status).toBe("Ready");
     expect(result.current.note).toBe(RESTART_NOTE);
     expect(result.current.drafts).toEqual({});
-    expect(result.current.selection).toEqual({ kind: "none" });
+    expect(result.current.selection).toEqual({ beatId: null, objectId: null });
     await afterDebounce();
     expect(callsOf("get_state")).toBe(2);
     expect(callsOf("render_preview")).toBe(0);
@@ -947,13 +947,13 @@ describe("useEditor worker exit", () => {
     await exported(result);
     emit({ event: "done", jobId: "export-1", path: EXPORTED, current: false });
     act(() => {
-      result.current.select({ kind: "object", id: "plot_1" });
+      result.current.selectObject("plot_1");
       result.current.setPlayhead(1);
       result.current.onDraftDuration("beat_1", 3);
     });
     emit(EXIT);
     await waitFor(() => expect(result.current.state?.projectPath).toBe("C:/fallback"));
-    expect(result.current.selection).toEqual({ kind: "none" });
+    expect(result.current.selection).toEqual({ beatId: null, objectId: null });
     expect(result.current.drafts).toEqual({});
     expect(result.current.playhead).toBe(0);
     expect(result.current.exportPath).toBeNull();
@@ -990,9 +990,11 @@ describe("useEditor field errors", () => {
     expect(result.current.error).toEqual({ code: "unsupported_expression", message: unsupported });
     expect(result.current.fieldError).toEqual({
       objectId: "plot_1",
+      beatId: null,
       field: "expression",
       op: "set_expression",
       axis: null,
+      key: null,
       message: unsupported,
     });
   });
@@ -1006,9 +1008,11 @@ describe("useEditor field errors", () => {
     );
     expect(result.current.fieldError).toEqual({
       objectId: "axes_1",
+      beatId: null,
       field: "value",
       op: "set_axes_range",
       axis: "y",
+      key: null,
       message: ticks,
     });
   });
@@ -1069,13 +1073,13 @@ describe("useEditor selection", () => {
     script({ get_state: [emptyReply("C:/first")], ...replies() });
     const result = await started();
     await act(() => result.current.commit({ op: "add_formula", afterBeatId: null }, false));
-    expect(result.current.selection).toEqual({ kind: "beat", id: "beat_1" });
+    expect(result.current.selection).toEqual({ beatId: "beat_1", objectId: "plot_1" });
     await act(() =>
       how === "deleted"
         ? result.current.commit({ op: "delete_object", objectId: "plot_1" }, false)
         : result.current.undo(),
     );
-    expect(result.current.selection).toEqual({ kind: "none" });
+    expect(result.current.selection).toEqual({ beatId: null, objectId: null });
   });
 
   it("clears the field error when the selection changes (F112)", async () => {
@@ -1086,9 +1090,102 @@ describe("useEditor selection", () => {
     const result = await started();
     await act(() => result.current.commit(EXPRESSION, true));
     expect(result.current.fieldError).not.toBeNull();
-    act(() => result.current.select({ kind: "beat", id: "beat_1" }));
+    act(() => result.current.selectBeat("beat_1"));
     expect(result.current.fieldError).toBeNull();
-    expect(result.current.selection).toEqual({ kind: "beat", id: "beat_1" });
+    expect(result.current.selection).toEqual({ beatId: "beat_1", objectId: "plot_1" });
+  });
+});
+
+/** A state reply whose plot is created, then held by a wait; `focus` names what an edit was about. */
+function waitReply(focus?: { beatId: string | null; objectId: string | null }) {
+  const reply = stateReply("C:/first");
+  const wait = { id: "beat_2", duration: 1, action: "wait", targets: [] };
+  return {
+    ...reply,
+    document: { ...reply.document, scene: { ...reply.document.scene, beats: [...reply.document.scene.beats, wait] } },
+    derived: {
+      ...reply.derived,
+      starts: [0, 2],
+      total: 3,
+      dirty: [true, true],
+      onScreen: [[], ["plot_1"], ["plot_1"]],
+    },
+    ...(focus === undefined ? {} : { focus }),
+  };
+}
+
+describe("useEditor two-part selection (design §10.2)", () => {
+  it("selects a beat with its first target, keeps the object for a beat without one, and an object keeps the beat", async () => {
+    script({ get_state: [waitReply()] });
+    const result = await started();
+    act(() => result.current.selectBeat("beat_2"));
+    expect(result.current.selection).toEqual({ beatId: "beat_2", objectId: null });
+    act(() => result.current.selectObject("plot_1"));
+    expect(result.current.selection).toEqual({ beatId: "beat_2", objectId: "plot_1" });
+    act(() => result.current.selectBeat("beat_1"));
+    expect(result.current.selection).toEqual({ beatId: "beat_1", objectId: "plot_1" });
+    act(() => result.current.selectBeat("beat_2"));
+    expect(result.current.selection).toEqual({ beatId: "beat_2", objectId: "plot_1" });
+  });
+
+  it("follows an edit's focus, and keeps the part of the selection it does not name", async () => {
+    script({
+      get_state: [stateReply("C:/first")],
+      edit_document: [waitReply({ beatId: "beat_2", objectId: null }), waitReply({ beatId: null, objectId: "plot_1" })],
+    });
+    const result = await started();
+    act(() => result.current.selectBeat("beat_1"));
+    await act(() =>
+      result.current.commit({ op: "add_beat", afterBeatId: "beat_1", action: "wait", targets: [] }, true),
+    );
+    expect(result.current.selection).toEqual({ beatId: "beat_2", objectId: "plot_1" });
+    await act(() => result.current.commit({ op: "set_object_name", objectId: "plot_1", name: "Sine" }, false));
+    expect(result.current.selection).toEqual({ beatId: "beat_2", objectId: "plot_1" });
+  });
+
+  it("drops the selected beat once it is deleted, and keeps the selected object", async () => {
+    script({ get_state: [waitReply()], edit_document: [stateReply("C:/first")] });
+    const result = await started();
+    act(() => result.current.selectBeat("beat_2"));
+    act(() => result.current.selectObject("plot_1"));
+    await act(() => result.current.commit({ op: "delete_beat", beatId: "beat_2" }, true));
+    expect(result.current.selection).toEqual({ beatId: null, objectId: "plot_1" });
+  });
+});
+
+describe("useEditor beat field errors (design §10.7)", () => {
+  const outOfRange = "params.factor must be from 0.01 to 100";
+  const noEntrance = "scene.objects[0] plot_1 has no entrance beat";
+
+  it("puts a refused beat edit on its beat, with its op and setting", async () => {
+    script({ get_state: [stateReply("C:/first")], edit_document: [refusal("invalid_edit", outOfRange, "value")] });
+    const result = await started();
+    await act(() => result.current.commit({ op: "set_beat_param", beatId: "beat_1", key: "factor", value: 200 }, true));
+    expect(result.current.fieldError).toEqual({
+      objectId: null,
+      beatId: "beat_1",
+      field: "value",
+      op: "set_beat_param",
+      axis: null,
+      key: "factor",
+      message: outOfRange,
+    });
+    expect(result.current.error?.message).toBe(outOfRange);
+  });
+
+  it("puts a beat edit refused by a document rule, which names no field, on its beat", async () => {
+    script({ get_state: [stateReply("C:/first")], edit_document: [refusal("invalid_edit", noEntrance)] });
+    const result = await started();
+    await act(() => result.current.commit({ op: "delete_beat", beatId: "beat_1" }, true));
+    expect(result.current.fieldError).toMatchObject({ beatId: "beat_1", field: null, op: "delete_beat" });
+  });
+
+  it("shows a refused + Beat in the banner only", async () => {
+    script({ get_state: [stateReply("C:/first")], edit_document: [refusal("invalid_edit", noEntrance, "targets")] });
+    const result = await started();
+    await act(() => result.current.commit({ op: "add_beat", afterBeatId: null, action: "wait", targets: [] }, true));
+    expect(result.current.fieldError).toBeNull();
+    expect(result.current.error?.message).toBe(noEntrance);
   });
 });
 

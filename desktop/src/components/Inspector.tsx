@@ -1,14 +1,16 @@
-import { useEffect, useEffectEvent, useRef } from "react";
-import { parseDecimal } from "../format";
 import type { Anchor, Beat, Camera, Edit, ProjectDocument, SceneObject, ThreeDMode } from "../types";
-import { useCommitDraft, type CommitDraft } from "../useCommitDraft";
+import { useCommitDraft } from "../useCommitDraft";
 import type { FieldError } from "../useEditor";
+import { BeatEditor } from "./BeatEditor";
+import { ColorField, CommitNumber, CommitText, DraftText } from "./fields";
 import { FormulaPreview } from "./FormulaPreview";
 
 interface InspectorProps {
   scene: ProjectDocument["scene"] | null;
   objects: SceneObject[];
   beats: Beat[];
+  /** The object ids on screen before each beat, then after the last (`derived.onScreen`). */
+  onScreen: string[][];
   selectedBeatId: string | null;
   selectedObjectId: string | null;
   fieldError: FieldError | null;
@@ -32,6 +34,7 @@ export function Inspector({
   scene,
   objects,
   beats,
+  onScreen,
   selectedBeatId,
   selectedObjectId,
   fieldError,
@@ -40,11 +43,11 @@ export function Inspector({
   onSelectObject,
   onEdit,
 }: InspectorProps) {
-  const beat = beats.find((item) => item.id === selectedBeatId) ?? null;
-  const selectedFromBeat =
-    beat && beat.targets.length === 1 ? objects.find((item) => item.id === beat.targets[0]) : null;
-  const selectedObject = objects.find((item) => item.id === selectedObjectId) ?? selectedFromBeat ?? null;
-  const targets = beat ? objects.filter((item) => beat.targets.includes(item.id)) : [];
+  const index = beats.findIndex((item) => item.id === selectedBeatId);
+  const beat = beats[index] ?? null;
+  const selectedObject = objects.find((item) => item.id === selectedObjectId) ?? null;
+  // A formula transform shows the fields of both its formulas below the editor (design §10.4).
+  const formulas = beat?.action === "transform_formula" ? objects.filter((item) => beat.targets.includes(item.id)) : [];
   const context: FieldContext = { fieldError, texBlocked, onEdit };
 
   return (
@@ -78,56 +81,30 @@ export function Inspector({
         {scene?.kind === "three_d_scene" && scene.camera ? (
           <ThreeDPanel scene={scene} camera={scene.camera} objects={objects} context={context} />
         ) : null}
-        {beat ? <BeatFields beat={beat} onEdit={onEdit} /> : null}
-        {beat && beat.action === "transform_formula"
-          ? targets.map((item) => <ObjectFields key={item.id} object={item} context={context} />)
-          : null}
-        {selectedObject && beat?.action !== "transform_formula" ? (
+        {beat ? (
+          <BeatEditor
+            key={beat.id}
+            beat={beat}
+            index={index}
+            count={beats.length}
+            sceneKind={scene?.kind ?? "scene"}
+            objects={objects}
+            onScreen={onScreen[index] ?? []}
+            templateId={scene?.templateInstances.find((item) => item.beatIds.includes(beat.id))?.templateId ?? null}
+            selectedObjectId={selectedObject?.id ?? null}
+            fieldError={fieldError}
+            onEdit={onEdit}
+          />
+        ) : null}
+        {formulas.map((item) => (
+          <ObjectFields key={item.id} object={item} context={context} />
+        ))}
+        {selectedObject && !formulas.includes(selectedObject) ? (
           <ObjectFields key={selectedObject.id} object={selectedObject} context={context} />
         ) : null}
       </fieldset>
     </aside>
   );
-}
-
-function BeatFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => Promise<void> }) {
-  return (
-    <section className="fields">
-      <h2>Beat</h2>
-      <p className="hint">
-        {beat.action} · {beat.id}
-      </p>
-      <CommitNumber
-        label="Duration"
-        value={beat.duration}
-        testId="beat-duration"
-        onCommit={(duration) => onEdit({ op: "set_beat_duration", beatId: beat.id, duration })}
-      />
-      <ActionFields beat={beat} onEdit={onEdit} />
-    </section>
-  );
-}
-
-function ActionFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => Promise<void> }) {
-  switch (beat.action) {
-    case "set_color":
-      return (
-        <ColorField
-          label="Beat color"
-          value={stringParam(beat.params?.color, "#FFFFFF")}
-          onCommit={(color) => onEdit({ op: "set_beat_color", beatId: beat.id, color })}
-        />
-      );
-    case "move":
-      return (
-        <ShiftFields
-          value={pairParam(beat.params?.shift)}
-          onCommit={(shift) => onEdit({ op: "set_beat_shift", beatId: beat.id, shift })}
-        />
-      );
-    default:
-      return null;
-  }
 }
 
 function ObjectFields({ object, context }: { object: SceneObject; context: FieldContext }) {
@@ -518,64 +495,6 @@ function AnchorField({ value, onCommit }: { value: Anchor; onCommit: (anchor: An
   );
 }
 
-/**
- * A colour picker beside a hex field. While the picker is open it moves only the draft; it commits once, on the
- * native `change` event when it closes, so one use of it is one edit and one undo step (D08, F009). React's onChange
- * on a colour input follows every `input` event, hence the listener. The hex field commits on blur. Both compare
- * case-insensitively.
- */
-function ColorField({
-  label,
-  value,
-  onCommit,
-}: {
-  label: string;
-  value: string;
-  onCommit: (color: string) => Promise<void>;
-}) {
-  const draft = useCommitDraft(value);
-  const picker = useRef<HTMLInputElement>(null);
-
-  function commitColor(color: string): void {
-    if (color.toUpperCase() === value.toUpperCase()) {
-      draft.revert();
-    } else {
-      draft.commit(onCommit(color));
-    }
-  }
-
-  const onPickerClosed = useEffectEvent((color: string) => commitColor(color.toUpperCase()));
-
-  useEffect(() => {
-    const element = picker.current;
-    if (!element) {
-      return;
-    }
-    const listener = (): void => onPickerClosed(element.value);
-    element.addEventListener("change", listener);
-    return () => element.removeEventListener("change", listener);
-  }, []);
-
-  return (
-    <label>
-      {label}
-      <span className="color-row">
-        <input
-          ref={picker}
-          type="color"
-          value={toColorInput(draft.text)}
-          onChange={(event) => draft.change(event.target.value.toUpperCase())}
-        />
-        <input
-          value={draft.text}
-          onChange={(event) => draft.change(event.target.value)}
-          onBlur={() => commitColor(draft.text)}
-        />
-      </span>
-    </label>
-  );
-}
-
 function RangeFields({
   label,
   value,
@@ -608,82 +527,6 @@ function ShiftFields({
       <CommitNumber label="dx" value={value[0]} onCommit={(dx) => onCommit([dx, value[1]])} />
       <CommitNumber label="dy" value={value[1]} onCommit={(dy) => onCommit([value[0], dy])} />
     </fieldset>
-  );
-}
-
-interface TextFieldProps {
-  label: string;
-  value: string;
-  testId?: string;
-  onCommit: (value: string) => Promise<void>;
-}
-
-/** A text field that commits on blur or Enter. */
-function CommitText(props: TextFieldProps) {
-  const draft = useCommitDraft(props.value);
-  return <DraftText {...props} draft={draft} />;
-}
-
-/** CommitText over a draft its parent holds, for a parent that shows the draft too, as the formula preview does. */
-function DraftText({ label, value, testId, draft, onCommit }: TextFieldProps & { draft: CommitDraft }) {
-  return (
-    <label>
-      {label}
-      <input
-        data-testid={testId}
-        value={draft.text}
-        onChange={(event) => draft.change(event.target.value)}
-        onBlur={() => {
-          if (draft.text !== value) {
-            draft.commit(onCommit(draft.text));
-          }
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.currentTarget.blur();
-          }
-        }}
-      />
-    </label>
-  );
-}
-
-/** A number field that commits on blur or Enter. A cleared field, or text that is not a decimal, shows the value again. */
-function CommitNumber({
-  label,
-  value,
-  testId,
-  onCommit,
-}: {
-  label: string;
-  value: number;
-  testId?: string;
-  onCommit: (value: number) => Promise<void>;
-}) {
-  const draft = useCommitDraft(String(value));
-  return (
-    <label>
-      {label}
-      <input
-        data-testid={testId}
-        inputMode="decimal"
-        value={draft.text}
-        onChange={(event) => draft.change(event.target.value)}
-        onBlur={() => {
-          const next = parseDecimal(draft.text);
-          if (next === null || next === value) {
-            draft.revert();
-          } else {
-            draft.commit(onCommit(next));
-          }
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.currentTarget.blur();
-          }
-        }}
-      />
-    </label>
   );
 }
 
@@ -737,8 +580,4 @@ function anchorParam(value: unknown): Anchor {
     default:
       return "edge_up";
   }
-}
-
-function toColorInput(value: string): string {
-  return /^#[0-9A-Fa-f]{6}$/.test(value) ? value.toLowerCase() : "#ffffff";
 }

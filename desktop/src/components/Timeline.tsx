@@ -14,11 +14,13 @@ interface TimelineProps {
   selectedBeatId: string | null;
   playhead: number;
   total: number;
-  /** The worker is not ready, so durations cannot be changed (C9.5). */
+  /** The worker is not ready, so beats cannot be added and durations cannot be changed (C9.5). */
   disabled: boolean;
   onSelect: (beatId: string) => void;
   onDraft: (beatId: string, duration: number) => void;
   onCommit: (beatId: string, duration: number) => void;
+  /** "+ Beat": adds a beat after the selected beat, on the selected object (design §10.3). */
+  onAddBeat: () => void;
 }
 
 export function Timeline({
@@ -34,11 +36,17 @@ export function Timeline({
   onSelect,
   onDraft,
   onCommit,
+  onAddBeat,
 }: TimelineProps) {
   return (
     <section className="timeline" aria-label="Timeline" data-testid="timeline">
+      <div className="timeline-toolbar">
+        <button type="button" data-testid="add-beat" disabled={disabled} onClick={onAddBeat}>
+          + Beat
+        </button>
+      </div>
       {beats.length === 0 ? (
-        <p className="timeline-empty">No beats yet. Add axes, a formula, or text.</p>
+        <p className="timeline-empty">No beats yet. Add an object, or use + Beat.</p>
       ) : (
         <ol>
           {beats.map((beat, index) => (

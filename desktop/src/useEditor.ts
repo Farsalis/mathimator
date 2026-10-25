@@ -62,21 +62,34 @@ const FIELD_CODES: ReadonlySet<string> = new Set([
   "untrusted_latex",
 ]);
 
-export type Selection = { kind: "none" } | { kind: "beat"; id: string } | { kind: "object"; id: string };
+/**
+ * What is selected (design §10.2): a beat and an object at once. The Inspector edits the beat and shows the object's
+ * fields; Add and "+ Beat" insert after the beat, and "+ Beat" targets the object.
+ */
+export interface Selection {
+  beatId: string | null;
+  objectId: string | null;
+}
 
-const NO_SELECTION: Selection = { kind: "none" };
+const NO_SELECTION: Selection = { beatId: null, objectId: null };
 
 /** What the side panel shows: the Inspector, View code or the Notices. */
 type Panel = "inspector" | "code" | "notices";
 
-/** A refused edit's message, shown under the field it names on the object it edited (C9.3, S59). */
+/**
+ * A refused edit's message, shown under the field it is about (C9.3, S59, design §10.7): on the object an object edit
+ * named, under the field the refusal names; or on the beat a beat edit named, under the control of its op, whatever
+ * the field, since a refusal by a document rule names none.
+ */
 export interface FieldError {
-  objectId: string;
+  objectId: string | null;
+  beatId: string | null;
   /** The edit field the refusal names, for example `expression`. */
-  field: string;
-  /** The refused edit's op and axis, which tell apart the axes inputs whose edits all name `value`. */
+  field: string | null;
+  /** The refused edit's op, axis and key, which tell apart the inputs whose edits all name `value`. */
   op: Edit["op"];
   axis: string | null;
+  key: string | null;
   message: string;
 }
 
@@ -429,27 +442,22 @@ export function useEditor() {
         applyEdit(next);
         setError(null);
         setFieldError(null);
-        if (next.focus?.beatId) {
-          setSelection({ kind: "beat", id: next.focus.beatId });
+        const focus = next.focus;
+        if (focus) {
+          // The beat or object the edit is about, such as a new beat and its first target (design §10.2).
+          setSelection((current) => ({
+            beatId: focus.beatId ?? current.beatId,
+            objectId: focus.objectId ?? current.objectId,
+          }));
         }
         // An edit that changed nothing gets no preview (D08).
         if (preview && next.changed !== false) {
           schedulePreview();
         }
       } catch (reason: unknown) {
-        if (
-          reason instanceof WorkerRefusal &&
-          FIELD_CODES.has(reason.code) &&
-          reason.field !== undefined &&
-          "objectId" in edit
-        ) {
-          setFieldError({
-            objectId: edit.objectId,
-            field: reason.field,
-            op: edit.op,
-            axis: "axis" in edit ? edit.axis : null,
-            message: reason.message,
-          });
+        const error = reason instanceof WorkerRefusal ? fieldErrorOf(edit, reason) : null;
+        if (error) {
+          setFieldError(error);
         }
         throw reason;
       }
@@ -609,9 +617,19 @@ export function useEditor() {
     });
   }
 
-  /** Selects a beat or an object. A field error belongs to what was selected, so it goes (F112). */
-  function select(next: Selection): void {
-    setSelection(next);
+  /**
+   * Selects a beat and its first target, or keeps the selected object for a beat without targets (design §10.2). A
+   * field error belongs to what was selected, so it goes (F112).
+   */
+  function selectBeat(beatId: string): void {
+    const beat = applied.current?.document.scene.beats.find((item) => item.id === beatId);
+    setSelection((current) => ({ beatId, objectId: beat?.targets[0] ?? current.objectId }));
+    setFieldError(null);
+  }
+
+  /** Selects an object and keeps the selected beat, so "+ Beat" adds a beat on it there (design §10.2, F112). */
+  function selectObject(objectId: string): void {
+    setSelection((current) => ({ ...current, objectId }));
     setFieldError(null);
   }
 
@@ -658,8 +676,9 @@ export function useEditor() {
     changedPrompt: changedPrompt.message,
     status: unavailable === null ? handshake.status : WORKER_UNAVAILABLE,
     /** The selection, while the document still holds it: a deleted or undone beat or object is not selected (F117). */
-    selection: state !== null && selectionIn(selection, state.document) ? selection : NO_SELECTION,
-    select,
+    selection: state === null ? NO_SELECTION : selectionIn(selection, state.document),
+    selectBeat,
+    selectObject,
     drafts,
     playhead,
     setPlayhead,
@@ -714,14 +733,33 @@ function withoutDraft(drafts: Record<string, number>, beatId: string): Record<st
   return next;
 }
 
-/** Whether `document` still holds the selected beat or object. */
-function selectionIn(selection: Selection, document: ProjectDocument): boolean {
-  switch (selection.kind) {
-    case "none":
-      return true;
-    case "beat":
-      return document.scene.beats.some((beat) => beat.id === selection.id);
-    case "object":
-      return document.scene.objects.some((object) => object.id === selection.id);
+/** The part of `selection` that `document` still holds. */
+function selectionIn(selection: Selection, document: ProjectDocument): Selection {
+  const { beatId, objectId } = selection;
+  return {
+    beatId: document.scene.beats.some((beat) => beat.id === beatId) ? beatId : null,
+    objectId: document.scene.objects.some((object) => object.id === objectId) ? objectId : null,
+  };
+}
+
+/**
+ * The field error of a refused edit, or null when the refusal is not about a field (C9.3, design §10.7). An object
+ * edit needs the field the refusal names; a beat edit is shown on its beat whatever the field. Add, the template
+ * inserts and the other edits show in the banner only.
+ */
+function fieldErrorOf(edit: Edit, refusal: WorkerRefusal): FieldError | null {
+  if (!FIELD_CODES.has(refusal.code)) {
+    return null;
   }
+  const error = {
+    field: refusal.field ?? null,
+    op: edit.op,
+    axis: "axis" in edit ? edit.axis : null,
+    key: "key" in edit ? edit.key : null,
+    message: refusal.message,
+  };
+  if ("objectId" in edit) {
+    return refusal.field === undefined ? null : { ...error, objectId: edit.objectId, beatId: null };
+  }
+  return "beatId" in edit ? { ...error, objectId: null, beatId: edit.beatId } : null;
 }

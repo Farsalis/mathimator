@@ -1,3 +1,4 @@
+import { insertionIndex, plusBeat } from "./beatRules";
 import type { AddKind } from "./components/AddMenu";
 import { CodeView } from "./components/CodeView";
 import { ErrorBanner } from "./components/ErrorBanner";
@@ -9,6 +10,7 @@ import { ProjectChangedPrompt } from "./components/ProjectChangedPrompt";
 import { Timeline } from "./components/Timeline";
 import { TopBar } from "./components/TopBar";
 import { WorkerUnavailable } from "./components/WorkerUnavailable";
+import { addBeat } from "./edits";
 import type { Edit } from "./types";
 import { useEditor } from "./useEditor";
 
@@ -18,8 +20,8 @@ export function App() {
   const beats = doc?.scene.beats ?? [];
   const objects = doc?.scene.objects ?? [];
   const dirty = editor.state?.derived.dirty ?? [];
-  const selectedBeatId = editor.selection.kind === "beat" ? editor.selection.id : null;
-  const selectedObjectId = editor.selection.kind === "object" ? editor.selection.id : null;
+  const onScreen = editor.state?.derived.onScreen ?? [];
+  const { beatId: selectedBeatId, objectId: selectedObjectId } = editor.selection;
   const canSaveAs = editor.ready && !editor.exporting;
 
   function onAdd(kind: AddKind): void {
@@ -47,6 +49,16 @@ export function App() {
       }
     }
     void editor.commit(edit, true);
+  }
+
+  /** "+ Beat": the worker fills in the settings, and its focus selects the new beat (design §10.3). */
+  function onAddBeat(): void {
+    if (!doc) {
+      return;
+    }
+    const on = onScreen[insertionIndex(beats, selectedBeatId)] ?? [];
+    const { action, targets } = plusBeat(doc.scene.kind, objects, on, selectedObjectId);
+    void editor.commit(addBeat(selectedBeatId, action, targets), true);
   }
 
   function onEdit(edit: Edit): Promise<void> {
@@ -142,12 +154,13 @@ export function App() {
             scene={doc?.scene ?? null}
             objects={objects}
             beats={beats}
+            onScreen={onScreen}
             selectedBeatId={selectedBeatId}
             selectedObjectId={selectedObjectId}
             fieldError={editor.fieldError}
             texBlocked={editor.texWarning !== null}
             disabled={!editor.ready}
-            onSelectObject={(objectId) => editor.select({ kind: "object", id: objectId })}
+            onSelectObject={editor.selectObject}
             onEdit={onEdit}
           />
         )}
@@ -161,9 +174,10 @@ export function App() {
           playhead={editor.playhead}
           total={editor.total}
           disabled={!editor.ready}
-          onSelect={(beatId) => editor.select({ kind: "beat", id: beatId })}
+          onSelect={editor.selectBeat}
           onDraft={editor.onDraftDuration}
           onCommit={editor.onCommitDuration}
+          onAddBeat={onAddBeat}
         />
         {editor.exportPath ? <p className="export-path">Export: {editor.exportPath}</p> : null}
         {editor.presetOpen && doc?.exportProfile ? (

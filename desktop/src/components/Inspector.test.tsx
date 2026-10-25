@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { invoke } from "@tauri-apps/api/core";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Edit, SceneObject } from "../types";
+import type { Beat, Edit, ProjectDocument, SceneObject } from "../types";
 import type { FieldError } from "../useEditor";
 import { Inspector } from "./Inspector";
 
@@ -29,9 +29,11 @@ const OBJECTS: SceneObject[] = [
 
 const UNSUPPORTED: FieldError = {
   objectId: "plot_1",
+  beatId: null,
   field: "expression",
   op: "set_expression",
   axis: null,
+  key: null,
   message: "This expression is not supported.",
 };
 const TOO_MANY_TICKS = "value has more than 500 ticks";
@@ -60,6 +62,7 @@ function renderInspector(
       scene={null}
       objects={OBJECTS}
       beats={[]}
+      onScreen={[[]]}
       selectedBeatId={null}
       selectedObjectId={selectedObjectId}
       fieldError={fieldError}
@@ -87,7 +90,7 @@ describe("Inspector", () => {
   it("shows a refused domain under x max, the field the worker names (C9.3)", () => {
     const message = "xMax must be greater than xMin";
     renderInspector("plot_2", {
-      fieldError: { objectId: "plot_2", field: "xMax", op: "set_domain", axis: null, message },
+      fieldError: { ...UNSUPPORTED, objectId: "plot_2", field: "xMax", op: "set_domain", message },
     });
     expect(fieldOf("x max")?.nextElementSibling).toBe(screen.getByText(message));
   });
@@ -99,7 +102,7 @@ describe("Inspector", () => {
     ["set_length", "y", "Y length"],
   ] as const)("shows a refused %s on axis %s under %s only (C9.3)", (op, axis, label) => {
     renderInspector("axes_2", {
-      fieldError: { objectId: "axes_2", field: "value", op, axis, message: TOO_MANY_TICKS },
+      fieldError: { ...UNSUPPORTED, objectId: "axes_2", field: "value", op, axis, message: TOO_MANY_TICKS },
     });
     const shown = screen.getAllByText(TOO_MANY_TICKS);
     expect(shown).toHaveLength(1);
@@ -122,6 +125,125 @@ describe("Inspector", () => {
     renderInspector("plot_1", { disabled: true });
     expect(screen.getByTestId("plot-expression").matches(":disabled")).toBe(true);
     expect(screen.getByTestId("delete-object").matches(":disabled")).toBe(true);
+  });
+});
+
+describe("Inspector beat editor (design §10.2, §10.4)", () => {
+  const graph: SceneObject[] = [
+    { id: "axes_1", name: "Axes", type: "axes", params: { showLabels: false } },
+    { id: "plot_1", name: "Sine", type: "function_plot", params: { axesId: "axes_1", expression: "sin(x)" } },
+    { id: "text_1", name: "Caption", type: "text", params: { text: "Area", anchor: "edge_down", shift: [0, 0] } },
+  ];
+  const beats: Beat[] = [
+    { id: "beat_1", duration: 2, action: "create", targets: ["axes_1"] },
+    { id: "beat_2", duration: 2, action: "create", targets: ["plot_1"] },
+    { id: "beat_3", duration: 1, action: "fade_in", targets: ["text_1"] },
+  ];
+  const scene: ProjectDocument["scene"] = {
+    kind: "scene",
+    camera: null,
+    objects: graph,
+    beats,
+    templateInstances: [
+      {
+        id: "template_1",
+        templateId: "axes_function",
+        params: {},
+        objectIds: ["axes_1", "plot_1"],
+        beatIds: ["beat_1", "beat_2"],
+      },
+    ],
+  };
+
+  function renderSelected(selectedBeatId: string, selectedObjectId: string | null): void {
+    render(
+      <Inspector
+        scene={scene}
+        objects={graph}
+        beats={beats}
+        onScreen={[[], ["axes_1"], ["axes_1", "plot_1"], ["axes_1", "plot_1", "text_1"]]}
+        selectedBeatId={selectedBeatId}
+        selectedObjectId={selectedObjectId}
+        fieldError={null}
+        texBlocked={false}
+        disabled={false}
+        onSelectObject={vi.fn()}
+        onEdit={vi.fn(() => Promise.resolve())}
+      />,
+    );
+  }
+
+  it("edits the selected beat where it stands, above the selected object's fields", () => {
+    renderSelected("beat_3", "plot_1");
+    const editor = screen.getByTestId("beat-editor");
+    expect(within(editor).getByText("Fade in · beat_3 · scene.beats[2]")).toBeTruthy();
+    // Only the caption is off screen before the third beat.
+    expect(
+      within(editor)
+        .getAllByRole("checkbox")
+        .map((item) => item.closest("label")?.textContent),
+    ).toEqual(["Caption"]);
+    const plotField = screen.getByTestId("plot-expression");
+    expect(editor.compareDocumentPosition(plotField) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId("beat-template")).toBeNull();
+  });
+
+  it("names the template that sets a beat's kind and targets", () => {
+    renderSelected("beat_2", null);
+    expect(screen.getByTestId("beat-template").textContent).toBe("Set by the Axes and function template.");
+    expect(screen.getByLabelText<HTMLSelectElement>("Kind").disabled).toBe(true);
+    expect(screen.queryByTestId("delete-object")).toBeNull();
+  });
+
+  describe("on a formula transform", () => {
+    const formulas: SceneObject[] = [
+      { id: "eq_1", name: "Before", type: "math_formula", params: { latex: "a+b" } },
+      { id: "eq_2", name: "After", type: "math_formula", params: { latex: "b+a" } },
+      { id: "text_1", name: "Caption", type: "text", params: { text: "Swap", anchor: "edge_down", shift: [0, 0] } },
+    ];
+    const morph: Beat[] = [
+      { id: "beat_1", duration: 1, action: "write", targets: ["eq_1"] },
+      { id: "beat_2", duration: 1, action: "fade_in", targets: ["text_1"] },
+      { id: "beat_3", duration: 2, action: "transform_formula", targets: ["eq_1", "eq_2"] },
+    ];
+
+    function renderMorph(selectedObjectId: string | null): void {
+      render(
+        <Inspector
+          scene={{ kind: "scene", camera: null, objects: formulas, beats: morph, templateInstances: [] }}
+          objects={formulas}
+          beats={morph}
+          onScreen={[[], ["eq_1"], ["eq_1", "text_1"], ["eq_2", "text_1"]]}
+          selectedBeatId="beat_3"
+          selectedObjectId={selectedObjectId}
+          fieldError={null}
+          texBlocked={false}
+          disabled={false}
+          onSelectObject={vi.fn()}
+          onEdit={vi.fn(() => Promise.resolve())}
+        />,
+      );
+    }
+
+    /** How many times each object's fields are shown. */
+    function shownFields(): Record<string, number> {
+      return Object.fromEntries(
+        formulas.map((item) => [item.id, screen.queryAllByTestId(`object-name-${item.id}`).length]),
+      );
+    }
+
+    it("shows both formulas below the editor, and the fields of another selected object", () => {
+      renderMorph("text_1");
+      expect(shownFields()).toEqual({ eq_1: 1, eq_2: 1, text_1: 1 });
+      const editor = screen.getByTestId("beat-editor");
+      const caption = screen.getByTestId("object-name-text_1");
+      expect(editor.compareDocumentPosition(caption) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it.each([["eq_1"], ["eq_2"], [null]])("shows each formula once with %s selected", (selectedObjectId) => {
+      renderMorph(selectedObjectId);
+      expect(shownFields()).toEqual({ eq_1: 1, eq_2: 1, text_1: 0 });
+    });
   });
 });
 
@@ -244,6 +366,7 @@ describe("Inspector fields", () => {
         }}
         objects={[surface]}
         beats={[]}
+        onScreen={[[]]}
         selectedBeatId={null}
         selectedObjectId={null}
         fieldError={{ ...UNSUPPORTED, objectId: "surface_1" }}
