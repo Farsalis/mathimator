@@ -10,7 +10,16 @@ import { ProjectChangedPrompt } from "./components/ProjectChangedPrompt";
 import { Timeline } from "./components/Timeline";
 import { TopBar } from "./components/TopBar";
 import { WorkerUnavailable } from "./components/WorkerUnavailable";
-import { addAxesFunction, addBeat, addFormula, addFormulaTransform, addShape, addText, addThreeDAxes } from "./edits";
+import {
+  addAxesFunction,
+  addBeat,
+  addFormula,
+  addFormulaTransform,
+  addShape,
+  addText,
+  addThreeDAxes,
+  setProjectName,
+} from "./edits";
 import type { Edit } from "./types";
 import { useEditor } from "./useEditor";
 
@@ -83,7 +92,7 @@ export function App() {
           canUndo={editor.state?.derived.canUndo === true}
           canRedo={editor.state?.derived.canRedo === true}
           exporting={editor.exporting}
-          onRename={(name) => editor.commit({ op: "set_project_name", name }, false)}
+          onRename={(name) => editor.commit(setProjectName(name), false)}
           onNew={() => void editor.onNew()}
           onOpen={() => void editor.onOpen()}
           onSaveAs={() => void editor.onSaveAs()}

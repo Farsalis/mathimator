@@ -48,6 +48,17 @@ function asOpSpec(value: unknown, path: string): OpSpec {
 const ENUMS = recordOf(listOf(asString))(editOps.enums, "enums");
 const OPS = recordOf(asOpSpec)(editOps.ops, "ops");
 
+/**
+ * The UI's own sources, by path, apart from the builders, the Edit union and the tests. The glob takes no type
+ * argument: vitest's module cache leaves out only a file whose text has `import.meta.glob(`, and a cached copy of this
+ * test would not see a new file.
+ */
+const SOURCES = import.meta.glob(["./**/*.{ts,tsx}", "!./**/*.test.*", "!./edits.ts", "!./types.ts"], {
+  eager: true,
+  query: "?raw",
+  import: "default",
+});
+
 /** A beat or shape setting as an edit carries it: a number, an `[x, y]` vector, a colour or an id. */
 function asParamValue(value: unknown, path: string): ParamValue {
   return typeof value === "number" || typeof value === "string" ? value : pairOf(asNumber)(value, path);
@@ -201,6 +212,7 @@ describe("the edit builders (edit-ops.json)", () => {
     expect(ENUMS).toEqual({
       anchor: ANCHORS,
       axis: AXES,
+      length_axis: LENGTH_AXES,
       three_d_mode: THREE_D_MODES,
       camera_key: CAMERA_KEYS,
       format: EXPORT_FORMATS,
@@ -249,5 +261,12 @@ describe("the edit builders (edit-ops.json)", () => {
       beatId: "beat_1",
       easing: null,
     });
+  });
+
+  it("are the only way the UI writes an edit", () => {
+    expect(Object.keys(SOURCES)).toEqual(expect.arrayContaining(["./App.tsx", "./components/BeatEditor.tsx"]));
+    for (const [path, source] of Object.entries(SOURCES)) {
+      expect(source, `${path} writes an edit without the builders of edits.ts`).not.toMatch(/\bop:\s*"/);
+    }
   });
 });

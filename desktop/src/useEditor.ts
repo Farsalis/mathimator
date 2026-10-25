@@ -1,6 +1,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invokeShell } from "./commands";
+import { setBeatDuration, setExportProfile } from "./edits";
 import { derivedStarts, roundMs } from "./format";
 import type { ExportProfile } from "./exportProfile";
 import {
@@ -535,7 +536,7 @@ export function useEditor() {
       publish(beginExport(jobs.current, jobId));
       exportOrder.current = { profile, force };
       if (!jobs.current.cancelRequested) {
-        const edit: Edit = { op: "set_export_profile", ...profile };
+        const edit = setExportProfile(profile);
         applyEdit(parseEditorState(await invokeWorker("edit_document", { edit })));
       }
       if (jobs.current.exportJobId !== jobId) {
@@ -649,7 +650,7 @@ export function useEditor() {
       return;
     }
     setDrafts((current) => ({ ...current, [beatId]: duration }));
-    void commit({ op: "set_beat_duration", beatId, duration }, true).finally(() =>
+    void commit(setBeatDuration(beatId, duration), true).finally(() =>
       // A newer drag of the same beat keeps its own draft.
       setDrafts((current) => (current[beatId] === duration ? withoutDraft(current, beatId) : current)),
     );

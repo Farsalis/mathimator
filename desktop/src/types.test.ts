@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { ParseError } from "./parse";
+import { BEAT_ACTIONS, EASING_NAMES, SHAPE_TYPES } from "./beatKinds";
+import { asRecord, fieldsOf, listOf, ParseError } from "./parse";
 import { parseAppStatus, parseEditorState, parseWorkerEvent } from "./types";
+
+/**
+ * The documents of tests/fixtures/render-smoke, which the worker accepts and renders, by path. Like the sources of
+ * edits.test.ts, the glob takes no type argument, so that vitest's module cache leaves this test out and sees a new
+ * document.
+ */
+const RENDER_SMOKE = import.meta.glob("../../tests/fixtures/render-smoke/*/project.json", {
+  eager: true,
+  import: "default",
+});
 
 function stateReply() {
   return {
@@ -138,6 +149,30 @@ describe("parseEditorState", () => {
     const missing = { ...beat, params: { phi: 75, theta: 45 } };
     const broken = { ...reply, document: { ...reply.document, scene: { ...scene, beats: [missing] } } };
     expect(failingField(() => parseEditorState(broken))).toBe("state.document.scene.beats[0].params.zoom");
+  });
+
+  it("reads the objects and beats of every render-smoke document whole, every kind, easing and shape among them", () => {
+    const actions = new Set<string>();
+    const easings = new Set<string>();
+    const types = new Set<string>();
+    for (const [path, document] of Object.entries(RENDER_SMOKE)) {
+      const scene = fieldsOf(fieldsOf(document, path)("scene", asRecord), `${path}.scene`);
+      const parsed = parseEditorState({ ...stateReply(), document }).document.scene;
+      expect(parsed.objects, path).toEqual(scene("objects", listOf(asRecord)));
+      expect(parsed.beats, path).toEqual(scene("beats", listOf(asRecord)));
+      for (const beat of parsed.beats) {
+        actions.add(beat.action);
+        if (beat.easing !== undefined) {
+          easings.add(beat.easing);
+        }
+      }
+      for (const object of parsed.objects) {
+        types.add(object.type);
+      }
+    }
+    expect([...actions].sort()).toEqual([...BEAT_ACTIONS].sort());
+    expect([...easings].sort()).toEqual([...EASING_NAMES].sort());
+    expect(SHAPE_TYPES.filter((type) => !types.has(type))).toEqual([]);
   });
 
   it.each([

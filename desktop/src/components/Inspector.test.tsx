@@ -540,6 +540,11 @@ describe("Inspector fields", () => {
     expect(field.value).toBe("x*y");
     expect(screen.getByTestId("field-error-surface_1-expression").textContent).toBe(UNSUPPORTED.message);
     expect(screen.getByText("Natural log is log. Variables: x and y.")).toBeTruthy();
+    // Spec §3, Journey C: the camera turns only in Move camera beats.
+    expect(screen.getByTestId("cairo-limits").textContent).toBe(
+      "Cairo limits: software rendering, flat-shaded faces, a camera that turns only in Move camera beats, with no " +
+        "orbit drag, and a resolution cap of 24×24.",
+    );
     typeAndLeave(field, "x + y");
     expect(onEdit).toHaveBeenCalledExactlyOnceWith({
       op: "set_expression",
