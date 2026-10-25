@@ -242,7 +242,14 @@ describe("playback (F147)", () => {
         scene: { kind: "scene", camera: null, objects: [], beats: [], templateInstances: [] },
         exportProfile: { format: "mp4", width: 1920, height: 1080, fps: 30, transparent: false },
       },
-      derived: { starts: [0, 2], total: 4, dirty: [true, false], canUndo: false, canRedo: false },
+      derived: {
+        starts: [0, 2],
+        total: 4,
+        dirty: [true, false],
+        canUndo: false,
+        canRedo: false,
+        onScreen: [[], [], []],
+      },
       index: dirtied(finished([2, 2])),
       source: null,
     };

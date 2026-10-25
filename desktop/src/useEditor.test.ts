@@ -104,7 +104,7 @@ function stateReply(projectPath: string, name = "Sine", exportProfile = PROFILE)
       },
       exportProfile,
     },
-    derived: { starts: [0], total: 2, dirty: [true], canUndo: false, canRedo: false },
+    derived: { starts: [0], total: 2, dirty: [true], canUndo: false, canRedo: false, onScreen: [[], ["plot_1"]] },
     index: null,
     source: "",
   };
@@ -1044,7 +1044,7 @@ function emptyReply(projectPath: string) {
   return {
     ...reply,
     document: { ...reply.document, scene: { ...reply.document.scene, objects: [], beats: [] } },
-    derived: { starts: [], total: 0, dirty: [], canUndo: true, canRedo: false },
+    derived: { starts: [], total: 0, dirty: [], canUndo: true, canRedo: false, onScreen: [[]] },
   };
 }
 

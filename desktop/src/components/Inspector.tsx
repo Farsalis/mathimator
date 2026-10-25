@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useRef } from "react";
 import { parseDecimal } from "../format";
-import type { Anchor, Beat, BeatAction, Camera, Edit, ProjectDocument, SceneObject, ThreeDMode } from "../types";
+import type { Anchor, Beat, Camera, Edit, ProjectDocument, SceneObject, ThreeDMode } from "../types";
 import { useCommitDraft, type CommitDraft } from "../useCommitDraft";
 import type { FieldError } from "../useEditor";
 import { FormulaPreview } from "./FormulaPreview";
@@ -109,8 +109,7 @@ function BeatFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => Prom
 }
 
 function ActionFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => Promise<void> }) {
-  const action: BeatAction = beat.action;
-  switch (action) {
+  switch (beat.action) {
     case "set_color":
       return (
         <ColorField
@@ -126,16 +125,8 @@ function ActionFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => Pr
           onCommit={(shift) => onEdit({ op: "set_beat_shift", beatId: beat.id, shift })}
         />
       );
-    case "create":
-    case "fade_in":
-    case "write":
-    case "wait":
-    case "transform_formula":
+    default:
       return null;
-    default: {
-      const unexpected: never = action;
-      return unexpected;
-    }
   }
 }
 
@@ -168,6 +159,12 @@ function TypedFields({ object, context }: { object: SceneObject; context: FieldC
     case "three_d_axes":
     case "surface":
     case "parametric_curve":
+    case "dot":
+    case "line":
+    case "arrow":
+    case "circle":
+    case "rectangle":
+    case "axes_point":
       return null;
     default: {
       const unexpected: never = object.type;

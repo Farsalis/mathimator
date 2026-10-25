@@ -40,7 +40,7 @@ function stateReply(name = "Sine", source = "class MainScene(Scene):\n    pass\n
       scene: { kind: "scene", objects: [], beats: [], templateInstances: [] },
       exportProfile: { format: "mp4", width: 1920, height: 1080, fps: 30, transparent: false },
     },
-    derived: { starts: [], total: 0, dirty: [], canUndo: false, canRedo: false },
+    derived: { starts: [], total: 0, dirty: [], canUndo: false, canRedo: false, onScreen: [[]] },
     index: null,
     source,
   };
@@ -60,7 +60,7 @@ function textReply() {
         beats: [{ id: "beat_1", duration: 2, action: "write", targets: ["text_1"] }],
       },
     },
-    derived: { starts: [0], total: 2, dirty: [false], canUndo: false, canRedo: false },
+    derived: { starts: [0], total: 2, dirty: [false], canUndo: false, canRedo: false, onScreen: [[], ["text_1"]] },
     index: {
       output: movie,
       beats: [{ id: "beat_1", index: 0, derivedStart: 0, duration: 2, partial: movie, lastGood: null, fresh: true }],
@@ -269,7 +269,7 @@ describe("App", () => {
     const recoloured = textReply();
     script({ app_status: [READY], get_state: [textReply()], edit_document: [recoloured] });
     await renderReady();
-    fireEvent.click(screen.getByRole("button", { name: /Label/ }));
+    fireEvent.click(within(screen.getByTestId("inspector")).getByRole("button", { name: /Label/ }));
     const picker = document.querySelector<HTMLInputElement>('input[type="color"]');
     if (!picker) {
       throw new Error("No colour picker is shown.");

@@ -61,6 +61,16 @@ export function listOf<T>(read: Read<T>): Read<T[]> {
   };
 }
 
+/** Reads a list of exactly two items, such as an `[x, y]` vector. */
+export function pairOf<T>(read: Read<T>): Read<[T, T]> {
+  return (value, path) => {
+    if (!Array.isArray(value) || value.length !== 2) {
+      throw new ParseError(path, "must be a list of two items");
+    }
+    return [read(value[0], `${path}[0]`), read(value[1], `${path}[1]`)];
+  };
+}
+
 export function oneOf<T extends string>(options: readonly T[]): Read<T> {
   return (value, path) => {
     const match = options.find((option) => option === value);

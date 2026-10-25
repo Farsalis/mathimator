@@ -153,6 +153,7 @@ export function App() {
         )}
         <Timeline
           beats={beats}
+          objects={objects}
           durations={editor.durations}
           starts={editor.starts}
           dirty={dirty}

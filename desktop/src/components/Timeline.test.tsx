@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_TOTAL_SECONDS, MIN_BEAT_SECONDS } from "../format";
-import type { Beat } from "../types";
+import type { Beat, SceneObject } from "../types";
 import { Timeline } from "./Timeline";
 
 const BEAT: Beat = { id: "beat_1", duration: 2, action: "create", targets: ["plot_1"] };
+const PLOT: SceneObject = { id: "plot_1", name: "Sine", type: "function_plot", params: {} };
 
 let onDraft = vi.fn<(beatId: string, duration: number) => void>();
 let onCommit = vi.fn<(beatId: string, duration: number) => void>();
@@ -18,6 +19,7 @@ beforeEach(() => {
   render(
     <Timeline
       beats={[BEAT]}
+      objects={[PLOT]}
       durations={[2]}
       starts={[0]}
       dirty={[false]}
@@ -37,6 +39,14 @@ afterEach(cleanup);
 function handle(): HTMLElement {
   return screen.getByLabelText("Duration of beat_1");
 }
+
+describe("Timeline labels", () => {
+  it("shows each beat's start, kind and target names, and marks its family", () => {
+    const cell = screen.getByTestId("beat-beat_1");
+    expect(within(cell).getByRole("button", { name: /Create · Sine/ }).textContent).toBe("0.0sCreate · Sine");
+    expect(cell.dataset.family).toBe("entrance");
+  });
+});
 
 describe("Timeline duration drag (D48, F110)", () => {
   it.each(["mouse", "touch", "pen"])("resizes the beat with a %s, 48 px per second", (pointerType) => {

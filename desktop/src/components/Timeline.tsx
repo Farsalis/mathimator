@@ -1,9 +1,13 @@
 import { useRef } from "react";
+import { KINDS, type Family } from "../beatKinds";
+import { beatLabel } from "../beatRules";
 import { clampDuration, formatSeconds } from "../format";
-import type { Beat } from "../types";
+import type { Beat, SceneObject } from "../types";
 
 interface TimelineProps {
   beats: Beat[];
+  /** The objects whose names label the beats. */
+  objects: SceneObject[];
   durations: number[];
   starts: number[];
   dirty: boolean[];
@@ -19,6 +23,7 @@ interface TimelineProps {
 
 export function Timeline({
   beats,
+  objects,
   durations,
   starts,
   dirty,
@@ -41,6 +46,8 @@ export function Timeline({
               key={beat.id}
               beat={beat}
               beats={beats}
+              label={beatLabel(beat, objects)}
+              family={KINDS[beat.action].family}
               duration={durations[index] ?? beat.duration}
               start={starts[index] ?? 0}
               dirty={dirty[index] === true}
@@ -64,6 +71,8 @@ export function Timeline({
 function BeatCell({
   beat,
   beats,
+  label,
+  family,
   duration,
   start,
   dirty,
@@ -76,6 +85,8 @@ function BeatCell({
 }: {
   beat: Beat;
   beats: Beat[];
+  label: string;
+  family: Family;
   duration: number;
   start: number;
   dirty: boolean;
@@ -111,10 +122,11 @@ function BeatCell({
       className={selected ? "beat selected" : active ? "beat active" : "beat"}
       data-testid={`beat-${beat.id}`}
       data-dirty={dirty ? "true" : "false"}
+      data-family={family}
     >
       <button type="button" className="beat-body" onClick={() => onSelect(beat.id)}>
         <span className="beat-start">{formatSeconds(start)}</span>
-        <span className="beat-action">{beat.action}</span>
+        <span className="beat-action">{label}</span>
         {dirty ? <span className="dirty-mark">dirty</span> : null}
       </button>
       <button
