@@ -7,6 +7,14 @@ of beats, and Mathimator compiles it into a
 scene as it changes and exports an MP4, WebM, GIF or PNG sequence, or the
 generated Python. Making the animation takes no Python.
 
+The objects are axes with a plotted function, formulas, text, shapes (a dot,
+line, arrow, circle, rectangle or point on axes) and a 3D surface or curve.
+Each beat is one animation: a wait, an entrance, an exit, a change such as a
+move, scale, rotation or new colour, an emphasis such as indicate or wiggle, a
+morph of one object into another, or a camera move in a 3D scene. A beat can
+act on several objects at once, every beat but a wait takes an easing, and an
+object can leave the screen and enter again.
+
 [docs/design-spec.md](docs/design-spec.md) is the design and its acceptance
 criteria. Mathimator v1 targets Windows 11 x64. The fast tests and the Rust
 pre-checks also run on Linux; macOS is untested.

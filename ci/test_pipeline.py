@@ -494,14 +494,20 @@ def test_every_job_a_job_needs_runs_with_it() -> None:
 
 def test_the_lanes_cover_the_files_their_tests_read() -> None:
     # The UI and the shell name files relative to the source that reads them,
-    # the Python tests relative to the repository.
+    # the Python tests relative to the repository. A glob the UI imports
+    # stands for a file it matches.
     relative = (
-        ("test:ui", "desktop/src", {".ts", ".tsx"}, r"""(?:from|import)\s*\(?\s*["'](\.{1,2}/[^"'?]+)"""),
+        (
+            "test:ui",
+            "desktop/src",
+            {".ts", ".tsx"},
+            r"""(?:from|import|import\.meta\.glob(?:<[^>]*>)?)\s*\(?\s*["'](\.{1,2}/[^"'?]+)""",
+        ),
         ("test:rust", "desktop/src-tauri/src", {".rs"}, r'include_(?:str|bytes)!\(\s*"([^"]+)"'),
     )
     reads = {
         job: {
-            (path.parent / target).resolve().relative_to(REPO).as_posix()
+            (path.parent / _example(target)).resolve().relative_to(REPO).as_posix()
             for path in (REPO / folder).rglob("*")
             if path.suffix in suffixes
             for target in re.findall(pattern, path.read_text(encoding="utf-8"))

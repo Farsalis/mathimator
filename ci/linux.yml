@@ -59,7 +59,9 @@
       changes:
         - desktop/*
         - desktop/src/**/*
+        - tests/fixtures/beats/**/*
         - tests/fixtures/protocol/**/*
+        - tests/fixtures/render-smoke/**/*
         - tests/fixtures/timing/**/*
         - worker/mathimator_worker/supervisor.py
         - ci/linux.yml

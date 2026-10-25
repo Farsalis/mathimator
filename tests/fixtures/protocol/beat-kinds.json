@@ -1,0 +1,893 @@
+{
+  "easings": [
+    {
+      "name": "smooth",
+      "label": "Smooth",
+      "endsAt": 1
+    },
+    {
+      "name": "linear",
+      "label": "Linear",
+      "endsAt": 1
+    },
+    {
+      "name": "rush_into",
+      "label": "Rush in",
+      "endsAt": 1
+    },
+    {
+      "name": "rush_from",
+      "label": "Rush out",
+      "endsAt": 1
+    },
+    {
+      "name": "slow_into",
+      "label": "Slow into",
+      "endsAt": 1
+    },
+    {
+      "name": "double_smooth",
+      "label": "Double smooth",
+      "endsAt": 1
+    },
+    {
+      "name": "lingering",
+      "label": "Lingering (arrives early, holds)",
+      "endsAt": 1
+    },
+    {
+      "name": "there_and_back",
+      "label": "There and back",
+      "endsAt": 0
+    },
+    {
+      "name": "there_and_back_with_pause",
+      "label": "There and back, with a pause",
+      "endsAt": 0
+    }
+  ],
+  "families": [
+    {
+      "name": "hold",
+      "label": "Wait",
+      "order": 0
+    },
+    {
+      "name": "entrance",
+      "label": "Entrances",
+      "order": 1
+    },
+    {
+      "name": "exit",
+      "label": "Exits",
+      "order": 2
+    },
+    {
+      "name": "change",
+      "label": "Changes",
+      "order": 3
+    },
+    {
+      "name": "emphasis",
+      "label": "Emphasis",
+      "order": 4
+    },
+    {
+      "name": "morph",
+      "label": "Morphs",
+      "order": 5
+    },
+    {
+      "name": "camera",
+      "label": "Camera",
+      "order": 6
+    }
+  ],
+  "kinds": [
+    {
+      "action": "wait",
+      "family": "hold",
+      "label": "Wait",
+      "arity": "none",
+      "types": [],
+      "roles": [],
+      "params": [],
+      "easings": [],
+      "defaultEasing": null,
+      "withChildren": false,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "create",
+      "family": "entrance",
+      "label": "Create",
+      "arity": "some",
+      "types": ["axes", "function_plot", "dot", "line", "arrow", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "fade_in",
+      "family": "entrance",
+      "label": "Fade in",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "write",
+      "family": "entrance",
+      "label": "Write",
+      "arity": "some",
+      "types": ["math_formula", "text"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering"],
+      "defaultEasing": "linear",
+      "withChildren": false,
+      "scenes": ["scene"]
+    },
+    {
+      "action": "grow",
+      "family": "entrance",
+      "label": "Grow from center",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "grow_arrow",
+      "family": "entrance",
+      "label": "Grow arrow",
+      "arity": "some",
+      "types": ["arrow"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene"]
+    },
+    {
+      "action": "draw_border_then_fill",
+      "family": "entrance",
+      "label": "Draw border, then fill",
+      "arity": "some",
+      "types": ["math_formula", "text", "dot", "circle", "rectangle", "axes_point"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene"]
+    },
+    {
+      "action": "spin_in",
+      "family": "entrance",
+      "label": "Spin in",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "circle", "rectangle", "axes_point"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene"]
+    },
+    {
+      "action": "fade_out",
+      "family": "exit",
+      "label": "Fade out",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering"],
+      "defaultEasing": "smooth",
+      "withChildren": true,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "uncreate",
+      "family": "exit",
+      "label": "Uncreate",
+      "arity": "some",
+      "types": ["axes", "function_plot", "dot", "line", "arrow", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "double_smooth"],
+      "defaultEasing": "smooth",
+      "withChildren": true,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "unwrite",
+      "family": "exit",
+      "label": "Unwrite",
+      "arity": "some",
+      "types": ["math_formula", "text"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "double_smooth"],
+      "defaultEasing": "smooth",
+      "withChildren": true,
+      "scenes": ["scene"]
+    },
+    {
+      "action": "shrink",
+      "family": "exit",
+      "label": "Shrink away",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering"],
+      "defaultEasing": "smooth",
+      "withChildren": true,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "move",
+      "family": "change",
+      "label": "Move by",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [
+        {
+          "name": "shift",
+          "label": "Shift",
+          "type": "vector",
+          "default": [1, 0],
+          "low": null,
+          "high": null,
+          "positive": false
+        }
+      ],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "smooth",
+      "withChildren": true,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "move_to",
+      "family": "change",
+      "label": "Move to",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [
+        {
+          "name": "point",
+          "label": "Point",
+          "type": "vector",
+          "default": [0, 0],
+          "low": -100,
+          "high": 100,
+          "positive": false
+        }
+      ],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "smooth",
+      "withChildren": true,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "scale",
+      "family": "change",
+      "label": "Scale",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [
+        {
+          "name": "factor",
+          "label": "Factor",
+          "type": "number",
+          "default": 1.5,
+          "low": 0.01,
+          "high": 100,
+          "positive": false
+        }
+      ],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "smooth",
+      "withChildren": true,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "rotate",
+      "family": "change",
+      "label": "Rotate",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [
+        {
+          "name": "angle",
+          "label": "Angle",
+          "type": "number",
+          "default": 90,
+          "low": -3600,
+          "high": 3600,
+          "positive": false
+        }
+      ],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "smooth",
+      "withChildren": true,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "set_opacity",
+      "family": "change",
+      "label": "Set opacity",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [
+        {
+          "name": "opacity",
+          "label": "Opacity",
+          "type": "number",
+          "default": 0.5,
+          "low": 0,
+          "high": 1,
+          "positive": false
+        }
+      ],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "set_color",
+      "family": "change",
+      "label": "Recolor",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [
+        {
+          "name": "color",
+          "label": "Color",
+          "type": "color",
+          "default": "#E07A5F",
+          "low": null,
+          "high": null,
+          "positive": false
+        }
+      ],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "move_along",
+      "family": "change",
+      "label": "Move along a path",
+      "arity": "pair",
+      "types": [],
+      "roles": [
+        {
+          "name": "mover",
+          "label": "Object",
+          "types": ["dot", "axes_point"],
+          "before": "on",
+          "after": "on"
+        },
+        {
+          "name": "path",
+          "label": "Path",
+          "types": ["function_plot", "line", "arrow", "circle", "rectangle"],
+          "before": "on",
+          "after": "on"
+        }
+      ],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene"]
+    },
+    {
+      "action": "indicate",
+      "family": "emphasis",
+      "label": "Indicate",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [],
+      "easings": ["there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "there_and_back",
+      "withChildren": true,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "circumscribe",
+      "family": "emphasis",
+      "label": "Circumscribe",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene"]
+    },
+    {
+      "action": "flash",
+      "family": "emphasis",
+      "label": "Flash",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene"]
+    },
+    {
+      "action": "wiggle",
+      "family": "emphasis",
+      "label": "Wiggle",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point", "three_d_axes", "surface", "parametric_curve"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "smooth",
+      "withChildren": true,
+      "scenes": ["scene", "three_d_scene"]
+    },
+    {
+      "action": "focus",
+      "family": "emphasis",
+      "label": "Focus",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene"]
+    },
+    {
+      "action": "wave",
+      "family": "emphasis",
+      "label": "Wave",
+      "arity": "some",
+      "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point"],
+      "roles": [],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "smooth",
+      "withChildren": true,
+      "scenes": ["scene"]
+    },
+    {
+      "action": "transform",
+      "family": "morph",
+      "label": "Transform",
+      "arity": "pair",
+      "types": [],
+      "roles": [
+        {
+          "name": "source",
+          "label": "From",
+          "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point"],
+          "before": "on",
+          "after": "off"
+        },
+        {
+          "name": "destination",
+          "label": "To",
+          "types": ["axes", "function_plot", "math_formula", "text", "dot", "line", "arrow", "circle", "rectangle", "axes_point"],
+          "before": "off",
+          "after": "on"
+        }
+      ],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["scene"]
+    },
+    {
+      "action": "transform_formula",
+      "family": "morph",
+      "label": "Transform formula (match symbols)",
+      "arity": "pair",
+      "types": [],
+      "roles": [
+        {
+          "name": "source",
+          "label": "From",
+          "types": ["math_formula"],
+          "before": "on",
+          "after": "off"
+        },
+        {
+          "name": "destination",
+          "label": "To",
+          "types": ["math_formula"],
+          "before": "off",
+          "after": "on"
+        }
+      ],
+      "params": [],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering"],
+      "defaultEasing": "linear",
+      "withChildren": false,
+      "scenes": ["scene"]
+    },
+    {
+      "action": "move_camera",
+      "family": "camera",
+      "label": "Move camera",
+      "arity": "none",
+      "types": [],
+      "roles": [],
+      "params": [
+        {
+          "name": "phi",
+          "label": "Phi",
+          "type": "number",
+          "default": null,
+          "low": null,
+          "high": null,
+          "positive": false
+        },
+        {
+          "name": "theta",
+          "label": "Theta",
+          "type": "number",
+          "default": null,
+          "low": null,
+          "high": null,
+          "positive": false
+        },
+        {
+          "name": "zoom",
+          "label": "Zoom",
+          "type": "number",
+          "default": null,
+          "low": null,
+          "high": null,
+          "positive": true
+        }
+      ],
+      "easings": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+      "defaultEasing": "smooth",
+      "withChildren": false,
+      "scenes": ["three_d_scene"]
+    }
+  ],
+  "shapes": [
+    {
+      "type": "dot",
+      "label": "Dot",
+      "idPrefix": "dot",
+      "entrance": "grow",
+      "params": [
+        {
+          "name": "center",
+          "label": "Center",
+          "type": "vector",
+          "default": [0, 0],
+          "low": -100,
+          "high": 100,
+          "positive": false
+        },
+        {
+          "name": "radius",
+          "label": "Radius",
+          "type": "number",
+          "default": 0.08,
+          "low": 0.001,
+          "high": 50,
+          "positive": false
+        },
+        {
+          "name": "color",
+          "label": "Color",
+          "type": "color",
+          "default": "#E07A5F",
+          "low": null,
+          "high": null,
+          "positive": false
+        }
+      ]
+    },
+    {
+      "type": "line",
+      "label": "Line",
+      "idPrefix": "line",
+      "entrance": "create",
+      "params": [
+        {
+          "name": "start",
+          "label": "Start",
+          "type": "vector",
+          "default": [-2, 0],
+          "low": -100,
+          "high": 100,
+          "positive": false
+        },
+        {
+          "name": "end",
+          "label": "End",
+          "type": "vector",
+          "default": [2, 0],
+          "low": -100,
+          "high": 100,
+          "positive": false
+        },
+        {
+          "name": "color",
+          "label": "Color",
+          "type": "color",
+          "default": "#FFFFFF",
+          "low": null,
+          "high": null,
+          "positive": false
+        },
+        {
+          "name": "strokeWidth",
+          "label": "Stroke width",
+          "type": "number",
+          "default": 4,
+          "low": 0,
+          "high": 50,
+          "positive": false
+        }
+      ]
+    },
+    {
+      "type": "arrow",
+      "label": "Arrow",
+      "idPrefix": "arrow",
+      "entrance": "grow_arrow",
+      "params": [
+        {
+          "name": "start",
+          "label": "Start",
+          "type": "vector",
+          "default": [-2, -1],
+          "low": -100,
+          "high": 100,
+          "positive": false
+        },
+        {
+          "name": "end",
+          "label": "End",
+          "type": "vector",
+          "default": [2, 1],
+          "low": -100,
+          "high": 100,
+          "positive": false
+        },
+        {
+          "name": "color",
+          "label": "Color",
+          "type": "color",
+          "default": "#FFFFFF",
+          "low": null,
+          "high": null,
+          "positive": false
+        },
+        {
+          "name": "strokeWidth",
+          "label": "Stroke width",
+          "type": "number",
+          "default": 6,
+          "low": 0,
+          "high": 50,
+          "positive": false
+        }
+      ]
+    },
+    {
+      "type": "circle",
+      "label": "Circle",
+      "idPrefix": "circle",
+      "entrance": "create",
+      "params": [
+        {
+          "name": "center",
+          "label": "Center",
+          "type": "vector",
+          "default": [0, 0],
+          "low": -100,
+          "high": 100,
+          "positive": false
+        },
+        {
+          "name": "radius",
+          "label": "Radius",
+          "type": "number",
+          "default": 1,
+          "low": 0.001,
+          "high": 50,
+          "positive": false
+        },
+        {
+          "name": "color",
+          "label": "Color",
+          "type": "color",
+          "default": "#58C4DD",
+          "low": null,
+          "high": null,
+          "positive": false
+        },
+        {
+          "name": "strokeWidth",
+          "label": "Stroke width",
+          "type": "number",
+          "default": 4,
+          "low": 0,
+          "high": 50,
+          "positive": false
+        },
+        {
+          "name": "fillOpacity",
+          "label": "Fill opacity",
+          "type": "number",
+          "default": 0,
+          "low": 0,
+          "high": 1,
+          "positive": false
+        }
+      ]
+    },
+    {
+      "type": "rectangle",
+      "label": "Rectangle",
+      "idPrefix": "rectangle",
+      "entrance": "create",
+      "params": [
+        {
+          "name": "center",
+          "label": "Center",
+          "type": "vector",
+          "default": [0, 0],
+          "low": -100,
+          "high": 100,
+          "positive": false
+        },
+        {
+          "name": "width",
+          "label": "Width",
+          "type": "number",
+          "default": 4,
+          "low": 0.001,
+          "high": 100,
+          "positive": false
+        },
+        {
+          "name": "height",
+          "label": "Height",
+          "type": "number",
+          "default": 2,
+          "low": 0.001,
+          "high": 100,
+          "positive": false
+        },
+        {
+          "name": "color",
+          "label": "Color",
+          "type": "color",
+          "default": "#58C4DD",
+          "low": null,
+          "high": null,
+          "positive": false
+        },
+        {
+          "name": "strokeWidth",
+          "label": "Stroke width",
+          "type": "number",
+          "default": 4,
+          "low": 0,
+          "high": 50,
+          "positive": false
+        },
+        {
+          "name": "fillOpacity",
+          "label": "Fill opacity",
+          "type": "number",
+          "default": 0,
+          "low": 0,
+          "high": 1,
+          "positive": false
+        }
+      ]
+    },
+    {
+      "type": "axes_point",
+      "label": "Point on axes",
+      "idPrefix": "point",
+      "entrance": "grow",
+      "params": [
+        {
+          "name": "axesId",
+          "label": "Axes",
+          "type": "id",
+          "default": null,
+          "low": null,
+          "high": null,
+          "positive": false
+        },
+        {
+          "name": "x",
+          "label": "x",
+          "type": "number",
+          "default": null,
+          "low": -1000000,
+          "high": 1000000,
+          "positive": false
+        },
+        {
+          "name": "y",
+          "label": "y",
+          "type": "number",
+          "default": null,
+          "low": -1000000,
+          "high": 1000000,
+          "positive": false
+        },
+        {
+          "name": "radius",
+          "label": "Radius",
+          "type": "number",
+          "default": 0.08,
+          "low": 0.001,
+          "high": 50,
+          "positive": false
+        },
+        {
+          "name": "color",
+          "label": "Color",
+          "type": "color",
+          "default": "#E07A5F",
+          "low": null,
+          "high": null,
+          "positive": false
+        }
+      ]
+    }
+  ],
+  "naturalEntrance": {
+    "axes": "create",
+    "function_plot": "create",
+    "math_formula": "write",
+    "text": "write",
+    "dot": "grow",
+    "line": "create",
+    "arrow": "grow_arrow",
+    "circle": "create",
+    "rectangle": "create",
+    "axes_point": "grow",
+    "three_d_axes": "create",
+    "surface": "create",
+    "parametric_curve": "create"
+  }
+}

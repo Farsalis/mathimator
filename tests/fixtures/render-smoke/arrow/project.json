@@ -1,0 +1,208 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": 2,
+  "id": "arrow",
+  "name": "Smoke: arrow",
+  "seed": 1,
+  "scene": {
+    "id": "scene_main",
+    "name": "Main",
+    "kind": "scene",
+    "background": "#000000",
+    "objects": [
+      {
+        "id": "arrow_1",
+        "name": "Arrow",
+        "type": "arrow",
+        "params": {
+          "start": [-2, -1],
+          "end": [2, 1],
+          "color": "#FFFFFF",
+          "strokeWidth": 6
+        }
+      },
+      {
+        "id": "dot_1",
+        "name": "Dot",
+        "type": "dot",
+        "params": {
+          "center": [2, -2],
+          "radius": 0.08,
+          "color": "#E07A5F"
+        }
+      },
+      {
+        "id": "circle_1",
+        "name": "Circle",
+        "type": "circle",
+        "params": {
+          "center": [0, 0],
+          "radius": 1,
+          "color": "#58C4DD",
+          "strokeWidth": 4,
+          "fillOpacity": 0
+        }
+      }
+    ],
+    "beats": [
+      {
+        "id": "beat_1",
+        "duration": 0.5,
+        "action": "grow_arrow",
+        "targets": ["arrow_1"]
+      },
+      {
+        "id": "beat_2",
+        "duration": 0.5,
+        "action": "move",
+        "targets": ["arrow_1"],
+        "params": {
+          "shift": [1, 0]
+        }
+      },
+      {
+        "id": "beat_3",
+        "duration": 0.5,
+        "action": "move_to",
+        "targets": ["arrow_1"],
+        "params": {
+          "point": [0, 0]
+        }
+      },
+      {
+        "id": "beat_4",
+        "duration": 0.5,
+        "action": "scale",
+        "targets": ["arrow_1"],
+        "params": {
+          "factor": 1.5
+        }
+      },
+      {
+        "id": "beat_5",
+        "duration": 0.5,
+        "action": "rotate",
+        "targets": ["arrow_1"],
+        "params": {
+          "angle": 90
+        }
+      },
+      {
+        "id": "beat_6",
+        "duration": 0.5,
+        "action": "set_opacity",
+        "targets": ["arrow_1"],
+        "params": {
+          "opacity": 0.5
+        }
+      },
+      {
+        "id": "beat_7",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["arrow_1"],
+        "params": {
+          "color": "#E07A5F"
+        }
+      },
+      {
+        "id": "beat_8",
+        "duration": 0.5,
+        "action": "indicate",
+        "targets": ["arrow_1"]
+      },
+      {
+        "id": "beat_9",
+        "duration": 0.5,
+        "action": "circumscribe",
+        "targets": ["arrow_1"]
+      },
+      {
+        "id": "beat_10",
+        "duration": 0.5,
+        "action": "flash",
+        "targets": ["arrow_1"]
+      },
+      {
+        "id": "beat_11",
+        "duration": 0.5,
+        "action": "wiggle",
+        "targets": ["arrow_1"]
+      },
+      {
+        "id": "beat_12",
+        "duration": 0.5,
+        "action": "focus",
+        "targets": ["arrow_1"]
+      },
+      {
+        "id": "beat_13",
+        "duration": 0.5,
+        "action": "wave",
+        "targets": ["arrow_1"]
+      },
+      {
+        "id": "beat_14",
+        "duration": 0.5,
+        "action": "fade_in",
+        "targets": ["dot_1"]
+      },
+      {
+        "id": "beat_15",
+        "duration": 0.5,
+        "action": "move_along",
+        "targets": ["dot_1", "arrow_1"]
+      },
+      {
+        "id": "beat_16",
+        "duration": 0.5,
+        "action": "uncreate",
+        "targets": ["arrow_1"]
+      },
+      {
+        "id": "beat_17",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["arrow_1"]
+      },
+      {
+        "id": "beat_18",
+        "duration": 0.5,
+        "action": "fade_out",
+        "targets": ["arrow_1"]
+      },
+      {
+        "id": "beat_19",
+        "duration": 0.5,
+        "action": "fade_in",
+        "targets": ["arrow_1"]
+      },
+      {
+        "id": "beat_20",
+        "duration": 0.5,
+        "action": "transform",
+        "targets": ["arrow_1", "circle_1"]
+      },
+      {
+        "id": "beat_21",
+        "duration": 0.5,
+        "action": "transform",
+        "targets": ["circle_1", "arrow_1"]
+      }
+    ],
+    "templateInstances": []
+  },
+  "previewProfile": {
+    "width": 854,
+    "height": 480,
+    "fps": 15,
+    "transparent": false
+  },
+  "exportProfile": {
+    "format": "mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "transparent": false
+  }
+}

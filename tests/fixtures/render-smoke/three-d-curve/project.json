@@ -1,0 +1,339 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": 2,
+  "id": "three_d_curve",
+  "name": "Smoke: three-d-curve",
+  "seed": 1,
+  "scene": {
+    "id": "scene_main",
+    "name": "Main",
+    "kind": "three_d_scene",
+    "background": "#000000",
+    "camera": {
+      "phi": 65,
+      "theta": -45,
+      "zoom": 1
+    },
+    "objects": [
+      {
+        "id": "axes_1",
+        "name": "Axes",
+        "type": "three_d_axes",
+        "params": {
+          "xRange": [-3, 3, 1],
+          "yRange": [-3, 3, 1],
+          "zRange": [-2, 2, 1]
+        }
+      },
+      {
+        "id": "curve_1",
+        "name": "Curve",
+        "type": "parametric_curve",
+        "params": {
+          "axesId": "axes_1",
+          "components": ["cos(t)", "sin(t)", "t / 3"],
+          "tRange": [0, 12.56],
+          "color": "#F2CC8F"
+        }
+      }
+    ],
+    "beats": [
+      {
+        "id": "beat_1",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["axes_1"]
+      },
+      {
+        "id": "beat_2",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["curve_1"]
+      },
+      {
+        "id": "beat_3",
+        "duration": 0.5,
+        "action": "indicate",
+        "targets": ["curve_1"]
+      },
+      {
+        "id": "beat_4",
+        "duration": 0.5,
+        "action": "indicate",
+        "targets": ["axes_1", "curve_1"]
+      },
+      {
+        "id": "beat_5",
+        "duration": 0.5,
+        "action": "wiggle",
+        "targets": ["curve_1"]
+      },
+      {
+        "id": "beat_6",
+        "duration": 0.5,
+        "action": "wiggle",
+        "targets": ["axes_1", "curve_1"]
+      },
+      {
+        "id": "beat_7",
+        "duration": 0.5,
+        "action": "move",
+        "targets": ["curve_1"],
+        "params": {
+          "shift": [1, 0]
+        }
+      },
+      {
+        "id": "beat_8",
+        "duration": 0.5,
+        "action": "move_to",
+        "targets": ["curve_1"],
+        "params": {
+          "point": [0, 0]
+        }
+      },
+      {
+        "id": "beat_9",
+        "duration": 0.5,
+        "action": "scale",
+        "targets": ["curve_1"],
+        "params": {
+          "factor": 1.5
+        }
+      },
+      {
+        "id": "beat_10",
+        "duration": 0.5,
+        "action": "rotate",
+        "targets": ["curve_1"],
+        "params": {
+          "angle": 90
+        }
+      },
+      {
+        "id": "beat_11",
+        "duration": 0.5,
+        "action": "set_opacity",
+        "targets": ["curve_1"],
+        "params": {
+          "opacity": 0.5
+        }
+      },
+      {
+        "id": "beat_12",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["curve_1"],
+        "params": {
+          "color": "#E07A5F"
+        }
+      },
+      {
+        "id": "beat_13",
+        "duration": 0.5,
+        "action": "fade_out",
+        "targets": ["curve_1"]
+      },
+      {
+        "id": "beat_14",
+        "duration": 0.5,
+        "action": "fade_in",
+        "targets": ["curve_1"]
+      },
+      {
+        "id": "beat_15",
+        "duration": 0.5,
+        "action": "uncreate",
+        "targets": ["curve_1"]
+      },
+      {
+        "id": "beat_16",
+        "duration": 0.5,
+        "action": "grow",
+        "targets": ["curve_1"]
+      },
+      {
+        "id": "beat_17",
+        "duration": 0.5,
+        "action": "shrink",
+        "targets": ["curve_1"]
+      },
+      {
+        "id": "beat_18",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["curve_1"]
+      },
+      {
+        "id": "beat_19",
+        "duration": 0.5,
+        "action": "fade_out",
+        "targets": ["curve_1", "axes_1"]
+      },
+      {
+        "id": "beat_20",
+        "duration": 0.5,
+        "action": "grow",
+        "targets": ["axes_1"]
+      },
+      {
+        "id": "beat_21",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["curve_1"]
+      },
+      {
+        "id": "beat_22",
+        "duration": 0.5,
+        "action": "wait",
+        "targets": []
+      },
+      {
+        "id": "beat_23",
+        "duration": 0.5,
+        "action": "move_camera",
+        "targets": [],
+        "params": {
+          "phi": 75,
+          "theta": -15,
+          "zoom": 0.9
+        },
+        "easing": "smooth"
+      },
+      {
+        "id": "beat_24",
+        "duration": 0.5,
+        "action": "move_camera",
+        "targets": [],
+        "params": {
+          "phi": 60,
+          "theta": 30,
+          "zoom": 1.1
+        },
+        "easing": "linear"
+      },
+      {
+        "id": "beat_25",
+        "duration": 0.5,
+        "action": "move_camera",
+        "targets": [],
+        "params": {
+          "phi": 45,
+          "theta": 60,
+          "zoom": 1
+        },
+        "easing": "rush_into"
+      },
+      {
+        "id": "beat_26",
+        "duration": 0.5,
+        "action": "move_camera",
+        "targets": [],
+        "params": {
+          "phi": 75,
+          "theta": -15,
+          "zoom": 0.9
+        },
+        "easing": "rush_from"
+      },
+      {
+        "id": "beat_27",
+        "duration": 0.5,
+        "action": "move_camera",
+        "targets": [],
+        "params": {
+          "phi": 60,
+          "theta": 30,
+          "zoom": 1.1
+        },
+        "easing": "slow_into"
+      },
+      {
+        "id": "beat_28",
+        "duration": 0.5,
+        "action": "move_camera",
+        "targets": [],
+        "params": {
+          "phi": 45,
+          "theta": 60,
+          "zoom": 1
+        },
+        "easing": "double_smooth"
+      },
+      {
+        "id": "beat_29",
+        "duration": 0.5,
+        "action": "move_camera",
+        "targets": [],
+        "params": {
+          "phi": 75,
+          "theta": -15,
+          "zoom": 0.9
+        },
+        "easing": "lingering"
+      },
+      {
+        "id": "beat_30",
+        "duration": 0.5,
+        "action": "move_camera",
+        "targets": [],
+        "params": {
+          "phi": 60,
+          "theta": 30,
+          "zoom": 1.1
+        },
+        "easing": "there_and_back"
+      },
+      {
+        "id": "beat_31",
+        "duration": 0.5,
+        "action": "move_camera",
+        "targets": [],
+        "params": {
+          "phi": 45,
+          "theta": 60,
+          "zoom": 1
+        },
+        "easing": "there_and_back_with_pause"
+      }
+    ],
+    "templateInstances": [
+      {
+        "id": "tmpl_1",
+        "templateId": "three_d_axes",
+        "params": {
+          "mode": "curve",
+          "xRange": [-3, 3, 1],
+          "yRange": [-3, 3, 1],
+          "zRange": [-2, 2, 1],
+          "phi": 65,
+          "theta": -45,
+          "zoom": 1,
+          "expression": "sin(x)*cos(y)",
+          "uRange": [-2.5, 2.5],
+          "vRange": [-2.5, 2.5],
+          "resolution": [8, 8],
+          "surfaceColor": "#58C4DD",
+          "components": ["cos(t)", "sin(t)", "t / 3"],
+          "tRange": [0, 12.56],
+          "curveColor": "#F2CC8F"
+        },
+        "objectIds": ["axes_1", "curve_1"],
+        "beatIds": ["beat_1", "beat_2"]
+      }
+    ]
+  },
+  "previewProfile": {
+    "width": 854,
+    "height": 480,
+    "fps": 15,
+    "transparent": false
+  },
+  "exportProfile": {
+    "format": "mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "transparent": false
+  }
+}

@@ -1,0 +1,247 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": 2,
+  "id": "several_targets",
+  "name": "Smoke: several-targets",
+  "seed": 1,
+  "scene": {
+    "id": "scene_main",
+    "name": "Main",
+    "kind": "scene",
+    "background": "#000000",
+    "objects": [
+      {
+        "id": "axes_1",
+        "name": "Axes",
+        "type": "axes",
+        "params": {
+          "xRange": [-4, 4, 1],
+          "yRange": [-2, 2, 1],
+          "xLength": 8,
+          "yLength": 4,
+          "color": "#FFFFFF",
+          "showLabels": true
+        }
+      },
+      {
+        "id": "plot_1",
+        "name": "Sine",
+        "type": "function_plot",
+        "params": {
+          "axesId": "axes_1",
+          "expression": "sin(x)",
+          "xMin": -3,
+          "xMax": 3,
+          "color": "#58C4DD"
+        }
+      },
+      {
+        "id": "point_1",
+        "name": "Point",
+        "type": "axes_point",
+        "params": {
+          "axesId": "axes_1",
+          "x": 1,
+          "y": 1,
+          "radius": 0.08,
+          "color": "#E07A5F"
+        }
+      },
+      {
+        "id": "text_1",
+        "name": "Text",
+        "type": "text",
+        "params": {
+          "text": "Hi",
+          "color": "#FFFFFF",
+          "anchor": "origin"
+        }
+      },
+      {
+        "id": "rectangle_1",
+        "name": "Rectangle",
+        "type": "rectangle",
+        "params": {
+          "center": [0, 0],
+          "width": 3,
+          "height": 1.5,
+          "color": "#58C4DD",
+          "strokeWidth": 4,
+          "fillOpacity": 0.6
+        }
+      }
+    ],
+    "beats": [
+      {
+        "id": "beat_1",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["plot_1", "axes_1"]
+      },
+      {
+        "id": "beat_2",
+        "duration": 0.5,
+        "action": "grow",
+        "targets": ["point_1"]
+      },
+      {
+        "id": "beat_3",
+        "duration": 0.5,
+        "action": "write",
+        "targets": ["text_1"]
+      },
+      {
+        "id": "beat_4",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["rectangle_1"]
+      },
+      {
+        "id": "beat_5",
+        "duration": 0.5,
+        "action": "move",
+        "targets": ["text_1", "rectangle_1"],
+        "params": {
+          "shift": [0.5, 0]
+        }
+      },
+      {
+        "id": "beat_6",
+        "duration": 0.5,
+        "action": "move",
+        "targets": ["axes_1", "plot_1", "point_1"],
+        "params": {
+          "shift": [0, -0.5]
+        }
+      },
+      {
+        "id": "beat_7",
+        "duration": 0.5,
+        "action": "move_to",
+        "targets": ["text_1", "rectangle_1"],
+        "params": {
+          "point": [1, 1]
+        }
+      },
+      {
+        "id": "beat_8",
+        "duration": 0.5,
+        "action": "move_to",
+        "targets": ["axes_1", "plot_1", "point_1"],
+        "params": {
+          "point": [0, 0]
+        }
+      },
+      {
+        "id": "beat_9",
+        "duration": 0.5,
+        "action": "scale",
+        "targets": ["text_1", "rectangle_1"],
+        "params": {
+          "factor": 1.2
+        }
+      },
+      {
+        "id": "beat_10",
+        "duration": 0.5,
+        "action": "scale",
+        "targets": ["axes_1", "plot_1", "point_1"],
+        "params": {
+          "factor": 0.8
+        }
+      },
+      {
+        "id": "beat_11",
+        "duration": 0.5,
+        "action": "rotate",
+        "targets": ["text_1", "rectangle_1"],
+        "params": {
+          "angle": 30
+        }
+      },
+      {
+        "id": "beat_12",
+        "duration": 0.5,
+        "action": "rotate",
+        "targets": ["axes_1", "plot_1", "point_1"],
+        "params": {
+          "angle": -30
+        }
+      },
+      {
+        "id": "beat_13",
+        "duration": 0.5,
+        "action": "set_opacity",
+        "targets": ["text_1", "rectangle_1"],
+        "params": {
+          "opacity": 0.6
+        }
+      },
+      {
+        "id": "beat_14",
+        "duration": 0.5,
+        "action": "set_opacity",
+        "targets": ["axes_1", "plot_1", "point_1"],
+        "params": {
+          "opacity": 0.6
+        }
+      },
+      {
+        "id": "beat_15",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["text_1", "rectangle_1"],
+        "params": {
+          "color": "#F2CC8F"
+        }
+      },
+      {
+        "id": "beat_16",
+        "duration": 0.5,
+        "action": "set_color",
+        "targets": ["axes_1", "plot_1", "point_1"],
+        "params": {
+          "color": "#81B29A"
+        }
+      },
+      {
+        "id": "beat_17",
+        "duration": 0.5,
+        "action": "indicate",
+        "targets": ["axes_1", "plot_1", "point_1", "text_1"]
+      },
+      {
+        "id": "beat_18",
+        "duration": 0.5,
+        "action": "wiggle",
+        "targets": ["axes_1", "plot_1", "point_1", "text_1"]
+      },
+      {
+        "id": "beat_19",
+        "duration": 0.5,
+        "action": "fade_out",
+        "targets": ["text_1", "rectangle_1"]
+      },
+      {
+        "id": "beat_20",
+        "duration": 0.5,
+        "action": "uncreate",
+        "targets": ["plot_1", "point_1"]
+      }
+    ],
+    "templateInstances": []
+  },
+  "previewProfile": {
+    "width": 854,
+    "height": 480,
+    "fps": 15,
+    "transparent": false
+  },
+  "exportProfile": {
+    "format": "mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "transparent": false
+  }
+}

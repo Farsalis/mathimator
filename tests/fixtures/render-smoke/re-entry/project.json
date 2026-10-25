@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": 2,
+  "id": "re_entry",
+  "name": "Smoke: re-entry",
+  "seed": 1,
+  "scene": {
+    "id": "scene_main",
+    "name": "Main",
+    "kind": "scene",
+    "background": "#000000",
+    "objects": [
+      {
+        "id": "axes_1",
+        "name": "Axes",
+        "type": "axes",
+        "params": {
+          "xRange": [-4, 4, 1],
+          "yRange": [-2, 2, 1],
+          "xLength": 8,
+          "yLength": 4,
+          "color": "#FFFFFF",
+          "showLabels": false
+        }
+      },
+      {
+        "id": "plot_1",
+        "name": "Sine",
+        "type": "function_plot",
+        "params": {
+          "axesId": "axes_1",
+          "expression": "sin(x)",
+          "xMin": -3,
+          "xMax": 3,
+          "color": "#58C4DD"
+        }
+      },
+      {
+        "id": "circle_1",
+        "name": "Circle",
+        "type": "circle",
+        "params": {
+          "center": [0, 0],
+          "radius": 1,
+          "color": "#58C4DD",
+          "strokeWidth": 4,
+          "fillOpacity": 0
+        }
+      },
+      {
+        "id": "text_1",
+        "name": "Text",
+        "type": "text",
+        "params": {
+          "text": "Hi",
+          "color": "#FFFFFF",
+          "anchor": "edge_up"
+        }
+      },
+      {
+        "id": "rectangle_1",
+        "name": "Rectangle",
+        "type": "rectangle",
+        "params": {
+          "center": [0, 0],
+          "width": 4,
+          "height": 2,
+          "color": "#58C4DD",
+          "strokeWidth": 4,
+          "fillOpacity": 0.3
+        }
+      }
+    ],
+    "beats": [
+      {
+        "id": "beat_1",
+        "duration": 0.5,
+        "action": "fade_in",
+        "targets": ["circle_1"]
+      },
+      {
+        "id": "beat_2",
+        "duration": 0.5,
+        "action": "fade_out",
+        "targets": ["circle_1"]
+      },
+      {
+        "id": "beat_3",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["circle_1"]
+      },
+      {
+        "id": "beat_4",
+        "duration": 0.5,
+        "action": "uncreate",
+        "targets": ["circle_1"]
+      },
+      {
+        "id": "beat_5",
+        "duration": 0.5,
+        "action": "grow",
+        "targets": ["circle_1"]
+      },
+      {
+        "id": "beat_6",
+        "duration": 0.5,
+        "action": "shrink",
+        "targets": ["circle_1"]
+      },
+      {
+        "id": "beat_7",
+        "duration": 0.5,
+        "action": "spin_in",
+        "targets": ["circle_1"]
+      },
+      {
+        "id": "beat_8",
+        "duration": 0.5,
+        "action": "fade_out",
+        "targets": ["circle_1"]
+      },
+      {
+        "id": "beat_9",
+        "duration": 0.5,
+        "action": "draw_border_then_fill",
+        "targets": ["circle_1"]
+      },
+      {
+        "id": "beat_10",
+        "duration": 0.5,
+        "action": "write",
+        "targets": ["text_1"]
+      },
+      {
+        "id": "beat_11",
+        "duration": 0.5,
+        "action": "unwrite",
+        "targets": ["text_1"]
+      },
+      {
+        "id": "beat_12",
+        "duration": 0.5,
+        "action": "write",
+        "targets": ["text_1"]
+      },
+      {
+        "id": "beat_13",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["axes_1", "plot_1"]
+      },
+      {
+        "id": "beat_14",
+        "duration": 0.5,
+        "action": "fade_out",
+        "targets": ["plot_1"]
+      },
+      {
+        "id": "beat_15",
+        "duration": 0.5,
+        "action": "move",
+        "targets": ["axes_1"],
+        "params": {
+          "shift": [0, -1]
+        }
+      },
+      {
+        "id": "beat_16",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["plot_1"]
+      },
+      {
+        "id": "beat_17",
+        "duration": 0.5,
+        "action": "transform",
+        "targets": ["circle_1", "rectangle_1"]
+      },
+      {
+        "id": "beat_18",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["circle_1"]
+      }
+    ],
+    "templateInstances": []
+  },
+  "previewProfile": {
+    "width": 854,
+    "height": 480,
+    "fps": 15,
+    "transparent": false
+  },
+  "exportProfile": {
+    "format": "mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "transparent": false
+  }
+}

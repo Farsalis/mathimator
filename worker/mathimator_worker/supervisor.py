@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import IO
 
 from mathimator_worker.argv import build_manim_argv, manim_environment, manim_interpreter, profile_size
+from mathimator_worker.beats import KINDS
 from mathimator_worker.clip_check import SEGMENT_SUFFIXES, ClipChecker
 from mathimator_worker.codegen import CodegenError, generate, needs_latex
 from mathimator_worker.document import ProfileName, Project, dumps_project, empty_project, load_bytes, load_text
@@ -161,7 +162,7 @@ class _Job:
     captured: Project | None = None
     # A project-mode preview: the chain keys of the document it renders (C7.1, F135).
     capture_keys: list[str] | None = None
-    # Where its progress starts: the beats whose partial is current, and the beats Manim renders (C7.2).
+    # Where its progress starts: the beats whose partial is current, and the beats Manim renders in turn (C7.2).
     ready: dict[int, Path] = field(default_factory=dict)
     waiting: list[int] | None = None
     # Set with the job's one terminal line (done, error or rejected).
@@ -1438,7 +1439,7 @@ class Supervisor:
             assert self._index is not None
             job.capture_keys = beat_chain_keys(project, "preview")
             job.ready = {beat.index: Path(beat.partial) for beat in self._index.beats if beat.fresh and beat.partial}
-            job.waiting = [beat.index for beat in self._index.beats if not beat.fresh]
+            job.waiting = _rendered_in_order(project, [beat.index for beat in self._index.beats if not beat.fresh])
         job.argv = build_manim_argv(
             self._manim_python,
             job.profile,
@@ -1640,6 +1641,19 @@ def _scene_source(project: Project) -> str:
         return generate(project)
     except CodegenError as exc:
         raise DocumentError(str(exc)) from exc
+
+
+def _rendered_in_order(project: Project, stale: list[int]) -> list[int]:
+    """The beats of ``stale``, those that are not fresh, whose partials Manim writes in turn (C7.2).
+
+    Manim's key for a play holds the camera, which a camera move leaves in a
+    state that depends on the frames drawn, so after the first beat whose kind
+    is not ``predictable`` Manim may render a beat the index counts as fresh.
+    The beats that are not fresh after it wait for the segment list.
+    """
+    beats = project.scene.beats
+    cut = next((index for index, beat in enumerate(beats) if not KINDS[beat.action].predictable), len(beats))
+    return [index for index in stale if index <= cut]
 
 
 def _interrupted_run(layout: ProjectLayout, record: object) -> tuple[dict[Path, dict[Path, Stamp]], bool]:

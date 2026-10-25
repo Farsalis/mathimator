@@ -26,13 +26,14 @@ from mathimator_worker import progress as progress_module
 from mathimator_worker import project_folder
 from mathimator_worker import supervisor as supervisor_module
 from mathimator_worker.clip_check import ClipChecker
-from mathimator_worker.document import empty_project
+from mathimator_worker.document import dumps_project, empty_project
 from mathimator_worker.preview_index import PreviewIndex
 from mathimator_worker.progress import MANIFEST, ManimProgress
 from mathimator_worker.project_folder import copy_atomically, remove_file
 from mathimator_worker.session import Session
 from mathimator_worker.supervisor import Supervisor, _Job
 from mathimator_worker.tex_failure import format_render_failure, tex_error_lines
+from tests.beat_documents import Raw, beat, load, three_d
 from tests.support import REPO, FakeManim, Stdout, complete_clip, iso_box, video_render, write_clip
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
@@ -304,6 +305,28 @@ def test_progress_reads_only_the_segment_list_this_run_wrote(tmp_path: Path) -> 
         encoding="utf-8",
     )
     assert progress.segments() == [folder / "one.mp4", folder / "two.webm"]
+
+
+def test_beats_after_a_camera_move_wait_for_the_segment_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The template's two creates, then indicate, the camera move at index 3, wiggle and a wait.
+    camera = {"phi": 75, "theta": -15, "zoom": 1}
+    beats = [beat("indicate", "surface_1"), beat("move_camera", params=camera), beat("wiggle", "surface_1")]
+    supervisor = _supervisor(_written(tmp_path / "camera", three_d([*beats, beat("wait")])), monkeypatch)
+    first = _prepared(supervisor)
+    # Manim may render a play after a camera move again although its key is unchanged (spec section 10).
+    assert (first.ready, first.waiting) == ({}, [0, 1, 2, 3])
+    folder = supervisor.layout.partial_movie_dir("480p15")
+    folder.mkdir(parents=True)
+    clips = [_clip(folder / f"{index}.mp4", index) for index in range(6)]
+    supervisor._report_beats(first, list(enumerate(clips)))
+    _send(supervisor, cmd="edit", id="late", edit={"op": "set_beat_duration", "beatId": "beat_6", "duration": 2})
+    late = _prepared(supervisor)
+    assert (late.ready, late.waiting) == (dict(enumerate(clips[:5])), [])
+    _send(supervisor, cmd="edit", id="early", edit={"op": "set_beat_duration", "beatId": "beat_3", "duration": 2})
+    early = _prepared(supervisor)
+    assert (early.ready, early.waiting) == (dict(enumerate(clips[:2])), [2, 3])
+    # Without a camera move, every beat that is not fresh renders in turn.
+    assert _prepared(_supervisor(_journey(tmp_path / "journey"), monkeypatch)).waiting == [0, 1, 2, 3]
 
 
 def test_a_discard_removes_only_what_this_run_wrote_that_may_be_cut_off(tmp_path: Path) -> None:
@@ -770,6 +793,13 @@ def _unkillable(supervisor: Supervisor, monkeypatch: pytest.MonkeyPatch) -> None
 def _journey(root: Path) -> Path:
     root.mkdir(parents=True)
     (root / "project.json").write_bytes(JOURNEY.read_bytes())
+    return root
+
+
+def _written(root: Path, raw: Raw) -> Path:
+    """A project folder holding ``raw`` as Mathimator saves it."""
+    root.mkdir(parents=True)
+    (root / "project.json").write_text(dumps_project(load(raw)), encoding="utf-8", newline="\n")
     return root
 
 

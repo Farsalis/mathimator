@@ -1,12 +1,14 @@
 """project.json model, validation, and the limits and presets every module shares.
 
-The cache identity of a document lives in ``identity.py``.
+The cache identity of a document lives in ``identity.py``, the catalog of beat
+kinds, easings and shapes in ``beats.py``, and the on-screen rules of the
+timeline in ``timeline.py``.
 
-``schemaVersion`` 1 is the only version this phase reads. A ``start`` field,
-an unknown key, or any other schema version is refused. Beat start times are
-derived and are not stored. An older ``generatorVersion`` is read as the
-current one, so the next save writes the current number; a newer one is
-refused (C13.3).
+``schemaVersion`` 1 is the only version this phase reads. A ``start`` field
+(any ``start`` but the start point of a line or an arrow), an unknown key, or
+any other schema version is refused. Beat start times are derived and are not
+stored. An older ``generatorVersion`` is read as the current one, so the next
+save writes the current number; a newer one is refused (C13.3).
 
 Every refusal is a DocumentError with a protocol code, and its message and
 ``field`` name the JSON path of the failing value. Numbers are judged at the
@@ -26,10 +28,21 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from typing import Literal, TypeIs
 
+from mathimator_worker.beats import (
+    EASINGS,
+    KINDS,
+    SHAPE_TYPES,
+    SHAPES,
+    THREE_D_TYPES,
+    TWO_D_TYPES,
+    BeatKind,
+    Param,
+)
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import assert_supported
 from mathimator_worker.jsonio import JsonValue, dumps_document, loads
 from mathimator_worker.latex import check_latex
+from mathimator_worker.timeline import simulate
 
 MANIM_VERSION = "0.22.0"
 SCHEMA_VERSION = 1
@@ -82,15 +95,13 @@ EXPORT_SIZES = frozenset({(854, 480), (1280, 720), (1920, 1080)})
 EXPORT_FPS = frozenset({15, 30, 60})
 
 ANCHORS = frozenset({"origin", "edge_up", "edge_down", "edge_left", "edge_right"})
-PHASE_2_OBJECT_TYPES = frozenset({"axes", "function_plot", "math_formula", "text"})
-THREE_D_OBJECT_TYPES = frozenset({"three_d_axes", "surface", "parametric_curve"})
-OBJECT_TYPES = PHASE_2_OBJECT_TYPES | THREE_D_OBJECT_TYPES
-# The objects drawn on axes, which name them in ``axesId`` and enter after them.
-AXES_CHILD_TYPES = frozenset({"function_plot", "surface", "parametric_curve"})
-ACTIONS = frozenset({"create", "fade_in", "write", "wait", "transform_formula", "set_color", "move"})
-ENTRANCES = frozenset({"create", "fade_in", "write", "transform_formula"})
-CREATE_TYPES = frozenset({"axes", "function_plot", "three_d_axes", "surface", "parametric_curve"})
-WRITE_TYPES = frozenset({"math_formula", "text"})
+PHASE_2_OBJECT_TYPES = TWO_D_TYPES - SHAPE_TYPES
+TWO_D_OBJECT_TYPES = TWO_D_TYPES
+THREE_D_OBJECT_TYPES = THREE_D_TYPES
+OBJECT_TYPES = TWO_D_OBJECT_TYPES | THREE_D_OBJECT_TYPES
+ACTIONS = frozenset(KINDS)
+# The actions that bring an object on screen: the entrances and the morphs, which bring their destination.
+ENTRANCES = frozenset(kind.action for kind in KINDS.values() if kind.family in {"entrance", "morph"})
 TEMPLATE_IDS = frozenset({"axes_function", "formula_transform", "three_d_axes"})
 MAX_RESOLUTION = 24
 SURFACE_VARIABLES = frozenset({"x", "y"})
@@ -118,15 +129,15 @@ _PROJECT_KEYS = {
 _SCENE_KEYS = {"id", "name", "kind", "background", "objects", "beats", "templateInstances"}
 _CAMERA_KEYS = {"phi", "theta", "zoom"}
 _OBJECT_KEYS = {"id", "name", "type", "params"}
-_BEAT_KEYS = {"id", "duration", "action", "targets", "params"}
+_BEAT_KEYS = {"id", "duration", "action", "targets", "params", "easing"}
 _TEMPLATE_KEYS = {"id", "templateId", "params", "objectIds", "beatIds"}
 _PREVIEW_KEYS = {"width", "height", "fps", "transparent"}
 _EXPORT_KEYS = {"format", "width", "height", "fps", "transparent"}
-_SET_COLOR_KEYS = {"color"}
-_MOVE_KEYS = {"shift"}
-# Lower-case names the generated module uses. An id starts with a lower-case
-# letter, so neither Manim's capitalised names nor ``_beat_time`` can be one.
-_GENERATED_NAMES = frozenset({"np", "self", "config"})
+# Lower-case names the generated module uses, the easings among them: an id is
+# a local variable of ``construct`` and would hide ``rate_func=linear``. An id
+# starts with a lower-case letter, so neither Manim's capitalised names nor
+# ``_beat_time`` can be one.
+_GENERATED_NAMES = frozenset({"np", "self", "config", *EASINGS})
 # The parameters of the lambda that refers to the axes of a surface or a curve.
 _LAMBDA_PARAMETERS = {"surface": ("u", "v"), "parametric_curve": ("t",)}
 
@@ -178,6 +189,7 @@ _PARAM_ORDER = {
     "three_d_axes": _THREE_D_AXES_ORDER,
     "surface": _SURFACE_ORDER,
     "parametric_curve": _CURVE_ORDER,
+    **{shape.type: tuple(param.name for param in shape.params) for shape in SHAPES.values()},
 }
 _AXES_KEYS = frozenset(_AXES_ORDER)
 _PLOT_KEYS = frozenset(_PLOT_ORDER)
@@ -228,7 +240,10 @@ class Beat:
     duration: Number
     action: str
     targets: list[str]
+    # The settings of a kind that has them (``beats.KINDS``), else None.
     params: dict[str, JsonValue] | None = None
+    # None means the kind's default easing.
+    easing: str | None = None
 
 
 @dataclass
@@ -509,6 +524,26 @@ def parse_anchor(value: object, path: str) -> str:
     return value
 
 
+def parse_param(param: Param, value: object, path: str) -> JsonValue:
+    """One setting of a beat or a shape, as its row in ``beats.py`` describes it.
+
+    Bounds are inclusive and judged at the three decimals codegen emits (D02).
+    The value is returned as given.
+    """
+    if param.type == "number":
+        number = _positive(value, path) if param.positive else parse_number(value, path)
+        _check_bounds(param, number, path)
+        return number
+    if param.type == "vector":
+        numbers = _numbers(value, path, 2)
+        for index, number in enumerate(numbers):
+            _check_bounds(param, number, f"{path}[{index}]")
+        return list[JsonValue](numbers)
+    if param.type == "color":
+        return parse_color(value, path)
+    return _id_value(value, path)
+
+
 def _parse_project(raw: dict[str, object]) -> Project:
     _check_keys(raw, _PROJECT_KEYS, "")
     _require(raw, _PROJECT_KEYS, "")
@@ -670,7 +705,23 @@ def _parse_params(object_type: str, raw: dict[str, object], path: str) -> dict[s
             "tRange": _curve_range(raw["tRange"], f"{path}.tRange"),
             "color": parse_color(raw["color"], f"{path}.color"),
         }
+    if object_type in SHAPES:
+        params = _parse_table_params(SHAPES[object_type].params, raw, path)
+        if object_type in {"line", "arrow"}:
+            _check_length(params, path)
+        return params
     raise DocumentError(f'unknown object type "{object_type}"')
+
+
+def _check_length(params: dict[str, JsonValue], path: str) -> None:
+    """A line or an arrow from a point to itself has no direction, and Manim divides by its length."""
+    if _quantized(params["start"]) == _quantized(params["end"]):
+        raise DocumentError(f"{path}.end must differ from start", field=f"{path}.end")
+
+
+def _quantized(value: JsonValue) -> list[Number]:
+    """Numbers as codegen emits them (D02)."""
+    return [quantize(_as_number(item, "number")) for item in _copy_numbers(value)]
 
 
 def _parse_beat(raw: object, index: int) -> Beat:
@@ -682,37 +733,47 @@ def _parse_beat(raw: object, index: int) -> Beat:
     action = raw["action"]
     if not isinstance(action, str) or action not in ACTIONS:
         raise DocumentError(f"{path}.action {_shown(action)} is not an action", field=f"{path}.action")
+    kind = KINDS[action]
     targets = _id_list(raw["targets"], f"{path}.targets")
     params: dict[str, JsonValue] | None = None
-    if action == "set_color":
-        params = _parse_color_params(raw.get("params"), f"{path}.params")
-    elif action == "move":
-        params = _parse_move_params(raw.get("params"), f"{path}.params")
+    if kind.params:
+        params = _parse_beat_params(kind, raw.get("params"), f"{path}.params")
     elif "params" in raw:
         raise DocumentError(f"{path}.params is not allowed for {action}", field=f"{path}.params")
+    easing = _parse_easing(kind, raw["easing"], f"{path}.easing") if "easing" in raw else None
     return Beat(
         id=_id_value(raw["id"], f"{path}.id"),
         duration=_duration(raw["duration"], f"{path}.duration"),
         action=action,
         targets=targets,
         params=params,
+        easing=easing,
     )
 
 
-def _parse_color_params(raw: object, path: str) -> dict[str, JsonValue]:
+def _parse_beat_params(kind: BeatKind, raw: object, path: str) -> dict[str, JsonValue]:
     if not isinstance(raw, dict):
         raise DocumentError(f"{path} must be an object", field=path)
-    _check_keys(raw, _SET_COLOR_KEYS, path)
-    _require(raw, _SET_COLOR_KEYS, path)
-    return {"color": parse_color(raw["color"], f"{path}.color")}
+    return _parse_table_params(kind.params, raw, path)
 
 
-def _parse_move_params(raw: object, path: str) -> dict[str, JsonValue]:
-    if not isinstance(raw, dict):
-        raise DocumentError(f"{path} must be an object", field=path)
-    _check_keys(raw, _MOVE_KEYS, path)
-    _require(raw, _MOVE_KEYS, path)
-    return {"shift": _shift(raw["shift"], f"{path}.shift")}
+def _parse_table_params(params: tuple[Param, ...], raw: dict[str, object], path: str) -> dict[str, JsonValue]:
+    """Every setting of a row, in its order: all of them are required and no other key is allowed."""
+    names = frozenset(param.name for param in params)
+    _check_keys(raw, names, path)
+    _require(raw, names, path)
+    return {param.name: parse_param(param, raw[param.name], f"{path}.{param.name}") for param in params}
+
+
+def _parse_easing(kind: BeatKind, value: object, path: str) -> str:
+    """An easing the kind allows. A file may name the kind's default; it is kept as written."""
+    if not kind.easings:
+        raise DocumentError(f"{path} is not allowed for {kind.action}", field=path)
+    if not isinstance(value, str) or value not in EASINGS:
+        raise DocumentError(f"{path} {_shown(value)} is not an easing", field=path)
+    if value not in kind.easings:
+        raise DocumentError(f"{path} {_shown(value)} is not an easing for {kind.action}", field=path)
+    return value
 
 
 def _parse_template(raw: object, index: int) -> TemplateInstance:
@@ -907,77 +968,17 @@ def _check_limits(project: Project) -> None:
 
 
 def _check_timeline(project: Project) -> None:
+    """Each object drawn on axes names axes of the right type, then the beats play out on screen (``timeline.py``)."""
     objects = {item.id: item for item in project.scene.objects}
     for index, item in enumerate(project.scene.objects):
         path = f"scene.objects[{index}]"
         if item.type == "function_plot":
             _check_sampling(item, _require_axes(objects, item, "axes", path), path)
+        elif item.type == "axes_point":
+            _require_axes(objects, item, "axes", path)
         elif item.type in {"surface", "parametric_curve"}:
             _require_axes(objects, item, "three_d_axes", path)
-    entered: dict[str, int] = {}
-    # A transform takes its source off screen: source id to destination id (D09, F012).
-    transformed: dict[str, str] = {}
-    for index, beat in enumerate(project.scene.beats):
-        path = f"scene.beats[{index}]"
-        targets = f"{path}.targets"
-        if beat.action == "wait":
-            if beat.targets:
-                raise DocumentError(f"{targets} must be empty for wait", field=targets)
-            continue
-        if beat.action == "transform_formula":
-            if len(beat.targets) != 2:
-                raise DocumentError(f"{targets} must be a source and a destination", field=targets)
-            source_id, dest_id = beat.targets
-            source = objects.get(source_id)
-            dest = objects.get(dest_id)
-            if source is None or dest is None:
-                missing = source_id if source is None else dest_id
-                raise DocumentError(f"{targets} names {missing}, which is not an object", field=targets)
-            if source.type != "math_formula" or dest.type != "math_formula":
-                raise DocumentError(f"{path} transforms something other than a formula", field=targets)
-            if source_id not in entered:
-                raise DocumentError(f"{path} transforms {source_id} before it is on screen", field=targets)
-            if source_id in transformed:
-                raise _off_screen(path, "transforms", source_id, transformed[source_id], targets)
-            if dest_id in entered:
-                raise DocumentError(f"{path} brings {dest_id} on screen a second time", field=targets)
-            entered[dest_id] = index
-            transformed[source_id] = dest_id
-            continue
-        if len(beat.targets) != 1:
-            raise DocumentError(f"{targets} must name one object for {beat.action}", field=targets)
-        target_id = beat.targets[0]
-        target = objects.get(target_id)
-        if target is None:
-            raise DocumentError(f"{targets} names {target_id}, which is not an object", field=targets)
-        if beat.action in ENTRANCES:
-            if target_id in entered:
-                raise DocumentError(f"{path} brings {target_id} on screen a second time", field=targets)
-            if beat.action == "write" and target.type not in WRITE_TYPES:
-                raise DocumentError(f"{path} writes {target_id}, but only formulas and text are written", field=targets)
-            if beat.action == "create" and target.type not in CREATE_TYPES:
-                raise DocumentError(f"{path} creates {target_id}, but create is not its entrance", field=targets)
-            axes_id = target.params.get("axesId")
-            if target.type in AXES_CHILD_TYPES and axes_id not in entered:
-                raise DocumentError(f"{path} brings {target_id} on screen before its axes {axes_id}", field=targets)
-            entered[target_id] = index
-            continue
-        if target_id not in entered:
-            raise DocumentError(f"{path} changes {target_id} before it is on screen", field=targets)
-        if target_id in transformed:
-            raise _off_screen(path, "changes", target_id, transformed[target_id], targets)
-    for index, item in enumerate(project.scene.objects):
-        if item.id not in entered:
-            path = f"scene.objects[{index}]"
-            raise DocumentError(f"{path} {item.id} has no entrance beat", field=path)
-
-
-def _off_screen(path: str, verb: str, source_id: str, dest_id: str, field: str) -> DocumentError:
-    """A beat that targets a formula after a transform took it off screen. Manim would bring it back."""
-    return DocumentError(
-        f"{path} {verb} {source_id}, but {source_id} left the screen when it was transformed into {dest_id}",
-        field=field,
-    )
+    simulate(project)
 
 
 def _check_sampling(plot: SceneObject, axes: SceneObject, path: str) -> None:
@@ -1271,11 +1272,11 @@ def _beat_dict(item: Beat) -> dict[str, JsonValue]:
         "action": item.action,
         "targets": list(item.targets),
     }
-    if item.params is not None:
-        if item.action == "set_color":
-            payload["params"] = {"color": item.params["color"]}
-        elif item.action == "move":
-            payload["params"] = {"shift": item.params["shift"]}
+    params = KINDS[item.action].params
+    if item.params is not None and params:
+        payload["params"] = {param.name: item.params[param.name] for param in params}
+    if item.easing is not None:
+        payload["easing"] = item.easing
     return payload
 
 
@@ -1308,14 +1309,16 @@ def _check_keys(raw: dict[str, object], allowed: AbstractSet[str], path: str) ->
     """Refuse unknown keys. ``path`` is "" for the document root.
 
     Every object the parser accepts passes through here, so this is also the
-    one place that refuses a ``start`` field anywhere in the file.
+    one place that refuses a ``start`` field anywhere in the file. The start
+    point of a line or an arrow is the only ``start`` a row allows.
     """
     for key in raw:
+        if key in allowed:
+            continue
         field = f"{path}.{key}" if path else key
         if key == "start":
             raise DocumentError(f"{field} is not allowed: beat starts are derived from durations", field=field)
-        if key not in allowed:
-            raise DocumentError(f"{field} is not a known key", field=field)
+        raise DocumentError(f"{field} is not a known key", field=field)
 
 
 def _require(raw: dict[str, object], keys: AbstractSet[str], path: str) -> None:
@@ -1391,6 +1394,14 @@ def _positive(value: object, path: str) -> Number:
     number = parse_number(value, path)
     _check_greater(number, 0, path, "0")
     return number
+
+
+def _check_bounds(param: Param, number: Number, path: str) -> None:
+    """``number`` from ``param.low`` to ``param.high`` inclusive, at the three decimals codegen emits (D02)."""
+    if param.low is None or param.high is None:
+        return
+    if not param.low <= quantize(number) <= param.high:
+        raise DocumentError(f"{path} must be from {quantize(param.low)} to {quantize(param.high)}", field=path)
 
 
 def _duration(value: object, path: str) -> Number:

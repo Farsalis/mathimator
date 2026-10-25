@@ -1,0 +1,99 @@
+{
+  "cases": [
+    {
+      "name": "document order",
+      "objects": [{"id": "text_1", "type": "text"}, {"id": "circle_1", "type": "circle"}, {"id": "dot_1", "type": "dot"}],
+      "action": "fade_in",
+      "targets": ["dot_1", "text_1", "circle_1"],
+      "expected": ["text_1", "circle_1", "dot_1"]
+    },
+    {
+      "name": "already canonical",
+      "objects": [{"id": "axes_1", "type": "axes"}, {"id": "plot_1", "type": "function_plot", "axesId": "axes_1"}],
+      "action": "create",
+      "targets": ["axes_1", "plot_1"],
+      "expected": ["axes_1", "plot_1"]
+    },
+    {
+      "name": "a plot listed before its axes",
+      "objects": [{"id": "axes_1", "type": "axes"}, {"id": "plot_1", "type": "function_plot", "axesId": "axes_1"}],
+      "action": "fade_out",
+      "targets": ["plot_1", "axes_1"],
+      "expected": ["axes_1", "plot_1"]
+    },
+    {
+      "name": "axes later in objects than a point drawn on them",
+      "objects": [
+        {"id": "point_1", "type": "axes_point", "axesId": "axes_2"},
+        {"id": "axes_1", "type": "axes"},
+        {"id": "axes_2", "type": "axes"}
+      ],
+      "action": "scale",
+      "targets": ["point_1", "axes_2"],
+      "expected": ["axes_2", "point_1"]
+    },
+    {
+      "name": "two axes, each with children, and a text",
+      "objects": [
+        {"id": "plot_1", "type": "function_plot", "axesId": "axes_1"},
+        {"id": "point_1", "type": "axes_point", "axesId": "axes_2"},
+        {"id": "axes_1", "type": "axes"},
+        {"id": "axes_2", "type": "axes"},
+        {"id": "text_1", "type": "text"}
+      ],
+      "action": "indicate",
+      "targets": ["text_1", "axes_2", "point_1", "axes_1", "plot_1"],
+      "expected": ["axes_1", "plot_1", "axes_2", "point_1", "text_1"]
+    },
+    {
+      "name": "axes stay in place after a child that follows them",
+      "objects": [
+        {"id": "axes_1", "type": "axes"},
+        {"id": "text_1", "type": "text"},
+        {"id": "plot_1", "type": "function_plot", "axesId": "axes_1"}
+      ],
+      "action": "move",
+      "targets": ["plot_1", "text_1", "axes_1"],
+      "expected": ["axes_1", "text_1", "plot_1"]
+    },
+    {
+      "name": "children without their axes",
+      "objects": [
+        {"id": "axes_1", "type": "axes"},
+        {"id": "plot_1", "type": "function_plot", "axesId": "axes_1"},
+        {"id": "point_1", "type": "axes_point", "axesId": "axes_1"}
+      ],
+      "action": "set_color",
+      "targets": ["point_1", "plot_1"],
+      "expected": ["plot_1", "point_1"]
+    },
+    {
+      "name": "a surface after its 3D axes",
+      "objects": [{"id": "axes_1", "type": "three_d_axes"}, {"id": "surface_1", "type": "surface", "axesId": "axes_1"}],
+      "action": "rotate",
+      "targets": ["surface_1", "axes_1"],
+      "expected": ["axes_1", "surface_1"]
+    },
+    {
+      "name": "a morph keeps its role order",
+      "objects": [{"id": "circle_1", "type": "circle"}, {"id": "rectangle_1", "type": "rectangle"}],
+      "action": "transform",
+      "targets": ["rectangle_1", "circle_1"],
+      "expected": ["rectangle_1", "circle_1"]
+    },
+    {
+      "name": "a move along a path keeps its role order",
+      "objects": [{"id": "circle_1", "type": "circle"}, {"id": "dot_1", "type": "dot"}],
+      "action": "move_along",
+      "targets": ["dot_1", "circle_1"],
+      "expected": ["dot_1", "circle_1"]
+    },
+    {
+      "name": "no targets",
+      "objects": [{"id": "text_1", "type": "text"}],
+      "action": "wait",
+      "targets": [],
+      "expected": []
+    }
+  ]
+}

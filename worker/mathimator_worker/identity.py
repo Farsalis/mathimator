@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import hashlib
 
+from mathimator_worker.beats import AXES_CHILD_TYPES
 from mathimator_worker.document import (
-    AXES_CHILD_TYPES,
     MANIM_VERSION,
     Beat,
     ProfileName,
@@ -152,6 +152,9 @@ def _beat_cache_payload(
     }
     if beat.params is not None:
         beat_payload["params"] = dict(beat.params)
+    # Only when named, so the keys of a beat on its default easing stay as they were.
+    if beat.easing is not None:
+        beat_payload["easing"] = beat.easing
     return {
         "beat": beat_payload,
         "beatIndex": index,

@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": 2,
+  "id": "kind_transform_formula",
+  "name": "Smoke: kind-transform_formula",
+  "seed": 1,
+  "scene": {
+    "id": "scene_main",
+    "name": "Main",
+    "kind": "scene",
+    "background": "#000000",
+    "objects": [
+      {
+        "id": "eq_1",
+        "name": "Formula",
+        "type": "math_formula",
+        "params": {
+          "latex": "y = \\sin(x)",
+          "color": "#FFFFFF",
+          "anchor": "origin"
+        }
+      },
+      {
+        "id": "eq_2",
+        "name": "Formula",
+        "type": "math_formula",
+        "params": {
+          "latex": "y = \\cos(x)",
+          "color": "#FFFFFF",
+          "anchor": "origin"
+        }
+      }
+    ],
+    "beats": [
+      {
+        "id": "beat_1",
+        "duration": 0.5,
+        "action": "write",
+        "targets": ["eq_1"]
+      },
+      {
+        "id": "beat_2",
+        "duration": 0.5,
+        "action": "transform_formula",
+        "targets": ["eq_1", "eq_2"]
+      }
+    ],
+    "templateInstances": []
+  },
+  "previewProfile": {
+    "width": 854,
+    "height": 480,
+    "fps": 15,
+    "transparent": false
+  },
+  "exportProfile": {
+    "format": "mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "transparent": false
+  }
+}

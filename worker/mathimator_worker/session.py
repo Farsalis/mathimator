@@ -10,11 +10,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from mathimator_worker.beats import AXES_CHILD_TYPES, EASINGS, KINDS, SHAPES, BeatKind, Param
 from mathimator_worker.codegen import CodegenError, generate
 from mathimator_worker.document import (
-    AXES_CHILD_TYPES,
     CURVE_VARIABLES,
-    ENTRANCES,
     MAX_TEXT_LENGTH,
     MAX_TOTAL_SECONDS,
     MIN_BEAT_SECONDS,
@@ -29,6 +28,7 @@ from mathimator_worker.document import (
     beat_by_id,
     derived_starts,
     dumps_project,
+    fresh_id,
     load_text,
     object_by_id,
     parse_anchor,
@@ -36,12 +36,14 @@ from mathimator_worker.document import (
     parse_color,
     parse_latex,
     parse_number,
+    parse_param,
     parse_resolution,
     parse_text,
     project_dict,
     quantize,
     sync_three_d,
     total_duration,
+    used_ids,
 )
 from mathimator_worker.document_error import DocumentError
 from mathimator_worker.expr import assert_supported
@@ -54,9 +56,12 @@ from mathimator_worker.templates import (
     add_axes_function,
     add_formula,
     add_formula_transform,
+    add_shape,
     add_text,
     add_three_d_axes,
+    insertion_index,
 )
+from mathimator_worker.timeline import TimelineError, canonical_targets, scene_refusal, simulate
 
 UNDO_LIMIT = 100
 MAX_NAME_LENGTH = 200
@@ -223,6 +228,8 @@ class Session:
                 "dirty": self.dirty_flags("preview"),
                 "canUndo": self.can_undo(),
                 "canRedo": self.can_redo(),
+                # The ids on screen before each beat, and after the last, in document order.
+                "onScreen": simulate(self.project).on_screen,
             },
             "index": None if index is None else index.to_dict(),
             # The generated scene.py, which View code shows (D25).
@@ -403,19 +410,116 @@ def _set_beat_duration(project: Project, raw: dict[str, object]) -> EditResult:
 
 
 def _set_beat_color(project: Project, raw: dict[str, object]) -> EditResult:
+    """``set_beat_param`` of a recolor's ``color``, kept from before every kind had its settings."""
     beat = _param_beat(project, raw, "set_color")
-    color = parse_color(raw.get("color"), "color")
-    if beat.params is None:
-        beat.params = {}
-    beat.params["color"] = color
+    _set_param(beat, "color", raw.get("color"), "color")
     return EditResult(focus_beat_id=beat.id)
 
 
 def _set_beat_shift(project: Project, raw: dict[str, object]) -> EditResult:
+    """``set_beat_param`` of a move's ``shift``, kept from before every kind had its settings."""
     beat = _param_beat(project, raw, "move")
-    if beat.params is None:
-        beat.params = {}
-    beat.params["shift"] = _shift_value(raw.get("shift"))
+    _set_param(beat, "shift", raw.get("shift"), "shift")
+    return EditResult(focus_beat_id=beat.id)
+
+
+def _add_beat(project: Project, raw: dict[str, object]) -> EditResult:
+    """Insert a beat of one second after ``afterBeatId``. The settings ``params`` leaves out take their defaults."""
+    index = insertion_index(project, _after(raw))
+    kind = _kind(project, raw.get("action"), index)
+    targets = _targets(project, raw.get("targets"))
+    params = _default_params(project, kind, index)
+    given = raw.get("params", {})
+    if not isinstance(given, dict):
+        raise DocumentError("params must be an object", field="params")
+    for key, value in given.items():
+        param = _param(kind.params, key)
+        if param is None or params is None:
+            raise DocumentError(f"params.{key} is not a setting of {kind.action}", field="params")
+        params[key] = _param_value(param, value, f"params.{key}", "params")
+    beat = Beat(
+        id=fresh_id("beat", used_ids(project)),
+        duration=1,
+        action=kind.action,
+        targets=canonical_targets(project, kind.action, targets),
+        params=params,
+    )
+    project.scene.beats.insert(index, beat)
+    return EditResult(focus_beat_id=beat.id, focus_object_id=beat.targets[0] if beat.targets else None)
+
+
+def _set_beat_action(project: Project, raw: dict[str, object]) -> EditResult:
+    """Change a beat's kind, and its targets when the edit names them.
+
+    A new kind starts from its default settings, and keeps the beat's easing
+    when it allows it and does not take it by default.
+    """
+    beat = _beat(project, raw)
+    _refuse_template_beat(project, beat, "its kind and targets are set by the template.")
+    index = project.scene.beats.index(beat)
+    kind = _kind(project, raw.get("action"), index)
+    targets = [] if kind.arity == "none" else beat.targets
+    if "targets" in raw:
+        targets = _targets(project, raw["targets"])
+    if kind.action != beat.action:
+        beat.params = _default_params(project, kind, index)
+        if beat.easing not in kind.easings or beat.easing == kind.default_easing:
+            beat.easing = None
+        beat.action = kind.action
+    beat.targets = canonical_targets(project, kind.action, targets)
+    return EditResult(focus_beat_id=beat.id)
+
+
+def _set_beat_targets(project: Project, raw: dict[str, object]) -> EditResult:
+    beat = _beat(project, raw)
+    _refuse_template_beat(project, beat, "its kind and targets are set by the template.")
+    beat.targets = canonical_targets(project, beat.action, _targets(project, raw.get("targets")))
+    return EditResult(focus_beat_id=beat.id)
+
+
+def _set_beat_param(project: Project, raw: dict[str, object]) -> EditResult:
+    beat = _beat(project, raw)
+    _set_param(beat, raw.get("key"), raw.get("value"), "value")
+    return EditResult(focus_beat_id=beat.id)
+
+
+def _set_beat_easing(project: Project, raw: dict[str, object]) -> EditResult:
+    """Name a beat's easing. Null, or the easing its kind takes by default, leaves it to the default."""
+    beat = _beat(project, raw)
+    kind = KINDS[beat.action]
+    easing = raw.get("easing")
+    if not kind.easings:
+        raise DocumentError(f"{kind.action} has no easing", field="easing")
+    if easing is None or easing == kind.default_easing:
+        beat.easing = None
+    elif not isinstance(easing, str) or easing not in EASINGS:
+        raise DocumentError(f"{easing} is not an easing", field="easing")
+    elif easing not in kind.easings:
+        raise DocumentError(f"{easing} is not an easing for {kind.action}", field="easing")
+    else:
+        beat.easing = easing
+    return EditResult(focus_beat_id=beat.id)
+
+
+def _delete_beat(project: Project, raw: dict[str, object]) -> EditResult:
+    """Delete a beat. The beat that takes its place, else the one before it, gets the focus."""
+    beat = _beat(project, raw)
+    _refuse_template_beat(project, beat, "it cannot be deleted. Delete one of its objects instead.")
+    beats = project.scene.beats
+    index = beats.index(beat)
+    del beats[index]
+    return EditResult(focus_beat_id=beats[min(index, len(beats) - 1)].id if beats else None)
+
+
+def _move_beat(project: Project, raw: dict[str, object]) -> EditResult:
+    """Move a beat to ``toIndex``, its index in the list that results."""
+    beat = _beat(project, raw)
+    beats = project.scene.beats
+    to_index = raw.get("toIndex")
+    if isinstance(to_index, bool) or not isinstance(to_index, int) or not 0 <= to_index < len(beats):
+        raise DocumentError(f"toIndex must be from 0 to {len(beats) - 1}", field="toIndex")
+    beats.remove(beat)
+    beats.insert(to_index, beat)
     return EditResult(focus_beat_id=beat.id)
 
 
@@ -500,6 +604,28 @@ def _add_text(project: Project, raw: dict[str, object]) -> EditResult:
     return _focus(add_text(project, _after(raw), text))
 
 
+def _add_shape(project: Project, raw: dict[str, object]) -> EditResult:
+    shape_type = raw.get("kind")
+    if not isinstance(shape_type, str) or shape_type not in SHAPES:
+        raise DocumentError(f"Unknown shape {shape_type}.", field="kind")
+    axes_id = raw.get("axesId")
+    if axes_id is not None and not isinstance(axes_id, str):
+        raise DocumentError("axesId must name an axes object", field="axesId")
+    return _focus(add_shape(project, _after(raw), shape_type, axes_id))
+
+
+def _set_shape_param(project: Project, raw: dict[str, object]) -> EditResult:
+    item = _object(project, raw)
+    key = raw.get("key")
+    if item.type not in SHAPES:
+        raise DocumentError(f"only a shape has {key}", field="objectId")
+    param = _param(SHAPES[item.type].params, key)
+    if param is None:
+        raise DocumentError(f"{item.type} has no setting {key}", field="key")
+    item.params[param.name] = _param_value(param, raw.get("value"), "value", "value")
+    return EditResult(focus_object_id=item.id)
+
+
 def _insertion(insert: Callable[[Project, str | None], tuple[str, str]]) -> Edit:
     """The edit that inserts a template after the beat ``afterBeatId`` names."""
 
@@ -561,25 +687,74 @@ def _store_formula_side(instance: TemplateInstance, side: str, item: SceneObject
 
 
 def _delete_object(project: Project, raw: dict[str, object]) -> EditResult:
-    object_id = _object(project, raw).id
-    remove = {object_id}
-    _expand_removal(project, remove)
-    project.scene.objects = [item for item in project.scene.objects if item.id not in remove]
-    project.scene.beats = [beat for beat in project.scene.beats if not any(target in remove for target in beat.targets)]
-    project.scene.template_instances = [
-        instance
-        for instance in project.scene.template_instances
-        if not any(item_id in remove for item_id in instance.object_ids)
-    ]
-    if project.scene.kind == "three_d_scene" and not any(
-        instance.template_id == "three_d_axes" for instance in project.scene.template_instances
+    """Delete an object, what is drawn on it and its 3D template partner, and repair the timeline.
+
+    The objects leave every beat. A beat left with too few targets goes, and
+    so does a template that lost an object or a beat. Then, while a beat
+    breaks an on-screen rule, the target at fault leaves that beat (the
+    whole beat, for a morph or a move along a path), and an object that no
+    beat brings on screen any more is deleted too. Each step only removes,
+    so the repair ends, and it is deterministic. A 3D scene that lost its
+    template becomes a 2D scene without camera moves.
+    """
+    scene = project.scene
+    _remove_objects(project, {_object(project, raw).id})
+    while (broken := _first_broken(project)) is not None:
+        if broken.beat_index is None:
+            _remove_objects(project, {broken.target})
+            continue
+        beat = scene.beats[broken.beat_index]
+        pair = KINDS[beat.action].arity == "pair"
+        beat.targets = [] if pair else [target for target in beat.targets if target != broken.target]
+        _prune(project)
+    if scene.kind == "three_d_scene" and not any(
+        instance.template_id == "three_d_axes" for instance in scene.template_instances
     ):
-        project.scene.kind = "scene"
-        project.scene.camera = None
+        scene.kind = "scene"
+        scene.camera = None
+        scene.beats = [beat for beat in scene.beats if KINDS[beat.action].family != "camera"]
     return EditResult()
 
 
+def _first_broken(project: Project) -> TimelineError | None:
+    """The first broken on-screen rule, or None when the beats play out."""
+    try:
+        simulate(project)
+    except TimelineError as broken:
+        return broken
+    return None
+
+
+def _remove_objects(project: Project, remove: set[str]) -> None:
+    """Delete the objects ``remove`` names with what goes with them, then the beats and templates that broke."""
+    scene = project.scene
+    _expand_removal(project, remove)
+    scene.objects = [item for item in scene.objects if item.id not in remove]
+    for beat in scene.beats:
+        beat.targets = [target for target in beat.targets if target not in remove]
+    _prune(project)
+
+
+def _prune(project: Project) -> None:
+    """Delete every beat left with too few targets, then every template that lost an object or a beat."""
+    scene = project.scene
+    scene.beats = [beat for beat in scene.beats if len(beat.targets) >= _least_targets(KINDS[beat.action])]
+    objects = {item.id for item in scene.objects}
+    beats = {beat.id for beat in scene.beats}
+    scene.template_instances = [
+        instance
+        for instance in scene.template_instances
+        if objects.issuperset(instance.object_ids) and beats.issuperset(instance.beat_ids)
+    ]
+
+
+def _least_targets(kind: BeatKind) -> int:
+    """How many targets a beat of ``kind`` needs: none, one or more, or one per role."""
+    return {"none": 0, "some": 1, "pair": len(kind.roles)}[kind.arity]
+
+
 def _expand_removal(project: Project, remove: set[str]) -> None:
+    """Add what is drawn on removed axes, and the other object of a 3D template that loses one."""
     changed = True
     while changed:
         changed = False
@@ -599,27 +774,6 @@ def _expand_removal(project: Project, remove: set[str]) -> None:
                 if item_id not in remove:
                     remove.add(item_id)
                     changed = True
-        entrances = _entrance_indexes(project)
-        removed_beats = {
-            index for index, beat in enumerate(project.scene.beats) if any(target in remove for target in beat.targets)
-        }
-        for item_id, index in entrances.items():
-            if index in removed_beats and item_id not in remove:
-                remove.add(item_id)
-                changed = True
-
-
-def _entrance_indexes(project: Project) -> dict[str, int]:
-    found: dict[str, int] = {}
-    for index, beat in enumerate(project.scene.beats):
-        if beat.action not in ENTRANCES:
-            continue
-        if beat.action == "transform_formula" and len(beat.targets) == 2:
-            found.setdefault(beat.targets[1], index)
-            continue
-        if len(beat.targets) == 1:
-            found.setdefault(beat.targets[0], index)
-    return found
 
 
 def _template_plot(project: Project, plot_id: str, key: str, value: JsonValue) -> None:
@@ -665,6 +819,82 @@ def _param_beat(project: Project, raw: dict[str, object], action: str) -> Beat:
     if beat.action != action:
         raise DocumentError(f"beat {beat.id} is not {action}", field="beatId")
     return beat
+
+
+def _kind(project: Project, value: object, index: int) -> BeatKind:
+    """The kind ``value`` names, for the beat at ``index``: one this scene offers."""
+    if not isinstance(value, str) or value not in KINDS:
+        raise DocumentError(f"Unknown beat kind {value}.", field="action")
+    kind = KINDS[value]
+    refusal = scene_refusal(kind, project.scene.kind, f"scene.beats[{index}]")
+    if refusal is not None:
+        raise DocumentError(refusal, field="action")
+    return kind
+
+
+def _targets(project: Project, value: object) -> list[str]:
+    """Ids of objects, in the order given. Whole-document validation judges the count, the types and the states."""
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise DocumentError("targets must be a list of object ids", field="targets")
+    return [object_by_id(project, item, "targets").id for item in value]
+
+
+def _refuse_template_beat(project: Project, beat: Beat, consequence: str) -> None:
+    """Refuse an edit of a beat that a template owns, whose kind and targets its template checks."""
+    for instance in project.scene.template_instances:
+        if beat.id in instance.beat_ids:
+            message = f"{beat.id} belongs to the {instance.template_id} template, so {consequence}"
+            raise DocumentError(message, field="beatId")
+
+
+def _default_params(project: Project, kind: BeatKind, index: int) -> dict[str, JsonValue] | None:
+    """The settings a new beat of ``kind`` at ``index`` starts with, or None for a kind without settings.
+
+    A camera move turns a quarter from the camera in effect before it. Its
+    settings follow the rules of the scene's camera, so this is always valid.
+    """
+    if not kind.params:
+        return None
+    if kind.family != "camera":
+        return {param.name: _stored(param.default) for param in kind.params}
+    camera = simulate(project).cameras[index]
+    if camera is None:
+        raise DocumentError("This scene has no camera.")
+    return {
+        "phi": quantize(camera.phi),
+        "theta": quantize(float(camera.theta) + 90),
+        "zoom": quantize(camera.zoom),
+    }
+
+
+def _param(params: tuple[Param, ...], key: object) -> Param | None:
+    return next((param for param in params if param.name == key), None)
+
+
+def _set_param(beat: Beat, key: object, value: object, field: str) -> None:
+    """Store the setting ``key`` of the beat's kind from the edit field ``field``."""
+    param = _param(KINDS[beat.action].params, key)
+    if param is None or beat.params is None:
+        raise DocumentError(f"{beat.action} has no setting {key}", field="key")
+    beat.params[param.name] = _param_value(param, value, field, field)
+
+
+def _param_value(param: Param, value: object, path: str, field: str) -> JsonValue:
+    """``value`` judged by ``param`` as a file's would be, named ``path`` in a refusal, and stored quantized."""
+    try:
+        parsed = parse_param(param, value, path)
+    except DocumentError as exc:
+        raise DocumentError(str(exc), code=exc.code, field=field) from exc
+    return _stored(parsed)
+
+
+def _stored(value: JsonValue) -> JsonValue:
+    """``value`` as an edit stores it: numbers at the three decimals codegen emits, lists copied."""
+    if isinstance(value, list):
+        return [_stored(item) for item in value]
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return quantize(value)
+    return value
 
 
 def _after(raw: dict[str, object]) -> str | None:
@@ -731,4 +961,13 @@ _EDITS: dict[str, Edit] = {
     "set_resolution": _set_resolution,
     "set_curve_component": _set_curve_component,
     "set_export_profile": _set_export_profile,
+    "add_beat": _add_beat,
+    "set_beat_action": _set_beat_action,
+    "set_beat_targets": _set_beat_targets,
+    "set_beat_param": _set_beat_param,
+    "set_beat_easing": _set_beat_easing,
+    "delete_beat": _delete_beat,
+    "move_beat": _move_beat,
+    "add_shape": _add_shape,
+    "set_shape_param": _set_shape_param,
 }

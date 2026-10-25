@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": 2,
+  "id": "opacity",
+  "name": "Smoke: opacity",
+  "seed": 1,
+  "scene": {
+    "id": "scene_main",
+    "name": "Main",
+    "kind": "scene",
+    "background": "#000000",
+    "objects": [
+      {
+        "id": "axes_1",
+        "name": "Axes",
+        "type": "axes",
+        "params": {
+          "xRange": [-4, 4, 1],
+          "yRange": [-2, 2, 1],
+          "xLength": 8,
+          "yLength": 4,
+          "color": "#FFFFFF",
+          "showLabels": true
+        }
+      },
+      {
+        "id": "plot_1",
+        "name": "Sine",
+        "type": "function_plot",
+        "params": {
+          "axesId": "axes_1",
+          "expression": "sin(x)",
+          "xMin": -3,
+          "xMax": 3,
+          "color": "#58C4DD"
+        }
+      },
+      {
+        "id": "point_1",
+        "name": "Point",
+        "type": "axes_point",
+        "params": {
+          "axesId": "axes_1",
+          "x": 1,
+          "y": 1,
+          "radius": 0.08,
+          "color": "#E07A5F"
+        }
+      },
+      {
+        "id": "text_1",
+        "name": "Text",
+        "type": "text",
+        "params": {
+          "text": "Hi",
+          "color": "#FFFFFF",
+          "anchor": "edge_up"
+        }
+      },
+      {
+        "id": "eq_1",
+        "name": "Formula",
+        "type": "math_formula",
+        "params": {
+          "latex": "x",
+          "color": "#FFFFFF",
+          "anchor": "edge_down"
+        }
+      },
+      {
+        "id": "dot_1",
+        "name": "Dot",
+        "type": "dot",
+        "params": {
+          "center": [-3, -1],
+          "radius": 0.08,
+          "color": "#E07A5F"
+        }
+      },
+      {
+        "id": "line_1",
+        "name": "Line",
+        "type": "line",
+        "params": {
+          "start": [-3, 1],
+          "end": [-1, 2],
+          "color": "#FFFFFF",
+          "strokeWidth": 4
+        }
+      },
+      {
+        "id": "arrow_1",
+        "name": "Arrow",
+        "type": "arrow",
+        "params": {
+          "start": [1, 1],
+          "end": [3, 2],
+          "color": "#FFFFFF",
+          "strokeWidth": 6
+        }
+      },
+      {
+        "id": "circle_1",
+        "name": "Circle",
+        "type": "circle",
+        "params": {
+          "center": [2, -1],
+          "radius": 0.75,
+          "color": "#58C4DD",
+          "strokeWidth": 4,
+          "fillOpacity": 0
+        }
+      },
+      {
+        "id": "rectangle_1",
+        "name": "Rectangle",
+        "type": "rectangle",
+        "params": {
+          "center": [0, 0],
+          "width": 2,
+          "height": 1,
+          "color": "#58C4DD",
+          "strokeWidth": 4,
+          "fillOpacity": 0.3
+        }
+      }
+    ],
+    "beats": [
+      {
+        "id": "beat_1",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["axes_1", "plot_1"]
+      },
+      {
+        "id": "beat_2",
+        "duration": 0.5,
+        "action": "grow",
+        "targets": ["point_1", "dot_1"]
+      },
+      {
+        "id": "beat_3",
+        "duration": 0.5,
+        "action": "write",
+        "targets": ["text_1", "eq_1"]
+      },
+      {
+        "id": "beat_4",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["line_1", "circle_1", "rectangle_1"]
+      },
+      {
+        "id": "beat_5",
+        "duration": 0.5,
+        "action": "grow_arrow",
+        "targets": ["arrow_1"]
+      },
+      {
+        "id": "beat_6",
+        "duration": 0.5,
+        "action": "set_opacity",
+        "targets": ["axes_1", "plot_1", "point_1", "text_1", "eq_1", "dot_1", "line_1", "arrow_1", "circle_1", "rectangle_1"],
+        "params": {
+          "opacity": 0.5
+        }
+      },
+      {
+        "id": "beat_7",
+        "duration": 0.5,
+        "action": "set_opacity",
+        "targets": ["axes_1", "plot_1", "point_1", "text_1", "eq_1", "dot_1", "line_1", "arrow_1", "circle_1", "rectangle_1"],
+        "params": {
+          "opacity": 1
+        }
+      }
+    ],
+    "templateInstances": []
+  },
+  "previewProfile": {
+    "width": 854,
+    "height": 480,
+    "fps": 15,
+    "transparent": false
+  },
+  "exportProfile": {
+    "format": "mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "transparent": false
+  }
+}

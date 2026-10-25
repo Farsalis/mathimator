@@ -160,6 +160,15 @@ def test_manim_gets_its_own_home_and_latex_runs_no_shell_command(tmp_path: Path)
     assert environment["PYTHONUTF8"] == "1"
 
 
+@pytest.mark.parametrize("name", ["PYTHONHASHSEED", "PythonHashSeed"])
+def test_manim_hashes_strings_with_one_seed_whatever_the_user_set(tmp_path: Path, name: str) -> None:
+    # Manim's key for a rotate or a wave play lists global names in the order of Python's string hashing.
+    environment = manim_environment({name: "random"}, tmp_path)
+    assert [(key, value) for key, value in environment.items() if key.upper() == "PYTHONHASHSEED"] == [
+        ("PYTHONHASHSEED", "0")
+    ]
+
+
 # The segment list FFmpeg reads (D61, G4.3)
 
 
