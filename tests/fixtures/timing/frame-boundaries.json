@@ -1,0 +1,9 @@
+{
+  "boundaries": [
+    { "seconds": 4.1, "fps": 15, "frame": 62 },
+    { "seconds": 16.9, "fps": 15, "frame": 254 },
+    { "seconds": 32.3, "fps": 15, "frame": 485 },
+    { "seconds": 2.05, "fps": 30, "frame": 62 }
+  ],
+  "beats": { "durations": [2, 2.1, 1], "fps": 15, "frames": [30, 32, 15] }
+}

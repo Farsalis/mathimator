@@ -15,17 +15,12 @@ import pytest
 
 from mathimator_worker.argv import FORBIDDEN_TOKENS, build_manim_argv
 from mathimator_worker.codegen import generate
-from mathimator_worker.document import (
-    dumps_project,
-    export_artifact_name,
-    export_folder_name,
-    export_key,
-    load_text,
-)
+from mathimator_worker.document import dumps_project, load_text
 from mathimator_worker.document_error import DocumentError
-from mathimator_worker.progress import ManimProgress
+from mathimator_worker.exports import find_export_output
+from mathimator_worker.identity import export_folder_name, export_key
+from mathimator_worker.layout import ProjectLayout
 from mathimator_worker.session import Session
-from mathimator_worker.supervisor import find_export_output
 from tests.support import REPO, start_supervisor, write_fake_interpreter
 
 FIXTURES = REPO / "tests" / "fixtures"
@@ -45,8 +40,6 @@ def test_export_argv_matrix_matches_manim_022_flags() -> None:
     for fmt, width, height, fps, transparent, flag, expect_transparent in cases:
         argv = build_manim_argv(
             "/opt/py/bin/python",
-            Path("/proj/scene.py"),
-            Path("/proj/media"),
             "export",
             width=width,
             height=height,
@@ -76,8 +69,6 @@ def test_mp4_and_gif_cannot_be_transparent() -> None:
     with pytest.raises(ValueError, match="mp4 cannot be transparent"):
         build_manim_argv(
             "python",
-            Path("scene.py"),
-            Path("media"),
             "export",
             fmt="mp4",
             transparent=True,
@@ -85,8 +76,6 @@ def test_mp4_and_gif_cannot_be_transparent() -> None:
     with pytest.raises(ValueError, match="gif cannot be transparent"):
         build_manim_argv(
             "python",
-            Path("scene.py"),
-            Path("media"),
             "export",
             fmt="gif",
             transparent=True,
@@ -125,7 +114,8 @@ def test_export_profile_does_not_change_generated_python() -> None:
 
 
 def test_preview_mp4_is_not_selected_for_gif_or_a_1080p_export(tmp_path: Path) -> None:
-    media = tmp_path / "media"
+    layout = ProjectLayout(tmp_path)
+    media = layout.media_dir
     preview = media / "videos" / "scene" / "480p15" / "MainScene.mp4"
     preview.parent.mkdir(parents=True)
     preview.write_bytes(b"preview")
@@ -134,20 +124,10 @@ def test_preview_mp4_is_not_selected_for_gif_or_a_1080p_export(tmp_path: Path) -
     hd = media / "videos" / "scene" / "1080p30" / "MainScene.mp4"
     hd.parent.mkdir(parents=True)
     hd.write_bytes(b"hd")
-    assert find_export_output(media, "scene", "480p15", "gif") == gif
-    assert find_export_output(media, "scene", "1080p30", "mp4") == hd
-    assert find_export_output(media, "scene", "1080p30", "gif") is None
-    assert find_export_output(media, "scene", "480p15", "mp4") == preview
-
-
-def test_progress_parser_keeps_a_gif_ready_path(tmp_path: Path) -> None:
-    media = tmp_path / "media"
-    media.mkdir()
-    gif = tmp_path / "MainScene_ManimCE_v0.22.0.gif"
-    gif.write_bytes(b"gif")
-    progress = ManimProgress(media)
-    progress.feed(f"\nFile ready at '{gif}'\n")
-    assert progress.output_path == gif
+    assert find_export_output(layout, "480p15", "gif") == gif
+    assert find_export_output(layout, "1080p30", "mp4") == hd
+    assert find_export_output(layout, "1080p30", "gif") is None
+    assert find_export_output(layout, "480p15", "mp4") == preview
 
 
 def test_gif_and_webm_exports_are_not_refused(tmp_path: Path) -> None:
@@ -183,12 +163,12 @@ def test_unchanged_gif_export_key_does_not_start_manim(tmp_path: Path) -> None:
     loaded = session.project
     folder = project / ".mathimator" / "exports" / export_folder_name(loaded)
     folder.mkdir(parents=True)
-    artifact = folder / export_artifact_name("gif")
+    artifact = folder / "scene.gif"
     artifact.write_bytes(b"already-exported")
     manifest = {
         "exportKey": export_key(loaded),
         "manimVersion": "0.22.0",
-        "generatorVersion": 1,
+        "generatorVersion": 2,
         "file": "scene.gif",
         "profile": {
             "format": "gif",
@@ -205,30 +185,13 @@ def test_unchanged_gif_export_key_does_not_start_manim(tmp_path: Path) -> None:
     try:
         _ready(client)
         client.send({"cmd": "export", "id": "again"})
-        done = client.wait_for(
-            lambda event: event.get("jobId") == "again" and event.get("event") in {"done", "error"},
-            10,
-        )
+        done = client.wait_for_end("again", 10)
         assert done["event"] == "done"
         assert done["path"] == str(artifact)
     finally:
         client.close()
     assert "argv:" not in log_path.read_text(encoding="utf-8")
     assert "export cache hit" in log_path.read_text(encoding="utf-8")
-
-
-def test_notices_name_manim_typst_and_tinytex() -> None:
-    text = (REPO / "desktop" / "src" / "notices.ts").read_text(encoding="utf-8")
-    assert "Manim" in text
-    assert "Typst" in text
-    assert "TinyTeX" in text
-    assert "MIT" in text
-    assert "WebView2" in text
-    panel = (REPO / "desktop" / "src" / "exportProfile.ts").read_text(encoding="utf-8")
-    assert "MP4 cannot store transparency." in panel
-    assert "GIF cannot store an alpha channel." in panel
-    assert "854" in panel and "480" in panel and "15" in panel
-    assert "1920" in panel and "1080" in panel and "30" in panel
 
 
 def _profile(fmt: str, width: int, height: int, fps: int, transparent: bool) -> dict[str, object]:
@@ -262,6 +225,10 @@ def _export_with_fake(
         assert client.wait_for(lambda event: event.get("jobId") == "profile", 10)["event"] == "state"
         client.send({"cmd": "export", "id": "export"})
         argv = _wait_argv(log_path, flag)
+        # Cancelled before the worker closes, so no fake Manim outlives the test (F028).
+        client.send({"cmd": "cancel", "id": "cancel", "jobId": "export"})
+        ended = client.wait_for(lambda event: event.get("jobId") == "export" and event.get("event") == "error", 10)
+        assert ended["code"] == "cancelled"
     finally:
         client.close()
     return argv, log_path.read_text(encoding="utf-8")

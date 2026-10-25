@@ -1,0 +1,39 @@
+# Code owners (D80): @Farsalis owns every area. Each section is one area, and
+# within a section the last line that matches a file wins. The first rule gives
+# every file outside the areas an owner too.
+
+* @Farsalis
+
+[Worker] @Farsalis
+/worker/
+/tests/
+/scenes/
+/pytest.ini
+
+[Desktop UI] @Farsalis
+/desktop/*
+/desktop/src/
+
+[Rust shell] @Farsalis
+/desktop/src-tauri/
+
+[Packaging] @Farsalis
+/packaging/
+/scripts/
+/pyproject.toml
+/uv.lock
+/.python-version
+/.bumpversion.toml
+/cliff.toml
+
+[CI] @Farsalis
+/.gitlab-ci.yml
+/ci/
+/.gitlab/
+/.pre-commit-config.yaml
+/renovate.json5
+
+[Docs] @Farsalis
+/docs/
+/*.md
+/LICENSE

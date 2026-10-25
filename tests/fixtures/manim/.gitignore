@@ -1,0 +1,2 @@
+# These TeX logs are test fixtures, kept despite the root rule that ignores *.log.
+!*.log

@@ -44,7 +44,12 @@ export function AddMenu({ disabled, onAdd }: AddMenuProps) {
       {open ? (
         <ul className="menu" role="menu">
           <li>
-            <button type="button" role="menuitem" data-testid="add-axes-function" onClick={() => choose("axes_function")}>
+            <button
+              type="button"
+              role="menuitem"
+              data-testid="add-axes-function"
+              onClick={() => choose("axes_function")}
+            >
               Axes and function
             </button>
           </li>

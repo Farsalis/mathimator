@@ -1,5 +1,7 @@
 # Windows audit report
 
+> Historical record. Where it differs from the current branch, [design-spec.md](design-spec.md) describes the current behaviour, and section 8 of [architecture-audit-report.md](architecture-audit-report.md) the remediation status.
+
 Date: 22 October 2026. Machine: Lenovo 21DC0032US, 12th Gen Intel Core i9-12900H (14 cores / 20 threads), about 64 GB RAM, Windows 11 Pro 10.0.26200 x64. The account is not an administrator. This is not the section 2 reference machine (8 cores, 16 GB, integrated graphics). Timings below are measurements on this PC. They are not budget-gate results.
 
 The network stayed connected. MiKTeX's own configuration was not changed. The GUI run left `MATHIMATOR_WIN32_JOBS` and `MATHIMATOR_WIN32_TESTS` unset and set `MATHIMATOR_SKIP_PROCESS_TABLE=1`, so that launch did not create a Job Object and did not start the kernel32 process-table helper. A later code change makes the Windows job the default. The verification commands below set `MATHIMATOR_WIN32_JOBS=0` and `tests/conftest.py` does the same unless `MATHIMATOR_WIN32_TESTS=1`. Those reap tests were not executed.

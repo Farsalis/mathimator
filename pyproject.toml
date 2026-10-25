@@ -1,0 +1,125 @@
+# Development workspace root. It is not a package: it only gathers the worker,
+# the test and lint tools, and the Manim render stack into one uv.lock. uv
+# requires a version; it is never built or released.
+[project]
+name = "mathimator-dev"
+version = "0.0.0"
+requires-python = ">=3.13"
+dependencies = ["mathimator-worker"]
+
+[dependency-groups]
+dev = [
+  "pytest==9.1.1",
+  "pytest-cov==7.1.0",
+  "ruff==0.17.2",
+  "mypy==2.4.0",
+  "pre-commit==4.7.0",
+  "bump-my-version==1.6.3",
+  "git-cliff==2.14.2",
+  "pip-audit==2.10.1",
+  # ci/test_pipeline.py reads the GitLab CI files.
+  "pyyaml==6.0.3",
+  # The fast tests count frames with numpy.arange, as Manim does. The
+  # constraint-dependencies below hold it at the render stack's release.
+  "numpy",
+]
+render = ["manim[typst]==0.22.0"]
+
+[tool.uv]
+package = false
+# The uv release the bundle build uses (UV_VERSION in packaging/versions.env).
+# Every machine and CI job reads and rewrites uv.lock with this one release.
+required-version = "==0.13.5"
+# Plain `uv sync` installs the render stack as well: the debug shell and the
+# render tests run Manim from .venv. Jobs that only lint or type-check can use
+# `uv sync --locked --no-default-groups --group dev`.
+default-groups = ["dev", "render"]
+# The render stack of the audited 2026-10-22 bundle, read from its .dist-info
+# folders, so the lock resolves to the versions the bundle was tested with.
+# The bundle scripts install the render group from this lock, with its hashes.
+constraint-dependencies = [
+  "audioop-lts==0.2.2",
+  "av==19.0.2",
+  "beautifulsoup4==4.15.0",
+  "click==8.5.0",
+  "cloup==4.0.0",
+  "colorama==0.4.6",
+  "decorator==5.3.1",
+  "glcontext==3.1.0",
+  "isosurfaces==0.1.2",
+  "manim==0.22.0",
+  "manimpango==0.7.0",
+  "mapbox-earcut==2.1.0",
+  "markdown-it-py==4.2.0",
+  "mdurl==0.1.2",
+  "moderngl==5.13.0",
+  "moderngl-window==3.1.1",
+  "networkx==3.7",
+  "numpy==2.5.4",
+  "pillow==13.0.0",
+  "pycairo==1.29.2",
+  "pydub==0.25.1",
+  "pyglet==2.1.19",
+  "pyglm==2.8.3",
+  "pygments==2.21.0",
+  "rich==15.0.0",
+  "scipy==1.18.1",
+  "screeninfo==0.8.1",
+  "skia-pathops==0.9.2",
+  "soupsieve==3.0.4",
+  "srt==3.5.3",
+  "svgelements==1.9.6",
+  "tqdm==4.70.1",
+  "typing-extensions==4.16.0",
+  "typst==0.15.0",
+  "watchdog==6.0.0",
+]
+# The setuptools that builds the editable worker. Build backends are not
+# resolved into the lock, so without this each sync takes the newest release
+# worker/pyproject.toml allows.
+build-constraint-dependencies = ["setuptools==84.2.1"]
+
+[tool.uv.workspace]
+members = ["worker"]
+
+[tool.uv.sources]
+mathimator-worker = { workspace = true }
+
+# Ruff lints and formats worker/, tests/, scripts/ and ci/. scenes/ holds
+# the golden codegen output that tests compare byte for byte, so Ruff never
+# touches it.
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+extend-exclude = ["scenes", "packaging/bundle", "out"]
+# mathimator_worker lives under worker/, so import sorting treats it as first
+# party alongside tests.
+src = [".", "worker"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests embed subprocess scripts and recorded notes as long string literals.
+"tests/**" = ["E501"]
+
+# Ruff's default style: double quotes, space indents, magic trailing commas.
+[tool.ruff.format]
+
+# Coverage of the CI pytest jobs (`pytest --cov`), reported and never enforced
+# (D78). Most supervisor code runs in the worker child that tests/support.py
+# starts, so Python subprocesses are measured too. Relative paths let GitLab
+# match the Cobertura report to the repository's files.
+[tool.coverage.run]
+source = ["mathimator_worker"]
+patch = ["subprocess"]
+relative_files = true
+
+# mypy checks the worker and scripts/ as they run on Windows, so a Linux runner
+# reproduces the Windows result. CI adds a second pass with --platform linux
+# for the POSIX branches behind the sys.platform guards.
+[tool.mypy]
+strict = true
+python_version = "3.13"
+platform = "win32"
+files = ["worker/mathimator_worker", "scripts"]

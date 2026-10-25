@@ -13,7 +13,8 @@ import {
 interface ExportPanelProps {
   initial: ExportProfile;
   canStart: boolean;
-  onStart: (profile: ExportProfile) => void;
+  /** Starts the export; `force` (Re-export) skips the export cache (D56). */
+  onStart: (profile: ExportProfile, force: boolean) => void;
   onClose: () => void;
 }
 
@@ -36,6 +37,12 @@ export function ExportPanel({ initial, canStart, onStart, onClose }: ExportPanel
     setProfile(next);
   }
 
+  function start(force: boolean): void {
+    if (canStart) {
+      onStart({ ...profile, transparent: allows && profile.transparent }, force);
+    }
+  }
+
   return (
     <div className="export-panel" role="presentation">
       <form
@@ -45,13 +52,7 @@ export function ExportPanel({ initial, canStart, onStart, onClose }: ExportPanel
         data-testid="export-panel"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!canStart) {
-            return;
-          }
-          onStart({
-            ...profile,
-            transparent: allows && profile.transparent,
-          });
+          start(false);
         }}
       >
         <h2>Export</h2>
@@ -135,6 +136,15 @@ export function ExportPanel({ initial, canStart, onStart, onClose }: ExportPanel
         <div className="export-actions">
           <button type="button" onClick={onClose}>
             Close
+          </button>
+          <button
+            type="button"
+            data-testid="re-export"
+            title="Render the export again, even if this file already exists."
+            disabled={!canStart}
+            onClick={() => start(true)}
+          >
+            Re-export
           </button>
           <button type="submit" data-testid="export-start" disabled={!canStart}>
             Export

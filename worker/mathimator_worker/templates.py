@@ -3,34 +3,36 @@
 from __future__ import annotations
 
 from mathimator_worker.document import (
-    Camera,
     Beat,
+    Camera,
     Project,
     SceneObject,
     TemplateInstance,
-    beat_by_id,
     fresh_id,
     used_ids,
 )
 from mathimator_worker.document_error import DocumentError
-from mathimator_worker.expr import assert_supported
+from mathimator_worker.jsonio import JsonValue
 
-_AXES_X_RANGE = [-6.5, 6.5, 1]
-_AXES_Y_RANGE = [-1.5, 1.5, 0.5]
+# What add_formula and add_text insert when the edit names no latex or text.
+DEFAULT_LATEX = "y = \\sin(x)"
+DEFAULT_TEXT = "Text"
+
+_AXES_X_RANGE: list[JsonValue] = [-6.5, 6.5, 1]
+_AXES_Y_RANGE: list[JsonValue] = [-1.5, 1.5, 0.5]
 _PLOT_COLOR = "#58C4DD"
-_DEFAULT_LATEX = "y = \\sin(x)"
 _SOURCE_LATEX = "y = \\sin(x)"
 _DEST_LATEX = "y = \\cos(x)"
 _FORMULA_COLOR = "#FFFFFF"
-_THREE_D_X_RANGE = [-3, 3, 1]
-_THREE_D_Y_RANGE = [-3, 3, 1]
-_THREE_D_Z_RANGE = [-2, 2, 1]
+_THREE_D_X_RANGE: list[JsonValue] = [-3, 3, 1]
+_THREE_D_Y_RANGE: list[JsonValue] = [-3, 3, 1]
+_THREE_D_Z_RANGE: list[JsonValue] = [-2, 2, 1]
 _SURFACE_EXPRESSION = "sin(x)*cos(y)"
-_SURFACE_RANGE = [-2.5, 2.5]
-_SURFACE_RESOLUTION = [8, 8]
+_SURFACE_RANGE: list[JsonValue] = [-2.5, 2.5]
+_SURFACE_RESOLUTION: list[JsonValue] = [8, 8]
 _SURFACE_COLOR = "#58C4DD"
-_CURVE_COMPONENTS = ["cos(t)", "sin(t)", "t / 3"]
-_CURVE_RANGE = [0, 12.56]
+_CURVE_COMPONENTS: list[JsonValue] = ["cos(t)", "sin(t)", "t / 3"]
+_CURVE_RANGE: list[JsonValue] = [0, 12.56]
 _CURVE_COLOR = "#F2CC8F"
 _CAMERA_PHI = 65
 _CAMERA_THETA = -45
@@ -172,7 +174,8 @@ def add_three_d_axes(project: Project, _after_beat_id: str | None) -> tuple[str,
     """Insert the Cairo 3D template into an empty project.
 
     Returns the surface beat id and the surface object id. The project must
-    have no objects and no beats.
+    have no objects and no beats, so there is no beat to insert after; the
+    parameter keeps the signature of the other insertions.
     """
     if (
         project.scene.kind != "scene"
@@ -254,15 +257,9 @@ def add_three_d_axes(project: Project, _after_beat_id: str | None) -> tuple[str,
     return surface_beat_id, surface_id
 
 
-def add_formula(
-    project: Project,
-    after_beat_id: str | None,
-    latex: str = _DEFAULT_LATEX,
-) -> tuple[str, str]:
+def add_formula(project: Project, after_beat_id: str | None, latex: str) -> tuple[str, str]:
     """Insert a formula whose entrance is ``write``. Returns beat id and object id."""
     _reject_3d(project)
-    if len(latex) > 500:
-        raise DocumentError("latex is longer than 500 characters")
     used = used_ids(project)
     formula_id = fresh_id("formula", used)
     beat_id = fresh_id("beat", used)
@@ -287,15 +284,9 @@ def add_formula(
     return beat_id, formula_id
 
 
-def add_text(
-    project: Project,
-    after_beat_id: str | None,
-    text: str = "Text",
-) -> tuple[str, str]:
+def add_text(project: Project, after_beat_id: str | None, text: str) -> tuple[str, str]:
     """Insert a text object whose entrance is ``write``."""
     _reject_3d(project)
-    if len(text) > 200:
-        raise DocumentError("text is longer than 200 characters")
     used = used_ids(project)
     text_id = fresh_id("text", used)
     beat_id = fresh_id("beat", used)
@@ -320,19 +311,14 @@ def add_text(
     return beat_id, text_id
 
 
-def assert_plot_expression(expression: str) -> None:
-    assert_supported(expression, frozenset({"x"}))
-
-
 def _insert_beats(project: Project, beats: list[Beat], after_beat_id: str | None) -> None:
     if after_beat_id is None:
         project.scene.beats.extend(beats)
         return
-    beat_by_id(project, after_beat_id)
-    for index, beat in enumerate(project.scene.beats):
-        if beat.id == after_beat_id:
-            project.scene.beats[index + 1 : index + 1] = beats
-            return
+    index = next((position for position, beat in enumerate(project.scene.beats) if beat.id == after_beat_id), None)
+    if index is None:
+        raise DocumentError(f"unknown beat {after_beat_id}", field="afterBeatId")
+    project.scene.beats[index + 1 : index + 1] = beats
 
 
 def _reject_3d(project: Project) -> None:

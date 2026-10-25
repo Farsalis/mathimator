@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.support import REPO, SupervisorClient, media_dir, probe_video, sha256_file, start_supervisor
+from tests.support import REPO, SupervisorClient, frame_count, media_dir, probe_video, sha256_file, start_supervisor
 
 pytestmark = pytest.mark.render
 
@@ -30,7 +30,7 @@ def test_lesson_60_gif_defaults() -> None:
         assert _wait_state(client, "gif")["event"] == "state"
         started = time.perf_counter()
         client.send({"cmd": "export", "id": "gif-export"})
-        done = _wait(client, "gif-export", timeout=900)
+        done = client.wait_for_end("gif-export", 900)
         seconds = time.perf_counter() - started
     finally:
         client.close()
@@ -72,21 +72,21 @@ def test_reference_60_mp4_and_second_export_skips_manim() -> None:
         if videos.exists():
             shutil.rmtree(videos)
         client.send({"cmd": "render_preview", "id": "preview"})
-        preview_done = _wait(client, "preview", timeout=900)
+        preview_done = client.wait_for_end("preview", 900)
         if preview_done.get("event") != "done":
             raise AssertionError(json.dumps(preview_done, indent=2))
         preview_path = Path(str(preview_done["path"]))
         before = _argv_count(log_path)
         started = time.perf_counter()
         client.send({"cmd": "export", "id": "mp4"})
-        exported = _wait(client, "mp4", timeout=900)
+        exported = client.wait_for_end("mp4", 900)
         seconds = time.perf_counter() - started
         if exported.get("event") != "done":
             raise AssertionError(json.dumps(exported, indent=2))
         export_path = Path(str(exported["path"]))
         after_first = _argv_count(log_path)
         client.send({"cmd": "export", "id": "mp4-again"})
-        again = _wait(client, "mp4-again", timeout=30)
+        again = client.wait_for_end("mp4-again", 30)
     finally:
         client.close()
     if again.get("event") != "done":
@@ -127,7 +127,55 @@ def test_reference_60_mp4_and_second_export_skips_manim() -> None:
     )
 
 
-def test_surface_transparent_webm_and_png_sequence() -> None:
+def test_half_second_beats_export_as_the_frames_of_the_timeline() -> None:
+    """Spec section 7 and D63: 20 beats of 0.5 s export as 300 frames at 30 fps, exactly 10 s."""
+    project = PHASE5 / "fractional-10"
+    log_path = PHASE5 / "logs" / "fractional-10.log"
+    _reset(project)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    client = start_supervisor(project, log_path)
+    try:
+        _open_fixture(client, FIXTURES / "fractional-10" / "project.json", project)
+        client.send({"cmd": "export", "id": "mp4"})
+        done = client.wait_for_end("mp4", 900)
+    finally:
+        client.close()
+    if done.get("event") != "done":
+        raise AssertionError(json.dumps(done, indent=2))
+    path = Path(str(done["path"]))
+    _, width, height = probe_video(path)
+    assert (width, height) == (1920, 1080)
+    assert frame_count(path) == 300
+    _assert_flags(_argv_with(log_path, "mp4"), "mp4", "1920,1080", "30", transparent=False)
+
+
+def test_png_sequence_saves_every_frame_of_a_wait() -> None:
+    """Spec section 7: one PNG per frame, the frames a wait beat holds included."""
+    project = PHASE5 / "journey-a-png"
+    log_path = PHASE5 / "logs" / "journey-a-png.log"
+    _reset(project)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    client = start_supervisor(project, log_path)
+    try:
+        _open_fixture(client, FIXTURES / "journey-a" / "project.json", project)
+        client.send({"cmd": "edit", "id": "png-profile", "edit": _profile("png_sequence", 854, 480, 15, False)})
+        assert _wait_state(client, "png-profile")["event"] == "state"
+        client.send({"cmd": "export", "id": "png"})
+        done = client.wait_for_end("png", 900)
+    finally:
+        client.close()
+    if done.get("event") != "done":
+        raise AssertionError(json.dumps(done, indent=2))
+    pngs = sorted(Path(str(done["path"])).glob("*.png"))
+    # Journey A lasts 8 s and ends with a 1 s wait: 120 frames at 15 fps, the last 15 of them held.
+    assert len(pngs) == 120
+    assert len({sha256_file(path) for path in pngs[-15:]}) == 1
+    _assert_flags(_argv_with(log_path, "png-sequence"), "png-sequence", "854,480", "15", transparent=False)
+
+
+@pytest.fixture(scope="module")
+def surface() -> dict[str, Path]:
+    """The default 3D surface exported once as a transparent WebM and once as a transparent PNG sequence."""
     project = PHASE5 / "surface"
     log_path = PHASE5 / "logs" / "surface.log"
     _reset(project)
@@ -140,19 +188,22 @@ def test_surface_transparent_webm_and_png_sequence() -> None:
         client.send({"cmd": "edit", "id": "webm-profile", "edit": _profile("webm", 1280, 720, 30, True)})
         assert _wait_state(client, "webm-profile")["event"] == "state"
         client.send({"cmd": "export", "id": "webm"})
-        webm_done = _wait(client, "webm", timeout=900)
+        webm_done = client.wait_for_end("webm", 900)
         if webm_done.get("event") != "done":
             raise AssertionError(json.dumps(webm_done, indent=2))
-        webm_path = Path(str(webm_done["path"]))
         client.send({"cmd": "edit", "id": "png-profile", "edit": _profile("png_sequence", 1280, 720, 30, True)})
         assert _wait_state(client, "png-profile")["event"] == "state"
         client.send({"cmd": "export", "id": "png"})
-        png_done = _wait(client, "png", timeout=900)
+        png_done = client.wait_for_end("png", 900)
         if png_done.get("event") != "done":
             raise AssertionError(json.dumps(png_done, indent=2))
-        frames = Path(str(png_done["path"]))
     finally:
         client.close()
+    return {"webm": Path(str(webm_done["path"])), "frames": Path(str(png_done["path"])), "log": log_path}
+
+
+def test_surface_transparent_webm_and_png_sequence(surface: dict[str, Path]) -> None:
+    webm_path, frames, log_path = surface["webm"], surface["frames"], surface["log"]
     webm_duration, webm_width, webm_height = probe_video(webm_path)
     assert (webm_width, webm_height) == (1280, 720)
     assert abs(webm_duration - 4.0) <= (1.0 / 30.0)
@@ -160,16 +211,8 @@ def test_surface_transparent_webm_and_png_sequence() -> None:
     webm_alpha = _alpha_webm(webm_path)
     pngs = sorted(frames.glob("*.png"))
     assert pngs
-    late = pngs[min(len(pngs) - 1, int(len(pngs) * 0.9))]
-    png_alpha = _alpha_png(late)
-    assert png_alpha["size"] == [1280, 720]
-    assert png_alpha["corner_alpha"] == 0
-    assert png_alpha["opaque_surface"] is True
-    assert abs(len(pngs) - 120) <= 2
-    webm_argv = _argv_with(log_path, "webm")
-    png_argv = _argv_with(log_path, "png-sequence")
-    _assert_flags(webm_argv, "webm", "1280,720", "30", transparent=True)
-    _assert_flags(png_argv, "png-sequence", "1280,720", "30", transparent=True)
+    png_alpha = _alpha_png(_late_frame(pngs))
+    png_alpha_ok = png_alpha["corner_alpha"] == 0 and png_alpha["opaque_surface"] is True
     _write(
         PHASE5 / "surface-alpha.json",
         {
@@ -179,24 +222,27 @@ def test_surface_transparent_webm_and_png_sequence() -> None:
                 "height": webm_height,
                 "duration": webm_duration,
                 "alpha": webm_alpha,
-                "alpha_check": "failed",
+                "alpha_check": _check(_has_alpha(webm_alpha)),
             },
             "png_sequence": {
                 "path": str(frames),
                 "frames": len(pngs),
                 "alpha": png_alpha,
-                "alpha_check": "passed",
+                "alpha_check": _check(png_alpha_ok),
             },
         },
     )
-    # Manim 0.22 asks PyAV for libvpx-vp9 yuva420p. This build writes yuv420p
-    # and the file has no alpha. That is a preset failure, not a missing flag.
-    assert webm_alpha["corner_alpha"] == 0, (
-        "transparent WebM lost its alpha. "
-        f"corner_alpha={webm_alpha['corner_alpha']} "
-        f"opaque_surface={webm_alpha['opaque_surface']} "
-        f"command={webm_argv}"
-    )
+    assert png_alpha["size"] == [1280, 720]
+    assert png_alpha_ok
+    assert len(pngs) == 120
+    _assert_flags(_argv_with(log_path, "webm"), "webm", "1280,720", "30", transparent=True)
+    _assert_flags(_argv_with(log_path, "png-sequence"), "png-sequence", "1280,720", "30", transparent=True)
+
+
+def test_transparent_webm_keeps_its_alpha(surface: dict[str, Path]) -> None:
+    """D54, G2.5: the alpha the WebM stores, as a libvpx-vp9 decoder such as WebView2's reads it."""
+    alpha = _alpha_webm(surface["webm"])
+    assert _has_alpha(alpha), f"transparent WebM lost its alpha: {alpha} command={_argv_with(surface['log'], 'webm')}"
 
 
 def _profile(fmt: str, width: int, height: int, fps: int, transparent: bool) -> dict[str, object]:
@@ -233,13 +279,6 @@ def _open_fixture(client: SupervisorClient, source: Path, project: Path) -> None
 def _wait_state(client: SupervisorClient, job_id: str, timeout: float = 30) -> dict[str, object]:
     return client.wait_for(
         lambda event: event.get("jobId") == job_id and event.get("event") in {"state", "rejected", "error"},
-        timeout,
-    )
-
-
-def _wait(client: SupervisorClient, job_id: str, timeout: float = 30) -> dict[str, object]:
-    return client.wait_for(
-        lambda event: event.get("jobId") == job_id and event.get("event") in {"done", "error"},
         timeout,
     )
 
@@ -283,22 +322,45 @@ def _alpha_png(path: Path) -> dict[str, object]:
 
 
 def _alpha_webm(path: Path) -> dict[str, object]:
+    """The alpha of the WebM's last frame, decoded with libvpx-vp9 (G2.5).
+
+    A VP9 WebM keeps its alpha in a separate block stream, which the track tag
+    ``alpha_mode`` announces. FFmpeg's own vp9 decoder ignores that stream and
+    reports every frame opaque; only libvpx-vp9 decodes it.
+    """
     import av
     from PIL import Image
 
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
+        decoder = av.CodecContext.create("libvpx-vp9", "r")
         last = None
-        for frame in container.decode(stream):
-            last = frame
+        # The last packet demux yields is empty and flushes the decoder.
+        for packet in container.demux(stream):
+            for frame in decoder.decode(packet):
+                last = frame
         if last is None:
             raise AssertionError(f"no frames in {path}")
-        array = last.to_ndarray(format="rgba")
-        image = Image.fromarray(array, mode="RGBA")
+        image = Image.fromarray(last.to_ndarray(format="rgba"), mode="RGBA")
         result = _alpha_image(image, path)
-        result["pixel_format"] = str(stream.codec_context.pix_fmt)
-        result["codec"] = str(stream.codec_context.name)
+        result["alpha_mode"] = stream.metadata.get("alpha_mode")
+        result["pixel_format"] = last.format.name
+        result["codec"] = decoder.name
         return result
+
+
+def _has_alpha(alpha: dict[str, object]) -> bool:
+    """A transparent background around an opaque surface, from a stream that says it carries alpha."""
+    return alpha["alpha_mode"] == "1" and alpha["corner_alpha"] == 0 and alpha["opaque_surface"] is True
+
+
+def _late_frame(pngs: list[Path]) -> Path:
+    """A frame from the end of the scene: the surface enters in the second 2 s beat, so it shows the fill."""
+    return pngs[min(len(pngs) - 1, int(len(pngs) * 0.9))]
+
+
+def _check(passed: bool) -> str:
+    return "passed" if passed else "failed"
 
 
 def _alpha_image(image, path: Path) -> dict[str, object]:

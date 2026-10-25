@@ -1,19 +1,33 @@
-"""Stable project.json bytes and the separate canonical hash form.
+"""Strict JSON reading, stable project.json bytes, the separate canonical hash form, and cache records.
 
-Saved documents use two-space indentation, stable key order, and a trailing
-newline. Short arrays of scalars stay on one line so the Journey A document
+project.json and protocol lines are read with finite numbers only. Saved
+documents use two-space indentation, stable key order, and a trailing
+newline. Arrays of scalars stay on one line so the Journey A document
 round-trips. The hash form sorts keys, drops insignificant whitespace, keeps
-array order, and writes every number with three decimal places.
+array order, and writes every number with three decimal places. A cache
+record, such as ``rendered.json`` or an export's ``export.json``, is plain
+indented JSON, and one that cannot be read is rebuilt.
 """
 
 from __future__ import annotations
 
 import json
 import math
-from typing import Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import NoReturn
 
 JsonScalar = str | int | float | bool | None
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+
+
+def loads(text: str) -> object:
+    """Parse JSON whose numbers are all finite.
+
+    ``NaN``, ``Infinity`` and a number too large for a float raise ValueError,
+    like any other invalid JSON. Nesting too deep raises RecursionError.
+    """
+    return json.loads(text, parse_int=_finite_int, parse_float=_finite_float, parse_constant=_not_a_number)
 
 
 def dumps_document(value: JsonValue) -> str:
@@ -24,6 +38,19 @@ def dumps_document(value: JsonValue) -> str:
 def canonical_dumps(value: object) -> str:
     """Serialize ``value`` in the section 4 canonical hash form."""
     return _canonical(value)
+
+
+def dumps_record(value: object) -> str:
+    """The text of a cache record, with a trailing newline."""
+    return json.dumps(value, indent=2) + "\n"
+
+
+def read_record(path: Path) -> object:
+    """The JSON in a cache record, or None when it is missing or unreadable, which rebuilds the record."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
 
 
 def _pretty(value: JsonValue, indent: int) -> str:
@@ -96,3 +123,20 @@ def _canonical(value: object) -> str:
         ]
         return "{" + ",".join(parts) + "}"
     raise TypeError(f"cannot hash {type(value).__name__}")
+
+
+def _finite_float(literal: str) -> float:
+    number = float(literal)
+    if math.isinf(number):
+        raise ValueError("a number is too large")
+    return number
+
+
+def _finite_int(literal: str) -> int:
+    """An integer literal that a float can hold, which also keeps int() under its digit limit."""
+    _finite_float(literal)
+    return int(literal)
+
+
+def _not_a_number(name: str) -> NoReturn:
+    raise ValueError(f"{name} is not a JSON number")

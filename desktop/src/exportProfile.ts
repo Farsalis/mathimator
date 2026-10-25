@@ -1,3 +1,5 @@
+import { asBoolean, asInteger, fieldsOf, oneOf } from "./parse";
+
 export type ExportFormat = "mp4" | "gif" | "webm" | "png_sequence";
 
 export interface ExportProfile {
@@ -17,9 +19,6 @@ export const RESOLUTIONS: readonly { width: number; height: number; label: strin
 ];
 
 export const FRAME_RATES: readonly number[] = [15, 30, 60];
-
-export const MP4_TRANSPARENCY = "MP4 cannot store transparency.";
-export const GIF_TRANSPARENCY = "GIF cannot store an alpha channel.";
 
 const PRESET_DEFAULTS: Record<ExportFormat, { width: number; height: number; fps: number }> = {
   mp4: { width: 1920, height: 1080, fps: 30 },
@@ -46,9 +45,9 @@ export function allowsTransparency(format: ExportFormat): boolean {
 export function transparencyMessage(format: ExportFormat): string {
   switch (format) {
     case "mp4":
-      return MP4_TRANSPARENCY;
+      return "MP4 cannot store transparency.";
     case "gif":
-      return GIF_TRANSPARENCY;
+      return "GIF cannot store an alpha channel.";
     case "webm":
     case "png_sequence":
       return "Transparency includes the background.";
@@ -74,27 +73,13 @@ export function isExportFormat(value: unknown): value is ExportFormat {
   return typeof value === "string" && EXPORT_FORMATS.some((item) => item === value);
 }
 
-export function parseExportProfile(value: unknown): ExportProfile | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  if (!isExportFormat(record.format)) {
-    return null;
-  }
-  if (
-    typeof record.width !== "number" ||
-    typeof record.height !== "number" ||
-    typeof record.fps !== "number" ||
-    typeof record.transparent !== "boolean"
-  ) {
-    return null;
-  }
+export function asExportProfile(value: unknown, path: string): ExportProfile {
+  const read = fieldsOf(value, path);
   return {
-    format: record.format,
-    width: record.width,
-    height: record.height,
-    fps: record.fps,
-    transparent: record.transparent,
+    format: read("format", oneOf(EXPORT_FORMATS)),
+    width: read("width", asInteger),
+    height: read("height", asInteger),
+    fps: read("fps", asInteger),
+    transparent: read("transparent", asBoolean),
   };
 }

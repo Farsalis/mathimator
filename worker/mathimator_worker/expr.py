@@ -2,17 +2,23 @@
 
 The grammar is the one in section 4. Anything outside it, including the
 rejected examples, raises DocumentError with "This expression is not supported."
-The translator never evaluates the source.
+So does a source over 1000 characters or nested deeper than 64 levels (D04),
+which keeps parsing and emitting well inside the interpreter's stack. The
+translator never evaluates the source.
 """
 
 from __future__ import annotations
 
+import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from mathimator_worker.document_error import DocumentError
 
 UNSUPPORTED = "This expression is not supported."
 CALLS = frozenset({"sin", "cos", "tan", "exp", "log", "sqrt"})
+MAX_EXPRESSION_LENGTH = 1000
+MAX_EXPRESSION_DEPTH = 64
 
 
 class _ParseError(Exception):
@@ -37,24 +43,24 @@ class Pi:
 @dataclass(frozen=True)
 class Call:
     name: str
-    argument: "Expression"
+    argument: Expression
 
 
 @dataclass(frozen=True)
 class UnaryMinus:
-    operand: "Expression"
+    operand: Expression
 
 
 @dataclass(frozen=True)
 class Group:
-    inner: "Expression"
+    inner: Expression
 
 
 @dataclass(frozen=True)
 class Binary:
     operator: str
-    left: "Expression"
-    right: "Expression"
+    left: Expression
+    right: Expression
 
 
 Expression = Number | Variable | Pi | Call | UnaryMinus | Group | Binary
@@ -71,15 +77,21 @@ def expression_to_python(
     is written in ``x`` and ``y`` and emitted as the ``u`` and ``v`` parameters
     of ``Surface``.
     """
+    return _emit(_parse(source, variables, None), rename or {})
+
+
+def assert_supported(source: str, variables: frozenset[str], field: str) -> None:
+    """Refuse ``source`` with ``unsupported_expression`` naming ``field``."""
+    _parse(source, variables, field)
+
+
+def _parse(source: str, variables: frozenset[str], field: str | None) -> Expression:
     try:
-        parsed = _Parser(source, variables).parse()
+        if len(source) > MAX_EXPRESSION_LENGTH:
+            raise _ParseError
+        return _Parser(source, variables).parse()
     except _ParseError as exc:
-        raise DocumentError(UNSUPPORTED) from exc
-    return _emit(parsed, rename or {})
-
-
-def assert_supported(source: str, variables: frozenset[str]) -> None:
-    expression_to_python(source, variables)
+        raise DocumentError(UNSUPPORTED, code="unsupported_expression", field=field) from exc
 
 
 class _Parser:
@@ -88,6 +100,7 @@ class _Parser:
         self.variables = variables
         self.index = 0
         self.length = len(source)
+        self.depth = 0
 
     def parse(self) -> Expression:
         self._skip()
@@ -119,33 +132,43 @@ class _Parser:
         return left
 
     def _parse_term(self) -> Expression:
-        left = self._parse_factor()
+        left = self._parse_unary()
         while self._peek() in {"*", "/"}:
             operator = self.source[self.index]
             self.index += 1
-            right = self._parse_factor()
+            right = self._parse_unary()
             left = Binary(operator, left, right)
         return left
 
-    def _parse_factor(self) -> Expression:
-        left = self._parse_primary()
+    def _parse_unary(self) -> Expression:
+        """A unary minus applies to the power after it, so ``-x^2`` is ``-(x^2)`` (D01)."""
+        if self._peek() == "-":
+            self.index += 1
+            return UnaryMinus(self._nested(self._parse_unary))
+        return self._parse_power()
+
+    def _parse_power(self) -> Expression:
+        base = self._parse_primary()
         if self._peek() == "^":
             self.index += 1
-            right = self._parse_primary()
-            return Binary("**", left, right)
-        return left
+            return Binary("**", base, self._parse_exponent())
+        return base
+
+    def _parse_exponent(self) -> Expression:
+        """One primary after ``^``, which may carry minus signs: ``2^-x`` parses and ``x^2^2`` does not."""
+        if self._peek() == "-":
+            self.index += 1
+            return UnaryMinus(self._nested(self._parse_exponent))
+        return self._parse_primary()
 
     def _parse_primary(self) -> Expression:
         self._skip()
         if self.index >= self.length:
             raise _ParseError
         character = self.source[self.index]
-        if character == "-":
-            self.index += 1
-            return UnaryMinus(self._parse_primary())
         if character == "(":
             self.index += 1
-            inner = self._parse_expr()
+            inner = self._nested(self._parse_expr)
             if self._peek() != ")":
                 raise _ParseError
             self.index += 1
@@ -155,6 +178,15 @@ class _Parser:
         if character.isalpha() or character == "_":
             return self._parse_name()
         raise _ParseError
+
+    def _nested(self, parse: Callable[[], Expression]) -> Expression:
+        """Parse one level deeper: a group, a call argument or a unary minus operand."""
+        if self.depth == MAX_EXPRESSION_DEPTH:
+            raise _ParseError
+        self.depth += 1
+        expression = parse()
+        self.depth -= 1
+        return expression
 
     def _parse_number(self) -> Number:
         start = self.index
@@ -176,20 +208,20 @@ class _Parser:
             value = float(text)
         except ValueError as exc:
             raise _ParseError from exc
+        if not math.isfinite(value):
+            raise _ParseError
         return Number(value)
 
     def _parse_name(self) -> Expression:
         start = self.index
-        while self.index < self.length and (
-            self.source[self.index].isalnum() or self.source[self.index] == "_"
-        ):
+        while self.index < self.length and (self.source[self.index].isalnum() or self.source[self.index] == "_"):
             self.index += 1
         name = self.source[start : self.index]
         if name == "pi" and self._peek() != "(":
             return Pi()
         if name in CALLS and self._peek() == "(":
             self.index += 1
-            argument = self._parse_expr()
+            argument = self._nested(self._parse_expr)
             if self._peek() == ",":
                 raise _ParseError
             if self._peek() != ")":
@@ -201,14 +233,16 @@ class _Parser:
         raise _ParseError
 
 
-_PRECEDENCE = {"+": 1, "-": 1, "*": 2, "/": 2, "**": 3}
+# As in Python, a unary minus binds tighter than * and / and looser than **.
+_PRECEDENCE = {"+": 1, "-": 1, "*": 2, "/": 2, "**": 4}
+_UNARY_PRECEDENCE = 3
 
 
 def _precedence(expression: Expression) -> int:
     if isinstance(expression, Binary):
         return _PRECEDENCE[expression.operator]
     if isinstance(expression, UnaryMinus):
-        return 4
+        return _UNARY_PRECEDENCE
     return 5
 
 
@@ -229,10 +263,30 @@ def _emit(expression: Expression, rename: dict[str, str]) -> str:
             return f"-{_emit(operand, rename)}"
         return f"-({_emit(operand, rename)})"
     if isinstance(expression, Binary):
-        left = _parenthesize(expression.left, expression.operator, rename, on_right=False)
-        right = _parenthesize(expression.right, expression.operator, rename, on_right=True)
-        return f"{left} {expression.operator} {right}"
+        return _emit_chain(expression, rename)
     raise TypeError(f"unknown expression {type(expression).__name__}")
+
+
+def _emit_chain(expression: Binary, rename: dict[str, str]) -> str:
+    """Emit a left-nested run such as ``x + x + ... + x`` without recursing per operator.
+
+    The parser builds ``a + b + c`` as ``(a + b) + c``, so a 1000-character sum
+    is a chain hundreds of operators deep. Only right operands recurse, and the
+    nesting limit bounds their depth.
+    """
+    chain: list[Binary] = []
+    node: Expression = expression
+    while isinstance(node, Binary):
+        chain.append(node)
+        node = node.left
+    text = _emit(node, rename)
+    for parent in reversed(chain):
+        if _needs_parentheses(node, parent.operator, on_right=False):
+            text = f"({text})"
+        right = _parenthesize(parent.right, parent.operator, rename, on_right=True)
+        text = f"{text} {parent.operator} {right}"
+        node = parent
+    return text
 
 
 def _parenthesize(
@@ -242,21 +296,22 @@ def _parenthesize(
     *,
     on_right: bool,
 ) -> str:
-    parent = _PRECEDENCE[operator]
-    child = _precedence(expression)
-    needs = child < parent
-    if not needs and child == parent and on_right and operator in {"-", "/", "**"}:
-        needs = True
-    if not needs and operator == "**" and isinstance(expression, UnaryMinus):
-        needs = True
     rendered = _emit(expression, rename)
-    if needs:
+    if _needs_parentheses(expression, operator, on_right=on_right):
         return f"({rendered})"
     return rendered
 
 
+def _needs_parentheses(expression: Expression, operator: str, *, on_right: bool) -> bool:
+    parent = _PRECEDENCE[operator]
+    child = _precedence(expression)
+    if child < parent:
+        return True
+    return child == parent and on_right and operator in {"-", "/", "**"}
+
+
 def _format_number(value: float) -> str:
-    rounded = round(value, 3)
-    if abs(rounded - round(rounded)) < 1e-9:
-        return str(int(round(rounded)))
-    return f"{rounded:.3f}".rstrip("0").rstrip(".")
+    """A literal exactly as typed (D02). A whole number prints as an integer, so ``2*x`` stays ``2 * x``."""
+    if value.is_integer() and abs(value) < 2**53:
+        return str(int(value))
+    return repr(value)

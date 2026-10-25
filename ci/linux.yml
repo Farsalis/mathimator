@@ -1,0 +1,297 @@
+# Jobs on gitlab.com's hosted Linux runners (D67): lint, the fast test lanes,
+# the UI build and the Rust pre-checks. Each job starts as soon as the pipeline
+# does, except the cargo job, which waits for desktop/dist.
+
+# The lanes (O2). In a merge request, a lane's jobs run when the change touches
+# a file they check or the CI files that define them. They run on every tag,
+# and never in the Renovate pipeline or on the default branch (.gitlab-ci.yml).
+
+# The worker, its tests and golden scenes, the spec listings they compare, the
+# scripts and the packaging files their tests read, and the Python
+# dependencies and pins.
+.on-python-changes:
+  rules:
+    - if: $SCHEDULE_KIND == "renovate"
+      when: never
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - worker/**/*
+        - tests/**/*
+        - scenes/**/*
+        - docs/design-spec.md
+        - scripts/**/*
+        - packaging/**/*
+        - pyproject.toml
+        - uv.lock
+        - pytest.ini
+        - .python-version
+        - ci/linux.yml
+        - .gitlab-ci.yml
+
+# The worker and its tests, the Typst pin and the script that installs it, and
+# the Python dependencies and pins.
+.on-typst-changes:
+  rules:
+    - if: $SCHEDULE_KIND == "renovate"
+      when: never
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - worker/**/*
+        - tests/**/*
+        - pyproject.toml
+        - uv.lock
+        - pytest.ini
+        - .python-version
+        - packaging/versions.env
+        - ci/install-typst.sh
+        - ci/linux.yml
+        - .gitlab-ci.yml
+
+# The UI, and the fixtures and worker source that its tests import.
+.on-ui-changes:
+  rules:
+    - if: $SCHEDULE_KIND == "renovate"
+      when: never
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - desktop/*
+        - desktop/src/**/*
+        - tests/fixtures/protocol/**/*
+        - tests/fixtures/timing/**/*
+        - worker/mathimator_worker/supervisor.py
+        - ci/linux.yml
+        - .gitlab-ci.yml
+
+# The shell, and the fixtures that its tests embed.
+.on-rust-changes:
+  rules:
+    - if: $SCHEDULE_KIND == "renovate"
+      when: never
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - desktop/src-tauri/**/*
+        - tests/fixtures/equation/**/*
+        - tests/fixtures/protocol/**/*
+        - tests/fixtures/win32/**/*
+        - ci/linux.yml
+        - .gitlab-ci.yml
+
+# Python jobs: uv 0.13.5, the release that [tool.uv] required-version demands
+# (uv refuses to run with any other), and the uv-managed CPython that
+# .python-version names.
+.uv:
+  extends: .every-pipeline
+  image: ghcr.io/astral-sh/uv:0.13.5-trixie-slim
+  needs: []
+  variables:
+    # The render group needs pycairo and ManimPango, which publish no Linux
+    # wheels, and no Linux job imports Manim: the render suites run on Windows.
+    # The dev group carries what the fast tests import, numpy included.
+    UV_NO_GROUP: render
+  cache:
+    key:
+      files: [uv.lock]
+      prefix: $CI_JOB_NAME_SLUG
+    paths: [.uv-cache, .uv-python]
+  after_script:
+    - uv cache prune --ci
+
+# UI jobs: Node 24, the major desktop/.nvmrc names. npm's engine-strict
+# refuses any other (D37).
+.node:
+  extends: .every-pipeline
+  image: node:24.22.1-trixie-slim
+  needs: []
+  variables:
+    npm_config_cache: $CI_PROJECT_DIR/.npm
+  cache:
+    key:
+      files: [desktop/package-lock.json]
+      prefix: npm
+    paths: [.npm]
+  before_script:
+    - cd desktop
+    - npm ci --prefer-offline --no-audit --no-fund
+
+# Rust jobs: the toolchain in desktop/src-tauri/rust-toolchain.toml and the
+# system libraries Tauri's Linux backend links: WebKitGTK 4.1, which brings
+# GTK 3 and libsoup 3, and libxdo for the menus. Linux never compiles the
+# cfg(windows) code, so these are pre-checks; test:rust:windows is the real
+# build.
+.rust:
+  extends: .every-pipeline
+  image: rust:1.93.0-trixie
+  # The default custom-protocol feature embeds desktop/dist.
+  needs: [build:ui]
+  timeout: 45m
+  variables:
+    CARGO_HOME: $CI_PROJECT_DIR/.cargo
+    DEBIAN_FRONTEND: noninteractive
+  cache:
+    key:
+      files: [desktop/src-tauri/Cargo.lock]
+      prefix: cargo-linux
+    paths: [.cargo/registry/index, .cargo/registry/cache, .cargo/git/db]
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq --no-install-recommends libwebkit2gtk-4.1-dev libxdo-dev
+    - cd desktop/src-tauri
+
+# Built for the UI lane, and for the Rust lane, whose cargo job embeds it.
+build:ui:
+  extends: .node
+  stage: build
+  rules:
+    - !reference [.on-ui-changes, rules]
+    - !reference [.on-rust-changes, rules]
+  script:
+    - npm run build
+  artifacts:
+    paths: [desktop/dist/]
+    expire_in: 1 day
+
+# The checks that span the lanes, so they run in every pipeline:
+# - the app version and the toolchain pins agree across their manifests, and
+#   in a tag pipeline the tag is v<app version> (D72);
+# - Ruff, which checks every Python file, the ci/ tests included, in seconds;
+# - the ci/ tests hold the pipeline and the documents to the code;
+# - the hooks in .pre-commit-config.yaml that nothing else runs. This job runs
+#   Ruff itself, lint:python, lint:ui and test:rust run the other tools with
+#   the project's own environments, and Secret Detection replaces gitleaks,
+#   which has nothing staged to scan here.
+lint:repo:
+  extends: .uv
+  stage: lint
+  variables:
+    PRE_COMMIT_HOME: $CI_PROJECT_DIR/.pre-commit-cache
+    SKIP: ruff-check,ruff-format,mypy,mypy-linux,gitleaks,prettier,eslint,tsc,cargo-fmt
+  cache:
+    - !reference [.uv, cache]
+    - key:
+        files: [.pre-commit-config.yaml]
+        prefix: pre-commit
+      paths: [.pre-commit-cache]
+  before_script:
+    # pre-commit asks git for the files to check, and fetches its hooks over
+    # HTTPS, which needs the CA certificates that --no-install-recommends skips.
+    - apt-get update -qq
+    - apt-get install -y -qq --no-install-recommends git ca-certificates
+  script:
+    - uv run python scripts/check_versions.py ${CI_COMMIT_TAG:+--tag "$CI_COMMIT_TAG"}
+    - uv run ruff check
+    - uv run ruff format --check
+    - uv run pytest ci --junitxml=reports/junit-repo.xml
+    - uv run pre-commit run --all-files --show-diff-on-failure
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: reports/junit-repo.xml
+
+# The lock, mypy and the worker package build: setuptools has nothing to
+# deprecate in its pyproject.toml (F161). setuptools only warns, so the job
+# reads the build log.
+lint:python:
+  extends: [.uv, .on-python-changes]
+  stage: lint
+  script:
+    - uv lock --check
+    # mypy checks the code as it runs on Windows (pyproject.toml), then the
+    # POSIX branches (D43).
+    - uv run mypy
+    - uv run mypy --platform linux
+    - set -o pipefail
+    - uv build worker --out-dir out/worker-dist 2>&1 | tee build-worker.log
+    - if grep -q SetuptoolsDeprecationWarning build-worker.log; then exit 1; fi
+
+# The UI lane, and the shell's JSON configuration, which Prettier checks too.
+lint:ui:
+  extends: .node
+  stage: lint
+  rules:
+    - !reference [.on-ui-changes, rules]
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: [desktop/src-tauri/**/*.json]
+  script:
+    - npm run lint
+    - npm run typecheck
+    - npm run format:check
+
+# The fast lane on both supported interpreters (D70): every test in tests/ and
+# scripts/ except Manim, the export, the offline bundle, Typst (test:typst) and
+# the process-table walks (test:windows). The worker's coverage is reported,
+# not enforced (D78).
+test:python:
+  extends: [.uv, .on-python-changes]
+  stage: test
+  parallel:
+    matrix:
+      # PYTHON_FALLBACK_VERSION and PYTHON_VERSION in packaging/versions.env.
+      - UV_PYTHON: ["3.13.17", "3.14.9"]
+  script:
+    - >-
+      uv run pytest tests scripts
+      -m "not render and not export and not offline and not typst and not process_table"
+      --junitxml="reports/junit-python-$UV_PYTHON.xml"
+      --cov --cov-report=term --cov-report="xml:reports/coverage-python-$UV_PYTHON.xml"
+  coverage: '/^TOTAL\s.*\s(\d+(?:\.\d+)?)%$/'
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: reports/junit-python-*.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: reports/coverage-python-*.xml
+
+# The Typst tests with the Typst that packaging/versions.env pins. The install
+# fails unless that release runs from PATH, so the typst tests cannot skip.
+test:typst:
+  extends: [.uv, .on-typst-changes]
+  stage: test
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq --no-install-recommends curl xz-utils ca-certificates
+    - bash ci/install-typst.sh "$CI_PROJECT_DIR/.typst"
+    - export PATH="$CI_PROJECT_DIR/.typst:$PATH"
+  script:
+    - uv run pytest tests -m typst --junitxml=reports/junit-typst.xml
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths: [out/phase3/]
+    reports:
+      junit: reports/junit-typst.xml
+
+# The UI tests with their coverage, reported and never enforced (D78): the text
+# total, which the merge request shows, and Cobertura for its diff.
+test:ui:
+  extends: [.node, .on-ui-changes]
+  stage: test
+  script:
+    - npm run test:ci -- --outputFile.junit="$CI_PROJECT_DIR/reports/junit-vitest.xml" --coverage.reportsDirectory="$CI_PROJECT_DIR/reports/coverage-ui"
+  coverage: '/^All files\s*\|\s*([\d.]+)/'
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: reports/junit-vitest.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: reports/coverage-ui/cobertura-coverage.xml
+
+# rustfmt, Clippy and the tests in one job, so the system libraries install and
+# the build scripts compile once. The Win32 Job Object reap test stays ignored
+# here; test:rust:windows runs it.
+test:rust:
+  extends: [.rust, .on-rust-changes]
+  stage: test
+  script:
+    - rustup component add rustfmt clippy
+    - cargo fmt --check
+    - cargo clippy --locked --all-targets -- -D warnings
+    - cargo test --locked

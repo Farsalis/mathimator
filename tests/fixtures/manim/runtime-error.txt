@@ -1,0 +1,57 @@
+Manim Community v0.22.0
+
+┌───────────────────── Traceback (most recent call last) ──────────────────────┐
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \cli\render\commands.py:122 in render                                        │
+│                                                                              │
+│   119 │   │   │   │   │   scene = SceneClass()                               │
+│   120 │   │   │   │   │   # Attach explicitly, but preserve custom Scene.ren │
+│   121 │   │   │   │   │   Manager(scene)                                     │
+│ > 122 │   │   │   │   │   scene.render()                                     │
+│   123 │   except Exception:                                                  │
+│   124 │   │   error_console.print_exception()                                │
+│   125 │   │   sys.exit(1)                                                    │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \scene\scene.py:320 in render                                                │
+│                                                                              │
+│    317 │   │   bool                                                          │
+│    318 │   │   │   Whether an interactive rerun was requested.               │
+│    319 │   │   """                                                           │
+│ >  320 │   │   return self._get_manager().render(preview)                    │
+│    321 │                                                                     │
+│    322 │   def _get_manager(self) -> Manager[Self]:                          │
+│    323 │   │   """Return this scene's manager, creating it for legacy entry  │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \manager.py:155 in render                                                    │
+│                                                                              │
+│   152 │   │                                                                  │
+│   153 │   │   self.setup()                                                   │
+│   154 │   │   try:                                                           │
+│ > 155 │   │   │   self.construct()                                           │
+│   156 │   │   except EndSceneEarlyException:                                 │
+│   157 │   │   │   # Reaching the configured animation boundary ends the scen │
+│   158 │   │   │   pass                                                       │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\.venv\Lib\site-packages\manim │
+│ \manager.py:193 in construct                                                 │
+│                                                                              │
+│   190 │                                                                      │
+│   191 │   def construct(self) -> None:                                       │
+│   192 │   │   """Run the managed scene's :meth:`~manim.scene.scene.Scene.con │
+│ > 193 │   │   self.scene.construct()                                         │
+│   194 │                                                                      │
+│   195 │   def post_construct(self) -> None:                                  │
+│   196 │   │   """Finalize output after scene construction and tear-down.     │
+│                                                                              │
+│ C:\Users\j.logan\Documents\LaTeX\Mathimator\out\phase1\runtime-error-proj │
+│ ect\.mathimator\codegen\scene.py:6 in construct                              │
+│                                                                              │
+│   3                                                                          │
+│   4 class MainScene(Scene):                                                  │
+│   5 │   def construct(self):                                                 │
+│ > 6 │   │   raise RuntimeError("phase 1 scene raised RuntimeError")          │
+│   7                                                                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+RuntimeError: phase 1 scene raised RuntimeError
