@@ -1,4 +1,4 @@
-import { insertionIndex, plusBeat } from "./beatRules";
+import { insertionIndex, plusBeat, pointAxesId } from "./beatRules";
 import type { AddKind } from "./components/AddMenu";
 import { CodeView } from "./components/CodeView";
 import { ErrorBanner } from "./components/ErrorBanner";
@@ -10,7 +10,7 @@ import { ProjectChangedPrompt } from "./components/ProjectChangedPrompt";
 import { Timeline } from "./components/Timeline";
 import { TopBar } from "./components/TopBar";
 import { WorkerUnavailable } from "./components/WorkerUnavailable";
-import { addBeat } from "./edits";
+import { addAxesFunction, addBeat, addFormula, addFormulaTransform, addShape, addText, addThreeDAxes } from "./edits";
 import type { Edit } from "./types";
 import { useEditor } from "./useEditor";
 
@@ -23,32 +23,40 @@ export function App() {
   const onScreen = editor.state?.derived.onScreen ?? [];
   const { beatId: selectedBeatId, objectId: selectedObjectId } = editor.selection;
   const canSaveAs = editor.ready && !editor.exporting;
+  /** What is on screen where Add and "+ Beat" insert: after the selected beat, or at the end. */
+  const onScreenThere = onScreen[insertionIndex(beats, selectedBeatId)] ?? [];
 
   function onAdd(kind: AddKind): void {
+    void editor.commit(addEdit(kind), true);
+  }
+
+  function addEdit(kind: AddKind): Edit {
     const afterBeatId = selectedBeatId;
-    let edit: Edit;
     switch (kind) {
       case "axes_function":
-        edit = { op: "add_axes_function", afterBeatId };
-        break;
+        return addAxesFunction(afterBeatId);
       case "formula":
-        edit = { op: "add_formula", afterBeatId };
-        break;
+        return addFormula(afterBeatId);
       case "text":
-        edit = { op: "add_text", afterBeatId };
-        break;
+        return addText(afterBeatId);
       case "formula_transform":
-        edit = { op: "add_formula_transform", afterBeatId };
-        break;
+        return addFormulaTransform(afterBeatId);
       case "three_d_axes":
-        edit = { op: "add_three_d_axes", afterBeatId };
-        break;
+        return addThreeDAxes(afterBeatId);
+      case "dot":
+      case "line":
+      case "arrow":
+      case "circle":
+      case "rectangle":
+        return addShape(kind, afterBeatId);
+      case "axes_point":
+        // Without axes the worker refuses the point, and the banner says so.
+        return addShape(kind, afterBeatId, pointAxesId(objects, onScreenThere, selectedObjectId) ?? undefined);
       default: {
         const unexpected: never = kind;
         throw new Error(`Unhandled add ${String(unexpected)}`);
       }
     }
-    void editor.commit(edit, true);
   }
 
   /** "+ Beat": the worker fills in the settings, and its focus selects the new beat (design §10.3). */
@@ -56,8 +64,7 @@ export function App() {
     if (!doc) {
       return;
     }
-    const on = onScreen[insertionIndex(beats, selectedBeatId)] ?? [];
-    const { action, targets } = plusBeat(doc.scene.kind, objects, on, selectedObjectId);
+    const { action, targets } = plusBeat(doc.scene.kind, objects, onScreenThere, selectedObjectId);
     void editor.commit(addBeat(selectedBeatId, action, targets), true);
   }
 
@@ -80,6 +87,7 @@ export function App() {
           onNew={() => void editor.onNew()}
           onOpen={() => void editor.onOpen()}
           onSaveAs={() => void editor.onSaveAs()}
+          canAddPoint={objects.some((item) => item.type === "axes")}
           onAdd={onAdd}
           onUndo={() => void editor.undo()}
           onRedo={() => void editor.redo()}

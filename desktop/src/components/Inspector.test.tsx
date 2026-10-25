@@ -247,6 +247,166 @@ describe("Inspector beat editor (design §10.2, §10.4)", () => {
   });
 });
 
+describe("Inspector shape fields (design §10.6)", () => {
+  const SHAPE_OBJECTS: SceneObject[] = [
+    { id: "axes_1", name: "Axes", type: "axes", params: { showLabels: false } },
+    { id: "axes_2", name: "Second axes", type: "axes", params: { showLabels: false } },
+    { id: "axes3d_1", name: "3D axes", type: "three_d_axes", params: {} },
+    { id: "dot_1", name: "Dot", type: "dot", params: { center: [1, -0.5], radius: 0.08, color: "#E07A5F" } },
+    {
+      id: "line_1",
+      name: "Line",
+      type: "line",
+      params: { start: [-2, 0], end: [2, 0], color: "#FFFFFF", strokeWidth: 4 },
+    },
+    {
+      id: "arrow_1",
+      name: "Arrow",
+      type: "arrow",
+      params: { start: [-2, -1], end: [2, 1], color: "#FFFFFF", strokeWidth: 6 },
+    },
+    {
+      id: "circle_1",
+      name: "Circle",
+      type: "circle",
+      params: { center: [0, 0], radius: 1, color: "#58C4DD", strokeWidth: 4, fillOpacity: 0 },
+    },
+    {
+      id: "rectangle_1",
+      name: "Rectangle",
+      type: "rectangle",
+      params: { center: [0, 1], width: 4, height: 2, color: "#58C4DD", strokeWidth: 4, fillOpacity: 0.3 },
+    },
+    {
+      id: "point_1",
+      name: "Point",
+      type: "axes_point",
+      params: { axesId: "axes_2", x: 1.5, y: -2, radius: 0.08, color: "#E07A5F" },
+    },
+  ];
+
+  function renderShape(
+    selectedObjectId: string,
+    { fieldError = null }: { fieldError?: FieldError | null } = {},
+  ): (edit: Edit) => Promise<void> {
+    const onEdit = vi.fn<(edit: Edit) => Promise<void>>(() => Promise.resolve());
+    render(
+      <Inspector
+        scene={null}
+        objects={SHAPE_OBJECTS}
+        beats={[]}
+        onScreen={[[]]}
+        selectedBeatId={null}
+        selectedObjectId={selectedObjectId}
+        fieldError={fieldError}
+        texBlocked={false}
+        disabled={false}
+        onSelectObject={vi.fn()}
+        onEdit={onEdit}
+      />,
+    );
+    return onEdit;
+  }
+
+  /** The test ids of the shape's controls, in the order they are shown. */
+  function shapeControls(): (string | undefined)[] {
+    return [...document.querySelectorAll<HTMLElement>('[data-testid^="shape-param-"]')].map(
+      (item) => item.dataset.testid,
+    );
+  }
+
+  function shapeField(key: string): HTMLInputElement {
+    return screen.getByTestId<HTMLInputElement>(`shape-param-${key}`);
+  }
+
+  it.each([
+    ["dot_1", ["center-x", "center-y", "radius", "color"]],
+    ["line_1", ["start-x", "start-y", "end-x", "end-y", "strokeWidth", "color"]],
+    ["arrow_1", ["start-x", "start-y", "end-x", "end-y", "strokeWidth", "color"]],
+    ["circle_1", ["center-x", "center-y", "radius", "strokeWidth", "fillOpacity", "color"]],
+    ["rectangle_1", ["center-x", "center-y", "width", "height", "strokeWidth", "fillOpacity", "color"]],
+    ["point_1", ["axesId", "x", "y", "radius", "color"]],
+  ])("shows the settings of %s with the colour last", (objectId, keys) => {
+    renderShape(objectId);
+    expect(shapeControls()).toEqual(keys.map((key) => `shape-param-${key}`));
+  });
+
+  it("shows each setting's value, label and range", () => {
+    renderShape("rectangle_1");
+    expect([shapeField("center-x").value, shapeField("center-y").value]).toEqual(["0", "1"]);
+    expect(shapeField("fillOpacity").value).toBe("0.3");
+    expect(shapeField("color").value).toBe("#58C4DD");
+    expect(fieldOf("Center")?.textContent).toContain("Each from -100 to 100.");
+    expect(fieldOf("Width")?.nextElementSibling?.textContent).toBe("From 0.001 to 100.");
+    expect(fieldOf("Stroke width")?.nextElementSibling?.textContent).toBe("From 0 to 50.");
+    expect(fieldOf("Fill opacity")?.nextElementSibling?.textContent).toBe("From 0 to 1.");
+  });
+
+  it("sends each setting of a shape as set_shape_param", () => {
+    const onEdit = renderShape("circle_1");
+    typeAndLeave(shapeField("center-x"), "2");
+    typeAndLeave(shapeField("radius"), "1,5");
+    typeAndLeave(shapeField("strokeWidth"), "8");
+    typeAndLeave(shapeField("fillOpacity"), "0.4");
+    typeAndLeave(shapeField("color"), "#FF0000");
+    expect(vi.mocked(onEdit).mock.calls).toEqual(
+      [
+        { key: "center", value: [2, 0] },
+        { key: "radius", value: 1.5 },
+        { key: "strokeWidth", value: 8 },
+        { key: "fillOpacity", value: 0.4 },
+        { key: "color", value: "#FF0000" },
+      ].map((change) => [{ op: "set_shape_param", objectId: "circle_1", ...change }]),
+    );
+  });
+
+  it("moves either end of a line on its own", () => {
+    const onEdit = renderShape("line_1");
+    typeAndLeave(shapeField("start-y"), "-1");
+    typeAndLeave(shapeField("end-x"), "3");
+    expect(vi.mocked(onEdit).mock.calls).toEqual([
+      [{ op: "set_shape_param", objectId: "line_1", key: "start", value: [-2, -1] }],
+      [{ op: "set_shape_param", objectId: "line_1", key: "end", value: [3, 0] }],
+    ]);
+  });
+
+  it("puts a point on any 2D axes, at coordinates on those axes", () => {
+    const onEdit = renderShape("point_1");
+    const axes = screen.getByLabelText<HTMLSelectElement>("Axes");
+    expect(axes.value).toBe("axes_2");
+    expect([...axes.options].map((item) => item.textContent)).toEqual(["Axes", "Second axes"]);
+    expect(screen.getByText("x and y are coordinates on these axes.")).toBeTruthy();
+    expect([shapeField("x").value, shapeField("y").value]).toEqual(["1.5", "-2"]);
+    fireEvent.change(axes, { target: { value: "axes_1" } });
+    typeAndLeave(shapeField("y"), "0.25");
+    expect(vi.mocked(onEdit).mock.calls).toEqual([
+      [{ op: "set_shape_param", objectId: "point_1", key: "axesId", value: "axes_1" }],
+      [{ op: "set_shape_param", objectId: "point_1", key: "y", value: 0.25 }],
+    ]);
+  });
+
+  it("shows a refused setting under that setting only (design §10.7)", () => {
+    const message = "value must be from 0.001 to 50";
+    const refusal: FieldError = {
+      objectId: "circle_1",
+      beatId: null,
+      field: "value",
+      op: "set_shape_param",
+      axis: null,
+      key: "radius",
+      message,
+    };
+    renderShape("circle_1", { fieldError: refusal });
+    const shown = screen.getAllByText(message);
+    expect(shown).toHaveLength(1);
+    // Under the radius and its range.
+    expect(fieldOf("Radius")?.nextElementSibling?.nextElementSibling).toBe(shown[0]);
+    cleanup();
+    renderShape("dot_1", { fieldError: refusal });
+    expect(screen.queryByText(message)).toBeNull();
+  });
+});
+
 /** The colour picker of the one colour field shown, and the hex field beside it. */
 function colorInputs(): { picker: HTMLInputElement; hex: HTMLInputElement } {
   const picker = document.querySelector<HTMLInputElement>('input[type="color"]');

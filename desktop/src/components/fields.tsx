@@ -1,4 +1,5 @@
 import { useEffect, useEffectEvent, useRef } from "react";
+import type { ParamSpec, ParamValue, Vector } from "../beatKinds";
 import { parseDecimal } from "../format";
 import { useCommitDraft, type CommitDraft } from "../useCommitDraft";
 
@@ -137,6 +138,80 @@ export function CommitNumber({
       />
     </label>
   );
+}
+
+/**
+ * One setting of a beat kind or a shape (beatKinds.ts): a number, an `[x, y]` vector or a colour, with the range the
+ * worker judges it by. A vector's inputs are labelled x and y, with the test ids `<testId>-x` and `<testId>-y`. An id
+ * setting has no control of its own here: it names an object, which only its owner knows how to offer.
+ */
+export function ParamField({
+  spec,
+  value,
+  label = spec.label,
+  testId,
+  onCommit,
+}: {
+  spec: ParamSpec;
+  value: unknown;
+  /** The label, when it says more than the setting's own, such as its unit. */
+  label?: string;
+  testId: string;
+  onCommit: (value: ParamValue) => Promise<void>;
+}) {
+  const hint = rangeHint(spec);
+  switch (spec.type) {
+    case "number":
+      return (
+        <>
+          <CommitNumber
+            label={label}
+            value={typeof value === "number" ? value : 0}
+            testId={testId}
+            onCommit={onCommit}
+          />
+          {hint !== null ? <p className="hint">{hint}</p> : null}
+        </>
+      );
+    case "vector": {
+      const [x, y] = vectorOf(value);
+      return (
+        <fieldset>
+          <legend>{label}</legend>
+          <CommitNumber label="x" value={x} testId={`${testId}-x`} onCommit={(next) => onCommit([next, y])} />
+          <CommitNumber label="y" value={y} testId={`${testId}-y`} onCommit={(next) => onCommit([x, next])} />
+          {hint !== null ? <p className="hint">{hint}</p> : null}
+        </fieldset>
+      );
+    }
+    case "color":
+      return (
+        <ColorField
+          label={label}
+          value={typeof value === "string" ? value : "#FFFFFF"}
+          testId={testId}
+          onCommit={onCommit}
+        />
+      );
+    case "id":
+      return null;
+  }
+}
+
+/** The range a setting must be in, as the worker judges it, or null for a setting that takes any number. */
+function rangeHint(spec: ParamSpec): string | null {
+  const each = spec.type === "vector" ? "Each from" : "From";
+  if (spec.low !== null && spec.high !== null) {
+    return `${each} ${spec.low} to ${spec.high}.`;
+  }
+  return spec.positive ? "Greater than 0." : null;
+}
+
+function vectorOf(value: unknown): Vector {
+  if (Array.isArray(value) && value.length === 2 && typeof value[0] === "number" && typeof value[1] === "number") {
+    return [value[0], value[1]];
+  }
+  return [0, 0];
 }
 
 function toColorInput(value: string): string {

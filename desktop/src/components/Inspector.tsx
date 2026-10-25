@@ -1,8 +1,11 @@
-import type { Anchor, Beat, Camera, Edit, ProjectDocument, SceneObject, ThreeDMode } from "../types";
+import { Fragment } from "react";
+import { SHAPES, type Shape } from "../beatKinds";
+import { setShapeParam } from "../edits";
+import type { Anchor, Beat, Camera, Edit, ParamValue, ProjectDocument, SceneObject, ThreeDMode } from "../types";
 import { useCommitDraft } from "../useCommitDraft";
 import type { FieldError } from "../useEditor";
 import { BeatEditor } from "./BeatEditor";
-import { ColorField, CommitNumber, CommitText, DraftText } from "./fields";
+import { ColorField, CommitNumber, CommitText, DraftText, ParamField } from "./fields";
 import { FormulaPreview } from "./FormulaPreview";
 
 interface InspectorProps {
@@ -25,6 +28,8 @@ interface InspectorProps {
 
 /** What the object fields need besides their object. */
 interface FieldContext {
+  /** The scene's objects, among which a point on axes picks its axes. */
+  objects: readonly SceneObject[];
   fieldError: FieldError | null;
   texBlocked: boolean;
   onEdit: (edit: Edit) => Promise<void>;
@@ -48,7 +53,7 @@ export function Inspector({
   const selectedObject = objects.find((item) => item.id === selectedObjectId) ?? null;
   // A formula transform shows the fields of both its formulas below the editor (design §10.4).
   const formulas = beat?.action === "transform_formula" ? objects.filter((item) => beat.targets.includes(item.id)) : [];
-  const context: FieldContext = { fieldError, texBlocked, onEdit };
+  const context: FieldContext = { objects, fieldError, texBlocked, onEdit };
 
   return (
     <aside className="inspector" aria-label="Inspector" data-testid="inspector">
@@ -133,15 +138,16 @@ function TypedFields({ object, context }: { object: SceneObject; context: FieldC
       return <FormulaFields object={object} context={context} />;
     case "text":
       return <TextFields object={object} context={context} />;
-    case "three_d_axes":
-    case "surface":
-    case "parametric_curve":
     case "dot":
     case "line":
     case "arrow":
     case "circle":
     case "rectangle":
     case "axes_point":
+      return <ShapeFields object={object} shape={SHAPES[object.type]} context={context} />;
+    case "three_d_axes":
+    case "surface":
+    case "parametric_curve":
       return null;
     default: {
       const unexpected: never = object.type;
@@ -420,6 +426,82 @@ function PlacementFields({ object, onEdit }: { object: SceneObject; onEdit: (edi
   );
 }
 
+/**
+ * A shape's settings, one control per setting of its type in the catalog with the colour last (design §10.6). Each
+ * sends `set_shape_param`, and a refused value shows under its own control. A point on axes picks its axes.
+ */
+function ShapeFields({ object, shape, context }: { object: SceneObject; shape: Shape; context: FieldContext }) {
+  const { fieldError, onEdit } = context;
+  const specs = [
+    ...shape.params.filter((spec) => spec.type !== "color"),
+    ...shape.params.filter((spec) => spec.type === "color"),
+  ];
+  return (
+    <>
+      {specs.map((spec) => {
+        const commit = (value: ParamValue) => onEdit(setShapeParam(object.id, spec.name, value));
+        return (
+          <Fragment key={spec.name}>
+            {spec.type === "id" ? (
+              <AxesField
+                label={spec.label}
+                value={stringParam(object.params[spec.name], "")}
+                objects={context.objects}
+                onCommit={commit}
+              />
+            ) : (
+              <ParamField
+                spec={spec}
+                value={object.params[spec.name]}
+                testId={`shape-param-${spec.name}`}
+                onCommit={commit}
+              />
+            )}
+            <FieldMessage
+              error={fieldError}
+              objectId={object.id}
+              field="value"
+              op="set_shape_param"
+              paramKey={spec.name}
+            />
+          </Fragment>
+        );
+      })}
+    </>
+  );
+}
+
+/** The 2D axes a point sits on, by name. Its x and y are coordinates on those axes. */
+function AxesField({
+  label,
+  value,
+  objects,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  objects: readonly SceneObject[];
+  onCommit: (axesId: string) => Promise<void>;
+}) {
+  return (
+    <>
+      <label>
+        {label}
+        <select data-testid="shape-param-axesId" value={value} onChange={(event) => void onCommit(event.target.value)}>
+          {objects
+            .filter((item) => item.type === "axes")
+            .map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+        </select>
+      </label>
+      <p className="hint">x and y are coordinates on these axes.</p>
+    </>
+  );
+}
+
 /** The expression of a plot or a surface, its refusal, and the variables it may use. */
 function ExpressionField({
   object,
@@ -449,8 +531,9 @@ function ExpressionField({
 }
 
 /**
- * The refusal of an edit to `field` on `objectId`, shown under that field only (C9.3, F112). `op` and `axis` pick one
- * input out of those whose edits name the same field, such as the axes ranges and lengths.
+ * The refusal of an edit to `field` on `objectId`, shown under that field only (C9.3, F112). `op`, `axis` and
+ * `paramKey` pick one input out of those whose edits name the same field, such as the axes ranges and lengths, or the
+ * settings of a shape.
  */
 function FieldMessage({
   error,
@@ -458,18 +541,21 @@ function FieldMessage({
   field,
   op,
   axis,
+  paramKey,
 }: {
   error: FieldError | null;
   objectId: string;
   field: string;
   op?: Edit["op"];
   axis?: string;
+  paramKey?: string;
 }) {
   if (
     error?.objectId !== objectId ||
     error.field !== field ||
     (op !== undefined && error.op !== op) ||
-    (axis !== undefined && error.axis !== axis)
+    (axis !== undefined && error.axis !== axis) ||
+    (paramKey !== undefined && error.key !== paramKey)
   ) {
     return null;
   }

@@ -1,13 +1,4 @@
-import {
-  BEAT_ACTIONS,
-  EASING_NAMES,
-  EASINGS,
-  KINDS,
-  type BeatKind,
-  type Easing,
-  type ParamSpec,
-  type ParamValue,
-} from "../beatKinds";
+import { BEAT_ACTIONS, EASING_NAMES, EASINGS, KINDS, type BeatKind, type Easing } from "../beatKinds";
 import { checkTarget, kindGroups, roleCandidates, targetRows, targetsForKind } from "../beatRules";
 import {
   deleteBeat,
@@ -20,7 +11,7 @@ import {
 } from "../edits";
 import type { Beat, BeatAction, Edit, SceneKind, SceneObject } from "../types";
 import type { FieldError } from "../useEditor";
-import { ColorField, CommitNumber } from "./fields";
+import { CommitNumber, ParamField } from "./fields";
 
 interface BeatEditorProps {
   beat: Beat;
@@ -145,7 +136,13 @@ export function BeatEditor({
       {message(["set_beat_duration"])}
       {kind.params.map((spec) => (
         <div key={`${beat.action}.${spec.name}`} className="beat-param">
-          <ParamField beat={beat} spec={spec} onCommit={(value) => onEdit(setBeatParam(beat.id, spec.name, value))} />
+          <ParamField
+            spec={spec}
+            value={beat.params?.[spec.name] ?? spec.default}
+            label={DEGREES.has(`${beat.action}.${spec.name}`) ? `${spec.label} (°)` : spec.label}
+            testId={`beat-param-${spec.name}`}
+            onCommit={(value) => onEdit(setBeatParam(beat.id, spec.name, value))}
+          />
           {message(["set_beat_param"], spec.name)}
         </div>
       ))}
@@ -285,62 +282,6 @@ function RoleSelects({
   );
 }
 
-/**
- * One setting of the beat's kind: a number, an `[x, y]` vector or a colour, with its range when it has one. Every
- * kind's settings are numbers, vectors or colours; an id belongs to a shape only.
- */
-function ParamField({
-  beat,
-  spec,
-  onCommit,
-}: {
-  beat: Beat;
-  spec: ParamSpec;
-  onCommit: (value: ParamValue) => Promise<void>;
-}) {
-  const value = beat.params?.[spec.name] ?? spec.default;
-  const testId = `beat-param-${spec.name}`;
-  const hint = rangeHint(spec);
-  switch (spec.type) {
-    case "number": {
-      const label = DEGREES.has(`${beat.action}.${spec.name}`) ? `${spec.label} (°)` : spec.label;
-      return (
-        <>
-          <CommitNumber
-            label={label}
-            value={typeof value === "number" ? value : 0}
-            testId={testId}
-            onCommit={onCommit}
-          />
-          {hint !== null ? <p className="hint">{hint}</p> : null}
-        </>
-      );
-    }
-    case "vector": {
-      const [x, y] = Array.isArray(value) ? value : [0, 0];
-      return (
-        <fieldset>
-          <legend>{spec.label}</legend>
-          <CommitNumber label="x" value={x} testId={`${testId}-x`} onCommit={(next) => onCommit([next, y])} />
-          <CommitNumber label="y" value={y} testId={`${testId}-y`} onCommit={(next) => onCommit([x, next])} />
-          {hint !== null ? <p className="hint">{hint}</p> : null}
-        </fieldset>
-      );
-    }
-    case "color":
-      return (
-        <ColorField
-          label={spec.label}
-          value={typeof value === "string" ? value : "#FFFFFF"}
-          testId={testId}
-          onCommit={onCommit}
-        />
-      );
-    case "id":
-      return null;
-  }
-}
-
 /** The easing: the kind's default, named, then the kind's other easings. A wait has none. */
 function EasingSelect({
   beat,
@@ -397,15 +338,6 @@ function BeatMessage({
       {error.message}
     </p>
   );
-}
-
-/** The range a setting must be in, as the worker judges it, or null for a setting that takes any number. */
-function rangeHint(spec: ParamSpec): string | null {
-  const each = spec.type === "vector" ? "Each from" : "From";
-  if (spec.low !== null && spec.high !== null) {
-    return `${each} ${spec.low} to ${spec.high}.`;
-  }
-  return spec.positive ? "Greater than 0." : null;
 }
 
 /** What a move along a path does at its ends, which its easing decides. */

@@ -119,8 +119,23 @@ select:focus-visible,
   border: 0;
 }
 
-.menu button:hover {
+.menu button:hover:not(:disabled) {
   background: #1a3036;
+}
+
+.menu-heading {
+  display: block;
+  margin-top: 4px;
+  padding: 6px 10px 2px;
+  border-top: 1px solid #3a3a3a;
+  color: #9c978f;
+  font-size: 12px;
+}
+
+.menu-group {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .status-row {

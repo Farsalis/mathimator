@@ -1,15 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { SHAPE_TYPES, SHAPES, type ShapeType } from "../beatKinds";
 
-export type AddKind = "axes_function" | "formula" | "text" | "formula_transform" | "three_d_axes";
+/** What Add inserts after the selected beat: a template, or a shape with its entrance beat. */
+export type AddKind = "axes_function" | "formula" | "text" | "formula_transform" | "three_d_axes" | ShapeType;
 
 interface AddMenuProps {
   disabled: boolean;
+  /** The document holds 2D axes, so a point can be put on them. */
+  canAddPoint: boolean;
   onAdd: (kind: AddKind) => void;
 }
 
-export function AddMenu({ disabled, onAdd }: AddMenuProps) {
+export function AddMenu({ disabled, canAddPoint, onAdd }: AddMenuProps) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const shapesHeading = useId();
 
   useEffect(() => {
     if (!open) {
@@ -77,6 +82,31 @@ export function AddMenu({ disabled, onAdd }: AddMenuProps) {
             <button type="button" role="menuitem" data-testid="add-three-d-axes" onClick={() => choose("three_d_axes")}>
               3D axes
             </button>
+          </li>
+          <li role="none">
+            <span className="menu-heading" id={shapesHeading}>
+              Shapes
+            </span>
+            <ul className="menu-group" role="group" aria-labelledby={shapesHeading}>
+              {SHAPE_TYPES.map((type) => {
+                // A point is put on axes, so it waits for some.
+                const blocked = type === "axes_point" && !canAddPoint;
+                return (
+                  <li key={type}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-testid={`add-${type.replaceAll("_", "-")}`}
+                      disabled={blocked}
+                      title={blocked ? "Add axes first" : undefined}
+                      onClick={() => choose(type)}
+                    >
+                      {SHAPES[type].label}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           </li>
         </ul>
       ) : null}

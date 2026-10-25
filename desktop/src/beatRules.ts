@@ -220,3 +220,19 @@ export function plusBeat(
   }
   return { action: "indicate", targets: checkTarget("indicate", objects, on, [], object.id) };
 }
+
+/**
+ * The axes Add puts a point on, where `on` is on screen (design §10.6): the selected object if it is axes, else the
+ * axes of the selected plot or point, else the first axes on screen there, else the first axes in the document; null
+ * when the document holds no 2D axes.
+ */
+export function pointAxesId(
+  objects: readonly SceneObject[],
+  on: readonly string[],
+  selectedId: string | null,
+): string | null {
+  const axes = objects.filter((object) => object.type === "axes").map((object) => object.id);
+  const selected = objects.find((object) => object.id === selectedId);
+  const preferred = [selected?.id, selected ? axesIdOf(selected) : null, ...on];
+  return preferred.find((id) => typeof id === "string" && axes.includes(id)) ?? axes[0] ?? null;
+}

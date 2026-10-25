@@ -10,6 +10,7 @@ import {
   kindGroups,
   leavesWithAxes,
   plusBeat,
+  pointAxesId,
   roleCandidates,
   targetRows,
   targetsForKind,
@@ -316,5 +317,37 @@ describe("+ Beat (design §10.3)", () => {
     expect(insertionIndex(beats, "beat_2")).toBe(2);
     expect(insertionIndex(beats, null)).toBe(2);
     expect(insertionIndex(beats, "beat_9")).toBe(2);
+  });
+});
+
+describe("Add's point on axes (design §10.6)", () => {
+  /** Two axes, each with a plot; the second also has a point, and a 3D surface names its own axes. */
+  const GRAPHS: SceneObject[] = [
+    { id: "text_1", name: "Caption", type: "text", params: {} },
+    { id: "axes_1", name: "Axes", type: "axes", params: {} },
+    { id: "plot_1", name: "Sine", type: "function_plot", params: { axesId: "axes_1" } },
+    { id: "axes_2", name: "Axes 2", type: "axes", params: {} },
+    { id: "plot_2", name: "Cosine", type: "function_plot", params: { axesId: "axes_2" } },
+    { id: "point_1", name: "Point", type: "axes_point", params: { axesId: "axes_2" } },
+  ];
+
+  it.each([
+    ["the selected axes", "axes_1", ["axes_2"], "axes_1"],
+    ["the axes of the selected plot", "plot_2", ["axes_1"], "axes_2"],
+    ["the axes of the selected point", "point_1", ["axes_1"], "axes_2"],
+    ["the first axes on screen with another object selected", "text_1", ["text_1", "axes_2", "plot_2"], "axes_2"],
+    ["the first axes on screen with nothing selected", null, ["axes_2"], "axes_2"],
+    ["the first axes in the document with none on screen", null, ["text_1"], "axes_1"],
+  ] as const)("puts the point on %s", (_, selectedId, on, axesId) => {
+    expect(pointAxesId(GRAPHS, on, selectedId)).toBe(axesId);
+  });
+
+  it("puts no point on 3D axes, and none at all without 2D axes", () => {
+    const space: SceneObject[] = [
+      { id: "axes3d_1", name: "3D axes", type: "three_d_axes", params: {} },
+      { id: "surface_1", name: "Surface", type: "surface", params: { axesId: "axes3d_1" } },
+    ];
+    expect(pointAxesId(space, ["axes3d_1", "surface_1"], "surface_1")).toBeNull();
+    expect(pointAxesId([...space, ...GRAPHS], ["axes3d_1"], "axes3d_1")).toBe("axes_1");
   });
 });

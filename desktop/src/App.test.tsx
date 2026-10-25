@@ -103,6 +103,39 @@ function beatsReply(
 }
 
 const CIRCLE_PARAMS = { center: [0, 0], radius: 1, color: "#58C4DD", strokeWidth: 4, fillOpacity: 0 };
+
+/** Two axes created one after the other, then a plot on the second; nothing else is on screen. */
+function graphsReply() {
+  const reply = stateReply();
+  const axes = { showLabels: false, xRange: [-3, 3, 1], yRange: [-2, 2, 1], xLength: 6, yLength: 4, color: "#FFFFFF" };
+  return {
+    ...reply,
+    document: {
+      ...reply.document,
+      scene: {
+        ...reply.document.scene,
+        objects: [
+          { id: "axes_1", name: "Axes", type: "axes", params: axes },
+          { id: "axes_2", name: "Axes 2", type: "axes", params: axes },
+          { id: "plot_1", name: "Cosine", type: "function_plot", params: { axesId: "axes_2", expression: "cos(x)" } },
+        ],
+        beats: [
+          { id: "beat_1", duration: 2, action: "create", targets: ["axes_1"] },
+          { id: "beat_2", duration: 2, action: "create", targets: ["axes_2"] },
+          { id: "beat_3", duration: 2, action: "create", targets: ["plot_1"] },
+        ],
+      },
+    },
+    derived: {
+      starts: [0, 2, 4],
+      total: 6,
+      dirty: [true, true, true],
+      canUndo: false,
+      canRedo: false,
+      onScreen: [[], ["axes_1"], ["axes_1", "axes_2"], ["axes_1", "axes_2", "plot_1"]],
+    },
+  };
+}
 const WRITE = { id: "beat_1", duration: 2, action: "write", targets: ["text_1"] };
 const CREATE = { id: "beat_2", duration: 2, action: "create", targets: ["circle_1"] };
 const BOTH_ON = ["text_1", "circle_1"];
@@ -411,6 +444,38 @@ describe("App", () => {
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("edit_document", {
         edit: { op: "add_beat", afterBeatId: "beat_1", action: "create", targets: ["circle_1"] },
+      }),
+    );
+  });
+
+  it("adds a shape after the selected beat, and offers no point on axes without axes (design §10.6)", async () => {
+    script({
+      app_status: [READY],
+      get_state: [beatsReply([WRITE, CREATE], [[], ["text_1"], BOTH_ON])],
+      edit_document: [new Promise(() => undefined)],
+    });
+    await renderReady();
+    fireEvent.click(within(screen.getByTestId("beat-beat_1")).getByRole("button", { name: /Write · Caption/ }));
+    fireEvent.click(control("add-button"));
+    expect(control("add-axes-point").disabled).toBe(true);
+    fireEvent.click(control("add-dot"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("edit_document", {
+        edit: { op: "add_shape", kind: "dot", afterBeatId: "beat_1" },
+      }),
+    );
+  });
+
+  it("puts a point added from Add on the axes of the selected plot (design §10.6)", async () => {
+    script({ app_status: [READY], get_state: [graphsReply()], edit_document: [new Promise(() => undefined)] });
+    await renderReady();
+    // The plot's axes are not the first axes on screen, nor the first in the document.
+    fireEvent.click(within(screen.getByTestId("beat-beat_3")).getByRole("button", { name: /Create · Cosine/ }));
+    fireEvent.click(control("add-button"));
+    fireEvent.click(control("add-axes-point"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("edit_document", {
+        edit: { op: "add_shape", kind: "axes_point", afterBeatId: "beat_3", axesId: "axes_2" },
       }),
     );
   });
