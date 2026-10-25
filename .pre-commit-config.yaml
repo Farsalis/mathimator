@@ -1,0 +1,102 @@
+# Local git hooks that mirror the CI lint and format jobs. Install them with
+# `pre-commit install`; `pre-commit run --all-files` checks the whole tree.
+#
+# scenes/ and tests/fixtures/ hold golden output that tests compare byte for
+# byte, packaging/bundle/ is a build product, and the lockfiles are written by
+# uv, npm and cargo, so no hook reads or rewrites any of them.
+exclude: ^(scenes/|tests/fixtures/|packaging/bundle/|uv\.lock$|desktop/package-lock\.json$|desktop/src-tauri/Cargo\.lock$)
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Keep Markdown hard line breaks (.editorconfig leaves *.md alone).
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+        # A syntax check, because the GitLab CI files use the !reference tag.
+        # ci/test_pipeline.py loads them in full.
+        args: [--unsafe]
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        # .gitattributes keeps Windows batch files in CRLF.
+        exclude: \.(bat|cmd)$
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+
+  # Keep the rev equal to the ruff pin in the dev dependency group.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.2
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # mypy reads its files and its win32 platform from pyproject.toml; the second
+  # pass checks the POSIX branches, as CI does. The worker and scripts/ are
+  # stdlib-only, but the scripts' tests import pytest, so the isolated hook
+  # environment needs mypy and pytest. Keep both pins equal to the dev
+  # dependency group's (ci/test_pipeline.py checks them).
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy --strict (win32)
+        entry: mypy
+        language: python
+        additional_dependencies: [mypy==2.4.0, pytest==9.1.1]
+        files: ^(worker/|scripts/|pyproject\.toml$)
+        pass_filenames: false
+      - id: mypy-linux
+        name: mypy --strict (linux)
+        entry: mypy
+        args: [--platform, linux]
+        language: python
+        additional_dependencies: [mypy==2.4.0, pytest==9.1.1]
+        files: ^(worker/|scripts/|pyproject\.toml$)
+        pass_filenames: false
+
+  # Scans the staged changes for secrets at commit time.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks
+
+  # These run the desktop's own tools, so `npm ci` in desktop/ and the pinned
+  # Rust toolchain must be installed first.
+  - repo: local
+    hooks:
+      - id: prettier
+        name: prettier --check (desktop)
+        entry: npm --prefix desktop run format:check
+        language: system
+        files: ^desktop/
+        pass_filenames: false
+      # ESLint's type-aware rules and tsc also read the tsconfig files, and
+      # package.json pins the plugin and compiler versions.
+      - id: eslint
+        name: eslint (desktop)
+        entry: npm --prefix desktop run lint
+        language: system
+        files: ^desktop/(.*\.(js|jsx|mjs|cjs|ts|tsx)|tsconfig.*\.json|package\.json)$
+        pass_filenames: false
+      - id: tsc
+        name: tsc --noEmit (desktop)
+        entry: npm --prefix desktop run typecheck
+        language: system
+        files: ^desktop/(.*\.(js|jsx|mjs|cjs|ts|tsx)|tsconfig.*\.json|package\.json)$
+        pass_filenames: false
+      - id: cargo-fmt
+        name: cargo fmt --check (desktop/src-tauri)
+        # rustup picks the toolchain from the working directory, so run cargo
+        # inside desktop/src-tauri to use its rust-toolchain.toml. Python sets
+        # the directory because `bash` from PowerShell or cmd can be the WSL
+        # launcher in System32.
+        entry: python -c "import subprocess, sys; sys.exit(subprocess.call(['cargo', 'fmt', '--check'], cwd='desktop/src-tauri'))"
+        language: python
+        files: ^desktop/src-tauri/
+        types_or: [rust, toml]
+        pass_filenames: false

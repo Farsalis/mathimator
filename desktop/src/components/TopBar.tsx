@@ -1,15 +1,20 @@
-import { useEffect, useState } from "react";
+import { useCommitDraft } from "../useCommitDraft";
 import { AddMenu, type AddKind } from "./AddMenu";
 
 interface TopBarProps {
   name: string;
+  /** The bound project folder (D29). */
+  projectPath: string | null;
   ready: boolean;
   canUndo: boolean;
   canRedo: boolean;
-  canExport: boolean;
-  exportLabel: string;
-  onRename: (name: string) => void;
+  /** An export runs: the Export button says so, and New, Open, Save As and Sample are disabled (D22, C7.6). */
+  exporting: boolean;
+  /** Renames the project. The promise settles once the rename was applied or refused. */
+  onRename: (name: string) => Promise<void>;
+  onNew: () => void;
   onOpen: () => void;
+  onSaveAs: () => void;
   onAdd: (kind: AddKind) => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -22,13 +27,15 @@ interface TopBarProps {
 
 export function TopBar({
   name,
+  projectPath,
   ready,
   canUndo,
   canRedo,
-  canExport,
-  exportLabel,
+  exporting,
   onRename,
+  onNew,
   onOpen,
+  onSaveAs,
   onAdd,
   onUndo,
   onRedo,
@@ -38,17 +45,14 @@ export function TopBar({
   onOpenSample,
   onClearCache,
 }: TopBarProps) {
-  const [draft, setDraft] = useState(name);
-  useEffect(() => {
-    setDraft(name);
-  }, [name]);
+  const draft = useCommitDraft(name);
 
   function commitName(): void {
-    const next = draft.trim();
+    const next = draft.text.trim();
     if (next !== "" && next !== name) {
-      onRename(next);
+      draft.commit(onRename(next));
     } else {
-      setDraft(name);
+      draft.revert();
     }
   }
 
@@ -58,9 +62,9 @@ export function TopBar({
         className="project-name"
         data-testid="project-name"
         aria-label="Project name"
-        value={draft}
+        value={draft.text}
         disabled={!ready}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => draft.change(event.target.value)}
         onBlur={commitName}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
@@ -68,9 +72,20 @@ export function TopBar({
           }
         }}
       />
+      {projectPath ? (
+        <span className="project-path" data-testid="project-path" title={projectPath}>
+          {projectPath}
+        </span>
+      ) : null}
       <div className="top-actions">
-        <button type="button" data-testid="open-button" onClick={onOpen} disabled={!ready}>
+        <button type="button" data-testid="new-button" onClick={onNew} disabled={!ready || exporting}>
+          New
+        </button>
+        <button type="button" data-testid="open-button" onClick={onOpen} disabled={!ready || exporting}>
           Open
+        </button>
+        <button type="button" data-testid="save-as-button" onClick={onSaveAs} disabled={!ready || exporting}>
+          Save As…
         </button>
         <AddMenu disabled={!ready} onAdd={onAdd} />
         <button type="button" data-testid="undo-button" onClick={onUndo} disabled={!ready || !canUndo}>
@@ -79,13 +94,8 @@ export function TopBar({
         <button type="button" data-testid="redo-button" onClick={onRedo} disabled={!ready || !canRedo}>
           Redo
         </button>
-        <button
-          type="button"
-          data-testid="export-button"
-          onClick={onExport}
-          disabled={!ready || !canExport}
-        >
-          {exportLabel}
+        <button type="button" data-testid="export-button" onClick={onExport} disabled={!ready}>
+          {exporting ? "Rendering export" : "Export"}
         </button>
         <button type="button" data-testid="view-code-button" onClick={onViewCode} disabled={!ready}>
           View code
@@ -93,7 +103,7 @@ export function TopBar({
         <button type="button" data-testid="notices-button" onClick={onNotices}>
           Notices
         </button>
-        <button type="button" data-testid="sample-button" onClick={onOpenSample} disabled={!ready}>
+        <button type="button" data-testid="sample-button" onClick={onOpenSample} disabled={!ready || exporting}>
           Sample
         </button>
         <button type="button" data-testid="clear-cache-button" onClick={onClearCache} disabled={!ready}>

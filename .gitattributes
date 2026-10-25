@@ -1,0 +1,28 @@
+# Normalize text to LF in the repository and in every working tree, so the
+# byte-exact fixture and golden comparisons hold on Windows clones with
+# core.autocrlf=true.
+* text=auto eol=lf
+
+# Windows batch files need CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets.
+*.png binary
+*.ico binary
+*.icns binary
+*.jpg binary
+*.gif binary
+*.mp4 binary
+*.webm binary
+*.svg text
+*.exe binary
+*.dll binary
+*.zip binary
+*.7z binary
+*.pdf binary
+
+# Lockfiles are generated; collapse them in GitLab merge request diffs.
+desktop/package-lock.json gitlab-generated
+desktop/src-tauri/Cargo.lock gitlab-generated
+uv.lock gitlab-generated

@@ -10,6 +10,8 @@ interface TimelineProps {
   selectedBeatId: string | null;
   playhead: number;
   total: number;
+  /** The worker is not ready, so durations cannot be changed (C9.5). */
+  disabled: boolean;
   onSelect: (beatId: string) => void;
   onDraft: (beatId: string, duration: number) => void;
   onCommit: (beatId: string, duration: number) => void;
@@ -23,6 +25,7 @@ export function Timeline({
   selectedBeatId,
   playhead,
   total,
+  disabled,
   onSelect,
   onDraft,
   onCommit,
@@ -42,7 +45,11 @@ export function Timeline({
               start={starts[index] ?? 0}
               dirty={dirty[index] === true}
               selected={beat.id === selectedBeatId}
-              active={playhead >= (starts[index] ?? 0) && (index === beats.length - 1 || playhead < (starts[index + 1] ?? total))}
+              active={
+                playhead >= (starts[index] ?? 0) &&
+                (index === beats.length - 1 || playhead < (starts[index + 1] ?? total))
+              }
+              disabled={disabled}
               onSelect={onSelect}
               onDraft={onDraft}
               onCommit={onCommit}
@@ -62,6 +69,7 @@ function BeatCell({
   dirty,
   selected,
   active,
+  disabled,
   onSelect,
   onDraft,
   onCommit,
@@ -73,11 +81,30 @@ function BeatCell({
   dirty: boolean;
   selected: boolean;
   active: boolean;
+  disabled: boolean;
   onSelect: (beatId: string) => void;
   onDraft: (beatId: string, duration: number) => void;
   onCommit: (beatId: string, duration: number) => void;
 }) {
-  const drag = useRef<{ startX: number; startDuration: number } | null>(null);
+  const drag = useRef<{ pointerId: number; startX: number; startDuration: number } | null>(null);
+
+  /** The drag of `pointerId`, or null for any other pointer, such as a second finger. */
+  function dragOf(pointerId: number): { startX: number; startDuration: number } | null {
+    return drag.current?.pointerId === pointerId ? drag.current : null;
+  }
+
+  /**
+   * A drag that ends without a release, for example when the browser takes it over, goes back to the duration it
+   * started from: committing that value only drops the draft (D48, F110).
+   */
+  function cancelDrag(pointerId: number): void {
+    const current = dragOf(pointerId);
+    if (!current) {
+      return;
+    }
+    drag.current = null;
+    onCommit(beat.id, current.startDuration);
+  }
 
   return (
     <li
@@ -94,13 +121,18 @@ function BeatCell({
         type="button"
         className="duration-handle"
         aria-label={`Duration of ${beat.id}`}
+        disabled={disabled}
         onPointerDown={(event) => {
           event.stopPropagation();
+          if (drag.current) {
+            // A second pointer does not take over the drag in progress.
+            return;
+          }
           event.currentTarget.setPointerCapture(event.pointerId);
-          drag.current = { startX: event.clientX, startDuration: duration };
+          drag.current = { pointerId: event.pointerId, startX: event.clientX, startDuration: duration };
         }}
         onPointerMove={(event) => {
-          const current = drag.current;
+          const current = dragOf(event.pointerId);
           if (!current) {
             return;
           }
@@ -108,7 +140,7 @@ function BeatCell({
           onDraft(beat.id, next);
         }}
         onPointerUp={(event) => {
-          const current = drag.current;
+          const current = dragOf(event.pointerId);
           if (!current) {
             return;
           }
@@ -116,6 +148,8 @@ function BeatCell({
           const next = clampDuration(beats, beat.id, current.startDuration + (event.clientX - current.startX) / 48);
           onCommit(beat.id, next);
         }}
+        onPointerCancel={(event) => cancelDrag(event.pointerId)}
+        onLostPointerCapture={(event) => cancelDrag(event.pointerId)}
       >
         {formatSeconds(duration)}
       </button>

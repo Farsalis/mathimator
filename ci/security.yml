@@ -1,0 +1,90 @@
+# Security scanning (D77) on the Free tier (D66). GitLab SAST and Secret
+# Detection report their findings as job artifacts. The dependency audits fail
+# the pipeline on a known vulnerability in what the installer ships or CI runs.
+#
+# Each audit runs in a merge request that changes its lockfile or policy, and
+# on every tag, so no release ships a dependency with a known advisory. There
+# is no nightly pipeline (O2): an advisory against an unchanged lockfile shows
+# at the next change to that lockfile, or at the next tag.
+
+include:
+  - template: Jobs/SAST.gitlab-ci.yml
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+
+variables:
+  # A branch with an open merge request gets only the merge request pipeline,
+  # so the scanners have to run there.
+  AST_ENABLE_MR_PIPELINES: "true"
+
+# The whole of uv.lock: the render stack the installer ships and the dev
+# tools. The export lifts the job's UV_NO_GROUP so it includes the render
+# group; pip-audit then checks the pinned, hashed requirements as they are.
+audit:python:
+  extends: .uv
+  stage: test
+  rules:
+    - if: $SCHEDULE_KIND == "renovate"
+      when: never
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - uv.lock
+        - pyproject.toml
+        - ci/security.yml
+        - ci/linux.yml
+        - .gitlab-ci.yml
+  script:
+    - UV_NO_GROUP= uv export --all-groups --no-emit-workspace --output-file reports/audit-requirements.txt
+    - uv run pip-audit --requirement reports/audit-requirements.txt --disable-pip
+
+# The runtime packages the UI bundles.
+audit:npm:
+  extends: .node
+  stage: test
+  rules:
+    - if: $SCHEDULE_KIND == "renovate"
+      when: never
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - desktop/package-lock.json
+        - desktop/package.json
+        - ci/security.yml
+        - ci/linux.yml
+        - .gitlab-ci.yml
+  before_script:
+    - cd desktop
+  script:
+    - npm audit --omit=dev
+
+# Advisories, licences and sources of the shell's crates (ci/deny.toml).
+audit:rust:
+  extends: .rust
+  stage: test
+  needs: []
+  rules:
+    - if: $SCHEDULE_KIND == "renovate"
+      when: never
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - desktop/src-tauri/Cargo.lock
+        - desktop/src-tauri/Cargo.toml
+        - ci/deny.toml
+        - ci/security.yml
+        - ci/linux.yml
+        - .gitlab-ci.yml
+  variables:
+    # renovate: datasource=crate depName=cargo-deny
+    CARGO_DENY_VERSION: 0.19.0
+  cache:
+    - !reference [.rust, cache]
+    - key: cargo-deny-$CARGO_DENY_VERSION
+      paths: [.cargo/bin, .cargo/.crates.toml, .cargo/.crates2.json]
+  before_script: []
+  script:
+    - cargo install --locked cargo-deny --version "$CARGO_DENY_VERSION"
+    # cargo-deny resolves --config against the manifest's directory, so run it
+    # from there and name the policy relative to it.
+    - cd desktop/src-tauri
+    - cargo deny check --config ../../ci/deny.toml

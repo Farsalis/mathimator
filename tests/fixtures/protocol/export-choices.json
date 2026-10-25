@@ -1,0 +1,11 @@
+{
+  "formats": ["mp4", "gif", "webm", "png_sequence"],
+  "sizes": [[854, 480], [1280, 720], [1920, 1080]],
+  "fps": [15, 30, 60],
+  "minBeatSeconds": 0.1,
+  "maxTotalSeconds": 120,
+  "opaqueReasons": {
+    "mp4": "MP4 cannot store transparency.",
+    "gif": "GIF cannot store an alpha channel."
+  }
+}

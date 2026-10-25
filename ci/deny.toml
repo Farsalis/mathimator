@@ -1,0 +1,25 @@
+# cargo-deny policy for the shell's crates (D77), checked by audit:rust in
+# ci/security.yml:
+#
+#   cargo deny --manifest-path desktop/src-tauri/Cargo.toml check --config ci/deny.toml
+#
+# Only the Windows installer ships (D47), so the policy covers the crates
+# linked for Windows, the same ones scripts/generate_notices.py lists.
+
+[graph]
+targets = ["x86_64-pc-windows-msvc"]
+exclude-dev = true
+
+[advisories]
+# Unmaintained crates deep in Tauri's tree are Tauri's to replace, so only a
+# direct dependency fails the check. Every vulnerability fails it.
+unmaintained = "workspace"
+
+[licenses]
+# The licences the shipped crates use today. A crate under any other licence
+# fails the check until it is reviewed and allowed here.
+allow = ["Apache-2.0", "BSD-3-Clause", "MIT", "MPL-2.0", "Unicode-3.0", "Zlib"]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

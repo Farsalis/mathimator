@@ -1,5 +1,7 @@
 # Phase 1 report — walking skeleton
 
+> Historical record. Where it differs from the current branch, [design-spec.md](design-spec.md) describes the current behaviour, and section 8 of [architecture-audit-report.md](architecture-audit-report.md) the remediation status.
+
 Date: 21 October 2026.
 
 Phase 1 gate only. Phase 2 was not started. No pull request was opened.

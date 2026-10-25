@@ -1,5 +1,7 @@
 # Phase 5 report — presets and the Windows installer
 
+> Historical record. Where it differs from the current branch, [design-spec.md](design-spec.md) describes the current behaviour, and section 8 of [architecture-audit-report.md](architecture-audit-report.md) the remediation status.
+
 Date: 21 October 2026.
 
 Phase 5 only. Nothing in section 9 was started. No pull request was opened. `docs/design-spec.md` was not revised.

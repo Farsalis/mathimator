@@ -1,16 +1,19 @@
 """Translate the supported LaTeX subset into a Typst math document.
 
-The shell runs ``python -m mathimator_worker.equation`` and then Typst.
 This module does not import the supervisor, and it does not render a scene.
+``tests/fixtures/equation/translate-cases.json`` holds the expected output
+for every case, so a port of this translator can be checked against it.
 """
 
 from __future__ import annotations
 
-import json
-import sys
+import string
 from dataclasses import dataclass
 
 _PAGE = "#set page(width: auto, height: auto, margin: 8pt, fill: none)"
+# \frac and \sqrt groups nested deeper than this are unsupported, as in the
+# shell's translator. The bound keeps the recursion inside Python's limit.
+MAX_DEPTH = 100
 
 _COMMANDS = {
     "sin": "sin",
@@ -25,9 +28,8 @@ _COMMANDS = {
     "gamma": "gamma",
 }
 
-_PASSTHROUGH = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789^_+-=()[]"
-)
+_ALNUM = frozenset(string.ascii_letters + string.digits)
+_PASSTHROUGH = _ALNUM | frozenset("^_+-=()[]")
 _WHITESPACE = frozenset(" \t\r\n")
 
 
@@ -62,13 +64,23 @@ class _Parser:
         self.source = source
         self.length = len(source)
         self.index = 0
+        self.depth = 0
 
     def parse(self) -> str | None:
+        return self._sequence(None)
+
+    def _sequence(self, closing: str | None) -> str | None:
+        """Translate pieces up to ``closing``, or to the end when it is None."""
         parts: list[str] = []
-        while self.index < self.length:
+        while self.index < self.length and self.source[self.index] != closing:
             piece = self._piece()
             if piece is None:
                 return None
+            # Typst reads a run such as mc or x2 as one name. A space keeps
+            # each letter, digit and command its own atom, as in LaTeX:
+            # mc^2 becomes m c^2.
+            if parts and parts[-1][-1] in _ALNUM and piece[0] in _ALNUM:
+                parts.append(" ")
             parts.append(piece)
         return "".join(parts)
 
@@ -79,7 +91,7 @@ class _Parser:
             self.index += 1
             while self.index < self.length and self.source[self.index] in _WHITESPACE:
                 self.index += 1
-            return self.source[start:self.index]
+            return self.source[start : self.index]
         if char == "\\":
             return self._command()
         if char in _PASSTHROUGH:
@@ -94,7 +106,7 @@ class _Parser:
         start = self.index
         while self.index < self.length and _is_command_letter(self.source[self.index]):
             self.index += 1
-        name = self.source[start:self.index]
+        name = self.source[start : self.index]
         mapped = _COMMANDS.get(name)
         if mapped is not None:
             return mapped
@@ -114,47 +126,17 @@ class _Parser:
         return None
 
     def _group(self) -> str | None:
-        if self.index >= self.length or self.source[self.index] != "{":
+        if self.index >= self.length or self.source[self.index] != "{" or self.depth == MAX_DEPTH:
             return None
         self.index += 1
-        parts: list[str] = []
-        while self.index < self.length and self.source[self.index] != "}":
-            piece = self._piece()
-            if piece is None:
-                return None
-            parts.append(piece)
-        if self.index >= self.length or self.source[self.index] != "}":
+        self.depth += 1
+        body = self._sequence("}")
+        self.depth -= 1
+        if body is None or self.index >= self.length:
             return None
         self.index += 1
-        return "".join(parts)
+        return body
 
 
 def _is_command_letter(char: str) -> bool:
     return char.isascii() and char.isalpha()
-
-
-def main() -> int:
-    """Read one JSON object ``{"latex": "..."}`` and write the translation."""
-    raw = sys.stdin.read()
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        sys.stderr.write("equation translator expected a JSON object\n")
-        return 2
-    if not isinstance(payload, dict):
-        sys.stderr.write("equation translator expected a JSON object\n")
-        return 2
-    latex = payload.get("latex")
-    if not isinstance(latex, str):
-        sys.stderr.write("equation translator expected a latex string\n")
-        return 2
-    result = translate(latex)
-    if not result.supported or result.document is None:
-        sys.stdout.write(json.dumps({"supported": False}) + "\n")
-        return 0
-    sys.stdout.write(json.dumps({"supported": True, "document": result.document}) + "\n")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

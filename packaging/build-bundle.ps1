@@ -1,20 +1,25 @@
 # Build the phase 5 offline runtime under packaging/bundle/ on Windows.
 #
 # The product installer is the Windows NSIS bundle described in
-# desktop/src-tauri/tauri.windows.conf.json. This script prepares the runtime
-# that installer embeds: a uv virtualenv, preseeded TinyTeX, Typst 0.15.0,
-# the worker package, and the reference-60 sample. It does not build the
-# NSIS installer and it does not sign anything.
+# desktop/src-tauri/tauri.windows.conf.json, which ships packaging/bundle as
+# runtime/. This script prepares that runtime: a relocatable CPython with the
+# Manim render stack from uv.lock installed into it, preseeded TinyTeX, Typst,
+# the worker package, the reference-60 sample, and runtime.json. It does not
+# build the NSIS installer and it does not sign anything.
 #
-# Python selection matches packaging/build-bundle.sh: CPython 3.14.9 when uv
-# publishes it, otherwise the newest CPython 3.14 uv publishes for this
-# platform, then CPython 3.13.17 if manim[typst]==0.22.0 has no wheel.
-# The Manim pin does not change.
+# packaging/versions.env pins uv, CPython, TinyTeX, the TeX Live snapshot and
+# Typst, with a SHA-256 for every download. The interpreter is PYTHON_VERSION,
+# or PYTHON_FALLBACK_VERSION only when a locked package has no wheel for it.
+# runtime.json is written last, after the bundle has passed its checks.
+# `tauri build` then runs scripts/generate_notices.py, which writes
+# THIRD_PARTY_NOTICES.txt, and scripts/check_bundle.py, which checks the
+# finished bundle, before it makes the installer (beforeBundleCommand).
 #
 # Windows assets:
-#   TinyTeX-1-windows-v2026.10.exe
+#   uv-x86_64-pc-windows-msvc.zip
+#   TinyTeX-1-windows-v<TINYTEX_VERSION>.exe
 #   typst-x86_64-pc-windows-msvc.zip
-#   uv venv python at venv/Scripts/python.exe
+#   python-build-standalone CPython at python/python.exe
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -31,35 +36,26 @@ function Write-Log([string]$Message) {
     Write-Host $line
 }
 
-function Get-Uv {
-    # A uv already on PATH can be too old to list current python-build-standalone
-    # releases. uv 0.10.9 reported that 3.14.9 did not exist and selected 3.14.3.
-    # uv 0.13.5 lists cpython-3.14.9-windows-x86_64-none. Always use a copy
-    # downloaded from the latest GitHub release into the cache.
-    $cached = Join-Path $Cache "uv\uv.exe"
-    if (Test-Path $cached) {
-        return $cached
+function Read-Pins([string]$Path) {
+    $pins = @{}
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        if ($line -match "^([A-Z0-9_]+)=(.*)$") {
+            $pins[$Matches[1]] = $Matches[2]
+        }
     }
-    $zip = Join-Path $Cache "uv-x86_64-pc-windows-msvc.zip"
-    $url = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
-    Write-Log "downloading the current uv release"
-    if (Test-Path $zip) { Remove-Item -Force $zip }
-    Download-File $url $zip
-    $stage = Join-Path $Cache "uv-stage"
-    if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-    Expand-Archive -Path $zip -DestinationPath $stage -Force
-    New-Item -ItemType Directory -Force -Path (Split-Path $cached) | Out-Null
-    $found = Get-ChildItem -Path $stage -Filter uv.exe -Recurse | Select-Object -First 1
-    if (-not $found) {
-        throw "uv.exe was not in $zip"
-    }
-    Copy-Item $found.FullName $cached -Force
-    return $cached
+    return $pins
 }
 
-function Download-File([string]$Url, [string]$Destination) {
+function Download-File([string]$Url, [string]$Destination, [string]$Sha256) {
+    if ([string]::IsNullOrEmpty($Sha256)) {
+        throw "packaging\versions.env pins no SHA-256 for $Url"
+    }
     if (Test-Path $Destination) {
-        return
+        if ((Get-FileHash -Algorithm SHA256 $Destination).Hash -eq $Sha256) {
+            return
+        }
+        Write-Log "cached $Destination does not match its pinned SHA-256; downloading it again"
+        Remove-Item -Force $Destination
     }
     $partial = "$Destination.partial"
     if (Test-Path $partial) { Remove-Item -Force $partial }
@@ -67,8 +63,17 @@ function Download-File([string]$Url, [string]$Destination) {
     if ($LASTEXITCODE -ne 0) {
         throw "download failed: $Url"
     }
+    $actual = (Get-FileHash -Algorithm SHA256 $partial).Hash
+    if ($actual -ne $Sha256) {
+        Remove-Item -Force $partial
+        throw "SHA-256 of $Url is $actual, not the pinned $Sha256"
+    }
     Move-Item -Force $partial $Destination
-    Unblock-File -Path $Destination
+}
+
+function Expand-Fresh([string]$Archive, [string]$Destination) {
+    if (Test-Path $Destination) { Remove-Item -Recurse -Force $Destination }
+    Expand-Archive -Path $Archive -DestinationPath $Destination -Force
 }
 
 function Invoke-Checked([string]$File, [string[]]$CommandArgs) {
@@ -79,13 +84,39 @@ function Invoke-Checked([string]$File, [string[]]$CommandArgs) {
     }
 }
 
-$TinytexVersion = "2026.10"
+# Returns the exit code and leaves stdout and stderr in $script:LastOutput.
+function Invoke-Captured([string]$File, [string[]]$CommandArgs) {
+    Write-Log ("run {0} {1}" -f $File, ($CommandArgs -join " "))
+    # Stop turns native stderr, once merged with 2>&1, into a terminating error.
+    $previousAction = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $File @CommandArgs 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousAction
+    }
+    $text = @($output | ForEach-Object { "$_" })
+    $script:LastOutput = ($text -join "`n")
+    $text | ForEach-Object { Write-Host $_ }
+    return $code
+}
+
+$Pins = Read-Pins (Join-Path $PSScriptRoot "versions.env")
+$UvVersion = $Pins.UV_VERSION
+$PythonVersion = $Pins.PYTHON_VERSION
+$PythonFallbackVersion = $Pins.PYTHON_FALLBACK_VERSION
+$TinytexVersion = $Pins.TINYTEX_VERSION
 $TinytexArchive = "TinyTeX-1-windows-v$TinytexVersion.exe"
 $TinytexUrl = "https://github.com/rstudio/tinytex-releases/releases/download/v$TinytexVersion/$TinytexArchive"
-$TypstVersion = "0.15.0"
-$TypstArchive = "typst-x86_64-pc-windows-msvc.zip"
-$TypstUrl = "https://github.com/typst/typst/releases/download/v$TypstVersion/$TypstArchive"
-$ManimSpec = "manim[typst]==0.22.0"
+$TlnetRepository = $Pins.TLNET_REPOSITORY
+$TypstVersion = $Pins.TYPST_VERSION
+$TypstArchive = "typst-$TypstVersion-x86_64-pc-windows-msvc.zip"
+$TypstUrl = "https://github.com/typst/typst/releases/download/v$TypstVersion/typst-x86_64-pc-windows-msvc.zip"
+# Where tlmgr points once the bundle is built. The .invalid domain never
+# resolves (RFC 6761), so tlmgr cannot download, and unlike an empty local
+# folder it records no build path.
+$DisabledRepository = "https://offline.invalid/tlnet"
 $Packages = @(
     "standalone",
     "preview",
@@ -97,93 +128,106 @@ $Packages = @(
 )
 
 Write-Log "bundle destination $Dest"
+# Neither may survive from an older build: runtime.json is written last, and
+# the notices describe the finished bundle.
+$Manifest = Join-Path $Dest "runtime.json"
+foreach ($stale in @($Manifest, (Join-Path $Dest "THIRD_PARTY_NOTICES.txt"))) {
+    if (Test-Path $stale) { Remove-Item -Force $stale }
+}
+
+function Get-Uv {
+    # The uv release decides which CPython builds exist (uv 0.10.9 did not list
+    # 3.14.9) and resolves the lock, so a uv on PATH is never used. The cached
+    # binary is extracted again from the checked archive on every run.
+    $zip = Join-Path $Cache "uv-$UvVersion-x86_64-pc-windows-msvc.zip"
+    $url = "https://github.com/astral-sh/uv/releases/download/$UvVersion/uv-x86_64-pc-windows-msvc.zip"
+    Download-File $url $zip $Pins.UV_WINDOWS_SHA256
+    $dir = Join-Path $Cache "uv-$UvVersion"
+    Expand-Fresh $zip $dir
+    $uv = Join-Path $dir "uv.exe"
+    if (-not (Test-Path $uv)) {
+        throw "uv.exe was not in $zip"
+    }
+    $uvLine = (& $uv --version | Select-Object -First 1)
+    if ($uvLine -notmatch "^uv $([regex]::Escape($UvVersion))(\s|$)") {
+        throw "$zip holds $uvLine, not uv $UvVersion"
+    }
+    return $uv
+}
+
 $Uv = Get-Uv
 Write-Log "uv $Uv"
-& $Uv --version
 
-function Select-Python([string]$UvExe) {
-    $requested = "3.14.9"
-    & $UvExe python install $requested
-    if ($LASTEXITCODE -eq 0) {
-        return @{ Version = $requested; Reason = "uv published $requested" }
+$LockFile = Join-Path $Root "uv.lock"
+$Requirements = Join-Path $Cache "render-requirements.txt"
+$BuildConstraints = Join-Path $Cache "render-build-constraints.txt"
+$PythonCache = Join-Path $Cache "python"
+$PythonHome = Join-Path $Dest "python"
+$Python = Join-Path $PythonHome "python.exe"
+
+function Install-Python([string]$Version) {
+    # A real interpreter rather than a venv, whose pyvenv.cfg would point at a
+    # CPython that exists only on the build machine. --reinstall downloads the
+    # build again on every run, so uv checks its SHA-256 instead of trusting
+    # the tree a previous run extracted.
+    Invoke-Checked $Uv @("python", "install", $Version, "--install-dir", $PythonCache, "--no-bin", "--no-registry", "--reinstall")
+    $source = Join-Path $PythonCache "cpython-$Version-windows-x86_64-none"
+    if (-not (Test-Path (Join-Path $source "python.exe"))) {
+        throw "uv did not install CPython $Version at $source"
     }
-    $list = & $UvExe python list --all-versions
-    $versions = @()
-    foreach ($line in $list) {
-        if ($line -match "freethreaded") { continue }
-        if ($line -match "cpython-(3\.14\.\d+)-windows-x86_64") {
-            $versions += $Matches[1]
-        }
-    }
-    if ($versions.Count -eq 0) {
-        throw "uv publishes no CPython 3.14 for windows-x86_64"
-    }
-    $newest = $versions | Sort-Object { [version]$_ } | Select-Object -Last 1
-    & $UvExe python install $newest
-    if ($LASTEXITCODE -ne 0) {
-        throw "uv could not install CPython $newest"
-    }
-    return @{
-        Version = $newest
-        Reason = "uv has no CPython $requested build for windows-x86_64; using $newest"
-    }
+    if (Test-Path $PythonHome) { Remove-Item -Recurse -Force $PythonHome }
+    Copy-Item -Recurse $source $PythonHome
 }
 
-function Install-Manim([string]$UvExe, [string]$Version) {
-    $venv = Join-Path $Dest "venv"
-    if (Test-Path $venv) { Remove-Item -Recurse -Force $venv }
-    Invoke-Checked $UvExe @("venv", "--python", $Version, $venv)
-    $python = Join-Path $venv "Scripts\python.exe"
-    if (-not (Test-Path $python)) {
-        throw "venv python missing at $python"
+function Sync-RenderStack {
+    # Wheels only, except for packages that publish no wheel at all, so a
+    # package without a wheel for this interpreter fails the resolution instead
+    # of being compiled on the build machine. The copy keeps uv's
+    # EXTERNALLY-MANAGED marker, which keeps pip out of the shipped interpreter.
+    $syncArgs = @("pip", "sync", "--python", $Python, "--break-system-packages", "--require-hashes", "--only-binary", ":all:", "--build-constraints", $BuildConstraints)
+    foreach ($name in $SourceOnly) {
+        $syncArgs += @("--no-binary", $name)
     }
-    Invoke-Checked $UvExe @("pip", "install", "--python", $python, $ManimSpec)
-    $installed = & $python -c "import manim, sys; assert manim.__version__ == '0.22.0', manim.__version__; print(sys.version.split()[0])"
-    if ($LASTEXITCODE -ne 0) {
-        throw "manim import failed on $Version"
-    }
-    return @{ Python = $python; VersionLine = ($installed | Select-Object -Last 1) }
+    return Invoke-Captured $Uv ($syncArgs + $Requirements)
 }
 
-$Python = Join-Path $Dest "venv\Scripts\python.exe"
-$pyVersion = $null
-$pyReason = $null
-if (Test-Path $Python) {
-    $probe = & $Python -c "import manim, sys; print(manim.__version__); print(sys.version.split()[0])"
-    if ($LASTEXITCODE -eq 0 -and @($probe)[0] -eq "0.22.0") {
-        $pyVersion = @($probe)[1]
-        if ($pyVersion -eq "3.14.9") {
-            $pyReason = "uv published 3.14.9"
-        } else {
-            $pyReason = "reused existing venv; interpreter $pyVersion"
-        }
-        Write-Log "reusing venv $pyVersion manim 0.22.0"
+# The render stack is the lock's render group, with the hashes uv.lock records.
+Invoke-Checked $Uv @("export", "--project", $Root, "--frozen", "--only-group", "render", "--no-emit-workspace", "--quiet", "--output-file", $Requirements)
+Install-Python $PythonVersion
+# A package with no wheel at all is built from its sdist, with the build
+# backend pinned in the lock rather than the newest one on build day.
+$readLock = @'
+import sys, tomllib
+from pathlib import Path
+lock = tomllib.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+pins = lock['manifest'].get('build-constraints', [])
+Path(sys.argv[2]).write_text(''.join(c['name'] + c['specifier'] + '\n' for c in pins), encoding='utf-8')
+print(' '.join(p['name'] for p in lock['package'] if 'sdist' in p and not p.get('wheels')))
+'@
+$SourceOnly = @((& $Python -I -B -c $readLock $LockFile $BuildConstraints) -split " " | Where-Object { $_ })
+if ($LASTEXITCODE -ne 0) {
+    throw "could not read $LockFile"
+}
+$pythonSelection = "CPython $PythonVersion"
+if ((Sync-RenderStack) -ne 0) {
+    # uv reports a package without a usable wheel this way. Any other failure,
+    # such as the network, a hash or the disk, stops the build.
+    $noWheel = [regex]::Match($script:LastOutput, "Because (\S+) has no usable wheels")
+    if (-not $noWheel.Success) {
+        throw "uv pip sync failed on CPython $PythonVersion"
+    }
+    $pythonSelection = "CPython ${PythonFallbackVersion}: $($noWheel.Groups[1].Value) has no CPython $PythonVersion wheel"
+    Write-Log $pythonSelection
+    Install-Python $PythonFallbackVersion
+    if ((Sync-RenderStack) -ne 0) {
+        throw "uv pip sync failed on CPython $PythonFallbackVersion"
     }
 }
-if (-not $pyVersion) {
-    $choice = Select-Python $Uv
-    $pyVersion = $choice.Version
-    $pyReason = $choice.Reason
-    Write-Log "Python selection: $pyReason"
-    try {
-        $installed = Install-Manim $Uv $pyVersion
-    } catch {
-        if ($pyVersion -like "3.14.*") {
-            Write-Log "manim[typst]==0.22.0 did not install on $pyVersion; trying 3.13.17"
-            & $Uv python install 3.13.17
-            if ($LASTEXITCODE -ne 0) {
-                throw "uv has no CPython 3.13.17 build"
-            }
-            $pyVersion = "3.13.17"
-            $pyReason = "$pyReason; manim wheel missing, switched to 3.13.17"
-            $installed = Install-Manim $Uv $pyVersion
-        } else {
-            throw
-        }
-    }
-    $Python = $installed.Python
-}
-Write-Log "bundled python $pyVersion manim 0.22.0"
+# Console-script launchers hold the build path of python.exe. The worker runs
+# Manim with python -m, so none is needed.
+$launchers = Join-Path $PythonHome "Scripts"
+if (Test-Path $launchers) { Remove-Item -Recurse -Force $launchers }
+Write-Log "bundled python: $pythonSelection"
 
 function Find-Latex([string]$RootDir) {
     if (-not (Test-Path $RootDir)) { return $null }
@@ -192,7 +236,7 @@ function Find-Latex([string]$RootDir) {
 }
 
 function Expand-TinyTeXRoot([string]$Destination) {
-    # TinyTeX-1-windows-v2026.10.exe is a 7-Zip SFX, not an Inno Setup installer.
+    # The TinyTeX Windows asset is a 7-Zip SFX, not an Inno Setup installer.
     # /VERYSILENT is rejected. -y -o extracts an inner TinyTeX\ directory.
     $nested = Join-Path $Destination "TinyTeX"
     if (-not (Test-Path (Join-Path $nested "bin"))) {
@@ -209,12 +253,13 @@ function Expand-TinyTeXRoot([string]$Destination) {
     Remove-Item -LiteralPath $nested -Force
 }
 
+# The stamp names the TinyTeX release the tree was extracted from, so a version
+# bump replaces the tree instead of reusing it.
 $tinytexRoot = Join-Path $Dest "tinytex"
-Expand-TinyTeXRoot $tinytexRoot
-$latex = Find-Latex $tinytexRoot
-if (-not $latex) {
+$tinytexStamp = Join-Path $tinytexRoot ".mathimator-tinytex-release"
+if (-not (Test-Path $tinytexStamp) -or (Get-Content -Raw $tinytexStamp).Trim() -ne $TinytexVersion) {
     $installer = Join-Path $Cache $TinytexArchive
-    Download-File $TinytexUrl $installer
+    Download-File $TinytexUrl $installer $Pins.TINYTEX_WINDOWS_SHA256
     if (Test-Path $tinytexRoot) { Remove-Item -Recurse -Force $tinytexRoot }
     New-Item -ItemType Directory -Force -Path $tinytexRoot | Out-Null
     Write-Log "extracting TinyTeX 7-Zip SFX into $tinytexRoot"
@@ -223,8 +268,9 @@ if (-not $latex) {
         throw "TinyTeX installer exited $LASTEXITCODE"
     }
     Expand-TinyTeXRoot $tinytexRoot
-    $latex = Find-Latex $tinytexRoot
+    Set-Content -Path $tinytexStamp -Value $TinytexVersion -Encoding ascii
 }
+$latex = Find-Latex $tinytexRoot
 if (-not $latex) {
     throw "latex.exe was not found under $tinytexRoot"
 }
@@ -233,33 +279,27 @@ Write-Log "TinyTeX bin $TinytexBin"
 
 # tlmgr.bat returns to cmd with perl's errorlevel, but PowerShell reports
 # that .bat exit code as 0. Call tlperl directly so a failed install is visible.
+# tlmgr writes its own path into the files it generates (language.dat), so it
+# runs from the TinyTeX root by a relative path.
 $TlmgrPerl = Join-Path $tinytexRoot "tlpkg\tlperl\bin\perl.exe"
-$TlmgrPl = Join-Path $tinytexRoot "texmf-dist\scripts\texlive\tlmgr.pl"
-if (-not (Test-Path $TlmgrPerl) -or -not (Test-Path $TlmgrPl)) {
+$TlmgrPl = "texmf-dist\scripts\texlive\tlmgr.pl"
+if (-not (Test-Path $TlmgrPerl) -or -not (Test-Path (Join-Path $tinytexRoot $TlmgrPl))) {
     throw "tlmgr.pl was not found under $tinytexRoot"
 }
 
-function Invoke-Tlmgr([string[]]$CommandArgs) {
+# Runs $Action in the environment tlmgr.bat sets up: tlperl's modules, tlperl
+# and the TeX binaries (tlmgr needs kpsewhich) first on PATH, and the TinyTeX
+# root as the working directory.
+function Invoke-InTlmgrEnvironment([scriptblock]$Action) {
     $previousPerl = $env:PERL5LIB
     $previousPath = $env:PATH
     $env:PERL5LIB = Join-Path $tinytexRoot "tlpkg\tlperl\lib"
     $env:PATH = "$(Join-Path $tinytexRoot 'tlpkg\tlperl\bin');$TinytexBin;$previousPath"
+    Push-Location $tinytexRoot
     try {
-        Write-Log ("run perl tlmgr.pl " + ($CommandArgs -join " "))
-        # Stop turns native stderr, once merged with 2>&1, into a terminating error.
-        $previousAction = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try {
-            $output = & $TlmgrPerl $TlmgrPl @CommandArgs 2>&1
-            $code = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $previousAction
-        }
-        $text = @($output | ForEach-Object { "$_" })
-        $script:LastTlmgrOutput = ($text -join "`n")
-        $text | ForEach-Object { Write-Host $_ }
-        return $code
+        return & $Action
     } finally {
+        Pop-Location
         if ([string]::IsNullOrEmpty($previousPerl)) {
             Remove-Item Env:PERL5LIB -ErrorAction SilentlyContinue
         } else {
@@ -267,6 +307,10 @@ function Invoke-Tlmgr([string[]]$CommandArgs) {
         }
         $env:PATH = $previousPath
     }
+}
+
+function Invoke-Tlmgr([string[]]$CommandArgs) {
+    return Invoke-InTlmgrEnvironment { Invoke-Captured $TlmgrPerl (@($TlmgrPl) + $CommandArgs) }
 }
 
 function Assert-Tlmgr([string[]]$CommandArgs) {
@@ -279,14 +323,48 @@ function Assert-Tlmgr([string[]]$CommandArgs) {
     }
 }
 
-$null = Invoke-Tlmgr @("option", "repository")
-$repoText = $script:LastTlmgrOutput
-if ($repoText -match "offline-repo") {
-    Write-Log "resetting tlmgr repository before package install"
-    Assert-Tlmgr @("option", "repository", "https://mirror.ctan.org/systems/texlive/tlnet")
+# Windows cannot replace tlmgr's own files while it runs, so `update --self`
+# only stages the new texlive.infra and writes temp\updater-w32. tlmgr.bat runs
+# that updater once perl exits; calling perl directly skips it, and the next
+# install then refuses with "tlmgr itself needs to be updated". Run the staged
+# updater the way tlmgr.bat does, but keep its exit code: the updater ends with
+# `goto :eof`, which drops its errorlevel under `cmd /c` unless it is `call`ed.
+# A failed update can leave the tree half replaced, so it also drops the stamp
+# and the next build extracts TinyTeX afresh.
+function Update-TlmgrSelf {
+    $updater = Join-Path $tinytexRoot "temp\updater-w32"
+    $batch = "$updater.bat"
+    # A failed earlier build can leave one behind; tlmgr.bat deletes it too.
+    foreach ($stale in @($updater, $batch)) {
+        if (Test-Path $stale) { Remove-Item -Force $stale }
+    }
+    Assert-Tlmgr @("update", "--self")
+    if (-not (Test-Path $updater)) {
+        return
+    }
+    Move-Item -Force $updater $batch
+    Write-Log "running the staged tlmgr self-update"
+    Invoke-InTlmgrEnvironment { & cmd.exe /d /c call $batch }
+    $code = $LASTEXITCODE
+    Remove-Item -Force $batch
+    if ($code -ne 0) {
+        Remove-Item -Force $tinytexStamp
+        $log = Join-Path $tinytexRoot "temp\update-self.log"
+        if (Test-Path $log) { Get-Content $log | ForEach-Object { Write-Log $_ } }
+        throw "tlmgr self-update exited $code; the next build extracts TinyTeX again"
+    }
+    Assert-Tlmgr @("update", "--self")
+    if (Test-Path $updater) {
+        Remove-Item -Force $tinytexStamp
+        throw "tlmgr is still out of date after its self-update; the next build extracts TinyTeX again"
+    }
 }
+
+# A rerun finds the disabled repository from the last build, so point tlmgr at
+# the pinned snapshot before anything reaches a repository.
+Assert-Tlmgr @("option", "repository", $TlnetRepository)
 Write-Log "tlmgr update --self"
-Assert-Tlmgr @("update", "--self")
+Update-TlmgrSelf
 $latexExe = Join-Path $TinytexBin "latex.exe"
 if (-not (Test-Path $latexExe)) {
     Assert-Tlmgr @("install", "latex-bin", "latex")
@@ -318,31 +396,50 @@ try {
     Remove-Item -Recurse -Force $warmup
 }
 
-$offlineRepo = Join-Path $tinytexRoot "offline-repo"
-New-Item -ItemType Directory -Force -Path $offlineRepo | Out-Null
-Assert-Tlmgr @("option", "repository", $offlineRepo)
-Write-Log "confirming tlmgr install qrcode fails against the empty repository"
+Assert-Tlmgr @("option", "repository", $DisabledRepository)
+Write-Log "confirming tlmgr install qrcode fails against the disabled repository"
 $qrcode = Invoke-Tlmgr @("install", "qrcode")
 if ($qrcode -eq 0) {
     throw "TinyTeX still installed a package after the repository was disabled"
 }
 Write-Log "tlmgr install qrcode exited $qrcode"
-
-$typstDir = Join-Path $Dest "typst"
-$typstExe = Join-Path $typstDir "typst.exe"
-if (-not (Test-Path $typstExe)) {
-    $zip = Join-Path $Cache $TypstArchive
-    Download-File $TypstUrl $zip
-    $stage = Join-Path $Cache "typst-stage"
-    if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-    Expand-Archive -Path $zip -DestinationPath $stage -Force
-    $found = Get-ChildItem -Path $stage -Filter typst.exe -Recurse | Select-Object -First 1
-    if (-not $found) { throw "typst.exe was not in $zip" }
-    New-Item -ItemType Directory -Force -Path $typstDir | Out-Null
-    Copy-Item $found.FullName $typstExe -Force
+$null = Invoke-Tlmgr @("--version")
+$tlmgrLine = @(
+    $script:LastOutput -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+)[0]
+if ([string]::IsNullOrWhiteSpace($tlmgrLine)) {
+    throw "tlmgr --version produced no output. kpsewhich must stay on PATH inside Invoke-Tlmgr."
 }
+$tlmgrLine = $tlmgrLine.Trim()
+
+# tlmgr leaves its temp files, package backups, logs and a 20 MB cache of the
+# remote package database behind. Several name the build path, and none is
+# used offline.
+foreach ($leftover in @("temp\*", "tlpkg\backups\*", "tlpkg\texlive.tlpdb.main.*")) {
+    $path = Join-Path $tinytexRoot $leftover
+    if (Test-Path $path) { Remove-Item -Recurse -Force $path }
+}
+Get-ChildItem -Path (Join-Path $tinytexRoot "texmf-var\web2c") -Filter *.log -Recurse -File | Remove-Item -Force
+
+# Typst is Apache-2.0, so its LICENSE and NOTICE ship next to the binary. The
+# directory is rebuilt from the checked archive on every run.
+$typstZip = Join-Path $Cache $TypstArchive
+Download-File $TypstUrl $typstZip $Pins.TYPST_WINDOWS_SHA256
+$stage = Join-Path $Cache "typst-stage"
+Expand-Fresh $typstZip $stage
+$found = Get-ChildItem -Path $stage -Filter typst.exe -Recurse | Select-Object -First 1
+if (-not $found) { throw "typst.exe was not in $typstZip" }
+$typstDir = Join-Path $Dest "typst"
+if (Test-Path $typstDir) { Remove-Item -Recurse -Force $typstDir }
+New-Item -ItemType Directory -Force -Path $typstDir | Out-Null
+foreach ($name in @("typst.exe", "LICENSE", "NOTICE")) {
+    $file = Join-Path $found.DirectoryName $name
+    if (-not (Test-Path $file)) { throw "$name was not in $typstZip" }
+    Copy-Item $file $typstDir
+}
+$typstExe = Join-Path $typstDir "typst.exe"
 $typstLine = (& $typstExe --version | Select-Object -First 1)
-if ($typstLine -notlike "typst 0.15.0*") {
+if ($typstLine -notmatch "^typst $([regex]::Escape($TypstVersion))(\s|$)") {
     throw "bundled typst is $typstLine"
 }
 Write-Log $typstLine
@@ -351,22 +448,49 @@ $workerDest = Join-Path $Dest "worker"
 if (Test-Path $workerDest) { Remove-Item -Recurse -Force $workerDest }
 New-Item -ItemType Directory -Force -Path (Join-Path $workerDest "mathimator_worker") | Out-Null
 Copy-Item -Path (Join-Path $Root "worker\mathimator_worker\*") -Destination (Join-Path $workerDest "mathimator_worker") -Recurse -Force
-Get-ChildItem -Path $workerDest -Directory -Filter __pycache__ -Recurse | Remove-Item -Recurse -Force
 $sampleDir = Join-Path $Dest "samples\reference-60"
 New-Item -ItemType Directory -Force -Path $sampleDir | Out-Null
 Copy-Item (Join-Path $Root "tests\fixtures\reference-60\project.json") (Join-Path $sampleDir "project.json") -Force
 
-$pyFull = (& $Python -c "import sys; print(sys.version.split()[0])").Trim()
-$manimFull = (& $Python -c "import manim; print(manim.__version__)").Trim()
-$null = Invoke-Tlmgr @("--version")
-$tlmgrLine = @(
-    $script:LastTlmgrOutput -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-)[0]
-if ([string]::IsNullOrWhiteSpace($tlmgrLine)) {
-    throw "tlmgr --version produced no output. kpsewhich must stay on PATH inside Invoke-Tlmgr."
+# The bundled interpreter must import Manim on its own: isolated mode reads no
+# PYTHON* variable, user site or working directory, and nothing it loads may
+# come from outside the bundle.
+$probe = @'
+import sys
+from pathlib import Path
+import manim
+home = Path(sys.argv[1]).resolve()
+for path in (sys.prefix, sys.base_prefix, manim.__file__):
+    if not Path(path).resolve().is_relative_to(home):
+        sys.exit(f'{path} is outside {home}')
+print(sys.version.split()[0], manim.__version__)
+'@
+$probeLine = @(& $Python -I -B -c $probe $PythonHome)[-1]
+if ($LASTEXITCODE -ne 0) {
+    throw "the bundled Python cannot import manim on its own"
 }
-$tlmgrLine = $tlmgrLine.Trim()
-$relPy = "venv/Scripts/python.exe"
+$pyFull, $manimFull = $probeLine -split " "
+Write-Log "bundled python $pyFull manim $manimFull"
+
+# The installer puts the runtime under Program Files (D62), where Python run by
+# a standard user cannot save the bytecode it compiles, so every start of the
+# supervisor and of Manim would compile the standard library, the render stack
+# and the worker again. They are compiled here instead, in one process, which
+# makes the bytecode the same on every build. Checked-hash bytecode holds a
+# hash of its source, which Python checks on import, so a stale file never runs
+# in place of its source. -s and -p record each source as runtime\... rather
+# than by its build path, -f replaces the timestamped bytecode that the CPython
+# build ships, and -W ignore keeps third-party SyntaxWarnings out of the log,
+# as CPython's own install does.
+Invoke-Checked $Python @("-I", "-W", "ignore", "-m", "compileall", "-q", "-f", "-s", $Dest, "-p", "runtime", "--invalidation-mode", "checked-hash", $PythonHome, $workerDest)
+
+# Everything in packaging/bundle ships. --prune removes entries outside the
+# bundle layout, such as a crash dump or the venv of an older build, and any
+# bytecode not compiled above, such as another Python version's, copied from
+# the checkout with the worker. The check then fails if a file, bytecode
+# included, names the checkout or the builder's profile.
+Invoke-Checked $Python @("-I", "-B", (Join-Path $Root "scripts\check_bundle.py"), "--prune", $Dest)
+
 $base = [System.IO.Path]::GetFullPath($Dest)
 if (-not $base.EndsWith("\")) { $base = $base + "\" }
 $fullBin = [System.IO.Path]::GetFullPath($TinytexBin)
@@ -374,23 +498,38 @@ if (-not $fullBin.StartsWith($base)) {
     throw "TinyTeX bin is outside the bundle: $fullBin"
 }
 $relTex = $fullBin.Substring($base.Length).Replace("\", "/")
-$manifest = [ordered]@{
-    python = $relPy
+$manifestData = [ordered]@{
+    python = "python/python.exe"
+    worker = "worker"
     pythonVersion = $pyFull
-    pythonSelection = $pyReason
+    pythonSelection = $pythonSelection
     manim = $manimFull
+    lockSha256 = (Get-FileHash -Algorithm SHA256 $LockFile).Hash.ToLowerInvariant()
     typst = "typst/typst.exe"
     typstVersion = $typstLine
     tinytexBin = $relTex
     tinytexVersion = "$tlmgrLine"
     tinytexRelease = $TinytexVersion
+    tlnetRepository = $TlnetRepository
     sample = "samples/reference-60/project.json"
     platform = "windows-x86_64"
 }
-$json = ($manifest | ConvertTo-Json)
+$json = ($manifestData | ConvertTo-Json)
 $utf8 = New-Object System.Text.UTF8Encoding $false
-[System.IO.File]::WriteAllText((Join-Path $Dest "runtime.json"), ($json.Trim() + "`n"), $utf8)
-Write-Log "runtime: $Dest\runtime.json"
+[System.IO.File]::WriteAllText($Manifest, ($json.Trim() + "`n"), $utf8)
+Write-Log "runtime: $Manifest"
 Write-Log $json
-Get-ChildItem $Dest | ForEach-Object { Write-Log ("size {0} {1}" -f $_.Name, $_.Length) }
+
+$total = [int64]0
+foreach ($entry in Get-ChildItem -LiteralPath $Dest -Force) {
+    if ($entry.PSIsContainer) {
+        # The [int64] cast turns the null Sum of an empty folder into 0.
+        $bytes = [int64](Get-ChildItem -LiteralPath $entry.FullName -Recurse -File -Force | Measure-Object Length -Sum).Sum
+    } else {
+        $bytes = [int64]$entry.Length
+    }
+    $total += $bytes
+    Write-Log ("size {0} {1:N0} bytes" -f $entry.Name, $bytes)
+}
+Write-Log ("size bundle {0:N0} bytes" -f $total)
 Write-Log "bundle complete"

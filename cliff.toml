@@ -1,0 +1,56 @@
+# git-cliff writes CHANGELOG.md from the Conventional Commits history (D72).
+#
+#   git cliff --tag v<new version> --output CHANGELOG.md   # at a release
+#   git cliff --unreleased                                 # preview
+#
+# Release tags are vX.Y.Z. Formatting-only (style) commits and the release
+# commits themselves are left out.
+
+[changelog]
+header = """
+# Changelog
+
+Notable changes to Mathimator, by release. git-cliff generates this file from
+the Conventional Commits history (cliff.toml), so write the entry in the commit
+message rather than here."""
+# Each release starts with a blank line and ends with one newline, so releases
+# are separated by one blank line and the file ends with a single newline.
+body = """
+
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+
+{% for commit in commits %}\
+- {% if commit.scope %}{{ commit.scope }}: {% endif %}{{ commit.message | split(pat="\n") | first | trim }}\
+{% if commit.breaking %} (breaking){% endif %}
+{% endfor %}\
+{% endfor %}\
+"""
+trim = false
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+protect_breaking_commits = true
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+sort_commits = "oldest"
+# The HTML comments order the groups and are stripped from the headings.
+commit_parsers = [
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Fixes" },
+  { message = "^perf", group = "<!-- 2 -->Performance" },
+  { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+  { message = "^docs", group = "<!-- 4 -->Documentation" },
+  { message = "^test", group = "<!-- 5 -->Tests" },
+  { message = "^build", group = "<!-- 6 -->Build" },
+  { message = "^ci", group = "<!-- 7 -->CI" },
+  { message = "^style", skip = true },
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore", group = "<!-- 8 -->Chores" },
+  { message = "^revert", group = "<!-- 9 -->Reverts" },
+]
