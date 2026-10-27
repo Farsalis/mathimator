@@ -6,10 +6,8 @@ message rather than here.
 
 ## [Unreleased]
 
-The audit/cleanup-gitlab-devops branch works through the architecture, defect
-and DevOps audit in docs/architecture-audit-report.md and prepares the project
-for GitLab CI. This summary stands in until the first release, whose changelog
-git-cliff generates from the commits.
+This summary stands in until the first release, whose changelog git-cliff
+generates from the commits.
 
 ### Features
 
@@ -117,22 +115,18 @@ git-cliff generates from the commits.
 
 ### Documentation
 
-- The architecture, defect and DevOps audit report, its fix plan, and the
-  remediation status of each finding.
 - design-spec.md section 6 rewritten as the protocol 2 contract, and the rest
-  of the spec brought up to date with the code and the owner's decisions.
+  of the spec brought up to date with the code.
 - design-spec.md: the beat catalog, the shapes, the on-screen rules, easing
   and the camera move in section 4, the code of every kind in section 5, the
   beat and shape edits, + Beat and the beat editor in section 6, and their
   acceptance criteria and tests in section 7.
 - README, CONTRIBUTING and SECURITY: setup, Linux notes, running, test tiers,
-  the installer build, CI and its compute-minutes policy, the environment
-  variables, commit and merge rules, releases, setting up the GitLab project,
-  and reporting vulnerabilities in confidential issues.
-- GitLab code owners for every area, a merge request checklist, and bug and
-  feature issue templates.
-- The phase reports and the Windows audit report point to the spec and the
-  audit's remediation status.
+  the installer build, CI, the environment variables, commit and pull request
+  rules, releases, the repository settings, and reporting vulnerabilities
+  through GitHub's private vulnerability reporting.
+- Code owners for every area, a pull request checklist, and bug and feature
+  issue templates.
 
 ### Tests
 
@@ -181,17 +175,22 @@ git-cliff generates from the commits.
 
 ### CI
 
-- A GitLab CI/CD pipeline for gitlab.com, sized for the Free tier's compute
-  minutes: a merge request runs only the lanes its changes touch, and there
-  is no nightly pipeline. Hosted Linux runners lint, run the fast pytest lane
-  on Python 3.13 and 3.14, the Typst tests, vitest and the Rust pre-checks,
-  and report JUnit results and worker and UI coverage. The hosted Windows
-  runner runs the Win32 tests, and on tags or on demand Clippy and cargo
-  test, the render lane and the installer build.
-- SAST, Secret Detection, pip-audit, npm audit and cargo-deny; a protected-tag
-  release that uploads the installer to the package registry and creates a
-  GitLab Release with glab; Renovate with the spec's pins.
-- `test:ui` also runs for the beat and render-smoke fixtures that its tests
+- GitHub Actions CI for every pull request and every push to main: a pull
+  request runs the lint checks and only the lanes its changes touch, and a
+  push to main runs them all. Hosted Linux runners lint, run the fast pytest
+  lane on Python 3.13 and 3.14, the Typst tests, vitest and the Rust checks,
+  and upload JUnit results and worker and UI coverage. Hosted Windows runners
+  run the Win32 tests, and Clippy and cargo test with the shell's Windows
+  code.
+- A Slow workflow that runs the render, export and offline suites and builds
+  the installer every night, by hand and for every release tag.
+- A release workflow: a `v*` tag that matches the app version runs CI and the
+  Slow workflow and creates a draft GitHub Release with the installer,
+  SHA256SUMS, the third-party notices and git-cliff notes.
+- CodeQL code scanning, pip-audit, npm audit and cargo-deny, Dependabot with
+  the spec's pins left alone, and schema checks of the workflows and the
+  Dependabot configuration in pre-commit.
+- The UI lane also runs for the beat and render-smoke fixtures that its tests
   read, and the lane check follows the UI's glob imports.
 
 ### Chores

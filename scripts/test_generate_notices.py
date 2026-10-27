@@ -1,4 +1,4 @@
-"""scripts/generate_notices.py: THIRD_PARTY_NOTICES.txt from a built bundle (D75)."""
+"""scripts/generate_notices.py: THIRD_PARTY_NOTICES.txt from a built bundle."""
 
 from __future__ import annotations
 
@@ -217,6 +217,7 @@ def test_the_notices_cover_every_part_of_the_installer(tmp_path: Path) -> None:
     assert "libraries: x264, mp3lame." in prose
     assert "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz" in prose
     assert "Written offer:" in prose
+    assert "issue tracker (https://github.com/Farsalis/mathimator/issues) a complete" in prose
     assert "8. Microsoft Edge WebView2 Runtime" in lines
     assert "embeds Microsoft's offline installer of the Microsoft Edge WebView2 Runtime" in prose
     assert " https://developer.microsoft.com/microsoft-edge/webview2/, " in prose

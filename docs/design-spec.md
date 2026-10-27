@@ -71,7 +71,7 @@ These budgets are the targets to approve. The full-preview and export numbers ar
 
 ### Reference machine
 
-Windows 11, 8 CPU cores, 16 GB RAM, SSD, integrated graphics, plugged in, Windows power mode set to High performance. The phase report records the CPU name. A result from a different machine does not count as a budget result.
+Windows 11, 8 CPU cores, 16 GB RAM, SSD, integrated graphics, plugged in, Windows power mode set to High performance. Each recorded result names the CPU. A result from a different machine does not count as a budget result.
 
 ### Reference scene
 
@@ -97,7 +97,7 @@ The sum is 60 seconds. Axis labels and the title use LaTeX, so the timing includ
 - Wall clock on the reference machine. One scene. No second render running.
 - "Cold cache" means the Manim partial movies for that scene and profile have been deleted. The operating system's file cache may be warm. TinyTeX has been run at least once on that machine, so font generation is warm, except on the phase 5 clean-machine test.
 - UI-only budgets fail if the worker receives a render command during the action.
-- A scripted harness timestamps the input and the resulting UI state. Python behavior is covered by automated tests. Latency checks run against a build on the reference machine, and the numbers go in the phase report.
+- A scripted harness timestamps the input and the resulting UI state. Python behavior is covered by automated tests. Latency checks run against a build on the reference machine, and their numbers are recorded.
 
 ### Budgets
 
@@ -1407,7 +1407,7 @@ Pass when all of these hold:
 - On Windows, cancel and quit leave no Manim, `latex`, or `dvisvgm` process within 1 second. Each Manim child sits in a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and the supervisor itself is in a kill-on-close job. The binding is `ctypes`. The worker package contains no `pywin32`, `win32api`, or `taskkill`. Linux uses the process-group path. macOS is untested.
 - After the phase 5 installer exists: on a clean Windows 11 account with no Python, FFmpeg, TeX, or Typst installed, and with the network disconnected, the app installs, launches, opens the bundled `reference-60` sample, and exports a 1080p30 MP4.
 
-The phase 5 report records Python runtime size, TinyTeX size, Typst size, WebView2 size, and installer size. There is no pass/fail size in this spec. The expected toolchain range before tuning is several hundred MB to about 1 GB, plus about 127 MB for the embedded WebView2 offline installer.
+Phase 5 records the Python runtime size, TinyTeX size, Typst size, WebView2 size, and installer size. There is no pass/fail size in this spec. The expected toolchain range before tuning is several hundred MB to about 1 GB, plus about 127 MB for the embedded WebView2 offline installer.
 
 ### Beats and shapes
 
@@ -1446,7 +1446,7 @@ pytest markers sort out the slow tiers: `render` and `export` run real Manim, `o
 
 Each phase is a vertical slice. Components named in a phase are the ones that phase introduces. Sample movies are shown at the gate and are not committed as binaries.
 
-Every phase uses this gate: launch the app, run this phase's tests, render the sample scene, export the sample scene, put the required numbers in the phase report, and stop for approval. Do not start the next phase in the same change. If a 1.5× revise rule trips, revise this spec before adding features.
+Every phase uses this gate: launch the app, run this phase's tests, render the sample scene, export the sample scene, record the required numbers, and stop for approval. Do not start the next phase in the same change. If a 1.5× revise rule trips, revise this spec before adding features.
 
 ### Phase 1 — Walking skeleton
 
@@ -1458,7 +1458,7 @@ Tests: the phase 1 row in section 7. Launch the app and record the dev-build col
 
 Sample: `reference-60`. Render the preview and export the 1080p30 MP4.
 
-Report: preview seconds, export seconds, cold-start seconds, machine description, and whether each Manim time is inside the target, inside 1.5×, or over 1.5×. Over 67.5 s or 270 s revises this spec.
+Record: preview seconds, export seconds, cold-start seconds, machine description, and whether each Manim time is inside the target, inside 1.5×, or over 1.5×. Over 67.5 s or 270 s revises this spec.
 
 Gate: launch the app, run this phase's tests, render the sample scene, export the sample scene, and stop for approval.
 
@@ -1532,10 +1532,10 @@ Gate: launch the app, run this phase's tests, render the sample scene, export th
 README.md and CONTRIBUTING.md hold the commands, the job list and the release steps. They follow these rules:
 
 - One command, bump-my-version, changes the app version in every manifest. `scripts/check_versions.py` fails CI when a manifest, a lockfile or a copy of the Manim, Typst, CPython, uv, Rust or Node pin disagrees, and when a release tag is not `v` followed by the app version. `CHANGELOG.md` and the release notes are generated with git-cliff from Conventional Commits (D72).
-- The versions this spec pins change only by hand and together: Manim 0.22.0, Typst 0.15.0, CPython 3.14.9 with 3.13.17, uv 0.13.5, Rust 1.93.0, Node 24, Tauri 2.12.x, React 19 and Vite 8 (D37). Renovate proposes other dependency updates and none of these (D76).
-- The pipeline runs on gitlab.com's Free tier and its hosted Linux and Windows runners (D66, D67). Its compute minutes are few, so a merge request runs the version and lint checks, SAST and Secret Detection, and only the lanes whose files it changes, and after a merge the default branch runs only those checks and scans again. The Windows Rust build, the render, export and offline suites and the installer run on tags and when someone starts them by hand. There is no nightly pipeline: the owner revised D68 and D73 on 24 October 2026. cargo-deny, npm audit and pip-audit check the lockfiles (D77), and pre-commit hooks run the lint checks locally (D71).
-- A protected `vX.Y.Z` tag runs every job, builds the installer, uploads it with `THIRD_PARTY_NOTICES.txt` and `SHA256SUMS` to the project's package registry, and creates a GitLab Release with the git-cliff notes (D73).
-- v1 installers are unsigned, with the signing hook in place but off: the CI/CD variable `WINDOWS_SIGN_COMMAND`, when set, becomes Tauri's `bundle.windows.signCommand`. Adopting signing is configuration plus a revision of this spec (D74).
+- The versions this spec pins change only by hand and together: Manim 0.22.0, Typst 0.15.0, CPython 3.14.9 with 3.13.17, uv 0.13.5, Rust 1.93.0, Node 24, Tauri 2.12.x, React 19 and Vite 8. Dependabot proposes other dependency updates and none of these.
+- CI runs on GitHub Actions, on GitHub's hosted Linux and Windows runners. Every pull request and every push to `main` runs the version, lint and type checks, the `ci/` tests and the pre-commit hooks. A pull request runs the test, build and audit lanes whose files it changes, and a push to `main` runs every lane; branch protection requires the combined CI result before a merge. The render, export and offline suites and the installer build run every night, for every version tag and when someone starts them by hand. CodeQL scans the code, GitHub's secret scanning and push protection check every push, cargo-deny, npm audit and pip-audit check the lockfiles, and pre-commit hooks run the lint checks and gitleaks locally.
+- A `vX.Y.Z` tag, which only maintainers can create, runs every CI job and the slow suites, builds the installer, and creates a draft GitHub Release with the installer, `THIRD_PARTY_NOTICES.txt`, `SHA256SUMS` and the git-cliff notes. A maintainer publishes the draft by hand.
+- v1 installers are unsigned, with the signing hook in place but off: the repository variable `WINDOWS_SIGN_COMMAND`, when set, becomes Tauri's `bundle.windows.signCommand`. Adopting signing is configuration, a repository secret for the signing tool that the installer job maps into its environment and the release workflow passes on to it, and a revision of this spec.
 
 ## 9. Later list
 
@@ -1553,7 +1553,7 @@ These are out of v1. They are not part of the phases above.
 - Tectonic.
 - Intra-beat rerender, and any cache finer than one `play` or `wait`.
 - Scenes longer than about 2 minutes. v1 refuses a total over 120 seconds rather than trying to make long scenes comfortable.
-- Code signing. v1 installers are unsigned, and a SmartScreen warning on first launch is a distribution consequence, not a feature. The release pipeline's signing hook is off (section 8).
+- Code signing. v1 installers are unsigned, and a SmartScreen warning on first launch is a distribution consequence, not a feature. The release workflow's signing hook is off (section 8).
 - Beat reorder as a drag gesture (Move earlier and Move later are buttons), a user-editable preview profile, 4K, and a seed field in the inspector.
 - Shapes in a 3D scene, which would have to be fixed in the frame with a call of their own (`add_fixed_in_frame_mobjects`).
 - Options of a kind, such as Indicate's colour and scale, Fade in's direction, Circumscribe's shape and Flash's size.
@@ -1569,15 +1569,15 @@ These are out of v1. They are not part of the phases above.
 | Risk | What will go wrong | When it shows |
 | --- | --- | --- |
 | Cairo 3D quality and speed | An 8×8 surface can look coarse and still miss the 20 second insert. Raising the default resolution makes that worse. The cap is 24×24. | Phase 4 measurement. Over 30 seconds revises this spec. |
-| TeX size and package set | TinyTeX can dominate the installer. A formula outside the preseeded packages fails closed and must not trigger a download. | Phase 5 size report and the offline `reference-60` export. |
+| TeX size and package set | TinyTeX can dominate the installer. A formula outside the preseeded packages fails closed and must not trigger a download. | The phase 5 size measurements and the offline `reference-60` export. |
 | WebView2 | A clean machine needs the WebView2 runtime, or the window does not open. The installer embeds its offline installer, about 127 MB, and runs it when the runtime is missing. The runtime is Microsoft's, not MIT source. | Phase 1 on a machine without it, and the phase 5 installer. |
 | Manim beta breaks | 0.22 is a beta line. A new Manim release can change CLI flags, cache keys, or `MathTex`. v1 stays on `manim==0.22.0`. | Any phase that upgrades the pin. That upgrade is a spec change and a `generatorVersion` bump. |
 | Cache invalidation is coarse | Editing an object that enters at beat 0 rerenders the whole scene. Users will expect the tail alone to update. The timeline has to show the dirty range so the wait is explained. | Phase 2, on `lesson-60` and on an axes edit in `reference-60`. |
 | Typst and Computer Modern differ | The editor glyph will not match the video. Teachers may report the preview as a bug. The caption and the subset refusal are the mitigation. Rejecting the split in section 7 means revising this spec before phase 3. | Phase 3, side by side on `y = \sin(x)`. |
-| Python runtime size is unknown | The "about 1 GB" figure is a bound for planning, not a measurement. PyAV, Cairo, and Manim wheels may land higher, and the precompiled bytecode adds to them. | Phase 5 report. |
+| Python runtime size is unknown | The "about 1 GB" figure is a bound for planning, not a measurement. PyAV, Cairo, and Manim wheels may land higher, and the precompiled bytecode adds to them. | The phase 5 size measurements. |
 | Single render queue | A preview and an export cannot run together. Typing during an export does not update the preview until the export finishes or is cancelled. Long Cairo 3D exports block the queue. | Phase 2 for preview superseding, phase 5 for export blocking. |
 | Licensing review | The installer ships GPL and LGPL libraries: x264, x265 and LAME inside PyAV's FFmpeg, and others. The generated notices, the written source offer, the WebView2 entry and the Notices panel's summary have had no legal review. | Before the first public release, which waits for that review (D75). |
-| Open release items | The source offer and SECURITY.md name no project address yet. Some components ship no license text, and the worker wheel carries no `LICENSE`. A release tag must be exactly `v<version>`, so there is no release-candidate scheme. The setuptools that builds `srt` is pinned by version, not by hash. The SECURITY.md policy is not yet confirmed. | Before the first public release. |
+| Open release items | Some components ship no license text, and the worker wheel carries no `LICENSE`. A release tag must be exactly `v<version>`, so there is no release-candidate scheme. The setuptools that builds `srt` is pinned by version, not by hash. The SECURITY.md policy is not yet confirmed. | Before the first public release. |
 | Administrator rights | The installer installs for all users under Program Files (D62). Some school PCs do not grant the rights it needs, and there is no per-user install. | Phase 5, and the first installs at a school. |
 | Session-wide asset scope | The webview can read every project folder bound since the app started, not only the open one (D27). | Until the per-project scope in section 9. |
 | Open project folders are held | On Windows an open project's folder cannot be renamed, moved or deleted in Explorer (section 4, D57 as amended). Users may take that for a bug. | Any phase, whenever a project is open. |

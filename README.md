@@ -51,8 +51,9 @@ describes the protocol.
 | `scenes/` | Scene code that the tests render or compare byte for byte |
 | `packaging/` | The bundle build scripts, and `versions.env`, which pins every bundled tool with its SHA-256 |
 | `scripts/` | The version check, the bundle check and the notices generator |
-| `ci/` | The GitLab CI jobs that `.gitlab-ci.yml` includes, and their helper scripts |
-| `docs/` | The design spec, the audit reports and the phase reports |
+| `ci/` | The helper scripts the GitHub Actions workflows run, and the tests that hold the workflows and the project documents to the code |
+| `.github/` | The GitHub Actions workflows, the Dependabot configuration, the code owners, and the issue and pull request templates |
+| `docs/` | The design spec |
 
 ## Quick start
 
@@ -115,29 +116,29 @@ pytest markers sort the Python tests into tiers:
 
 | Marker | What the tests need | CI job |
 | --- | --- | --- |
-| none | `.venv` | `test:python` on Linux, with Python 3.13.17 and 3.14.9, and `test:windows` |
-| `typst` | `typst` 0.15.0 on PATH; skipped without it | `test:typst` |
-| `process_table` | The process table: the kernel32 helper on Windows, `/proc` on Linux | `test:windows` |
-| `render` | Real Manim renders, and LaTeX on PATH for formulas | `test:render:windows` |
-| `export` | Like `render`: the 1920×1080, 30 fps export of the reference scene | `test:render:windows` |
-| `offline` | A built bundle, with the network blocked | `test:render:windows` |
+| none | `.venv` | `python-tests` on Linux, with Python 3.13.17 and 3.14.9, and `python-tests-windows` |
+| `typst` | `typst` 0.15.0 on PATH; skipped without it | `typst` |
+| `process_table` | The process table: the kernel32 helper on Windows, `/proc` on Linux | `python-tests-windows` |
+| `render` | Real Manim renders, and LaTeX on PATH for formulas | `render`, in the Slow workflow |
+| `export` | Like `render`: the 1920×1080, 30 fps export of the reference scene | `render`, in the Slow workflow |
+| `offline` | A built bundle, with the network blocked | `render`, in the Slow workflow |
 
-The fast lane, which `test:python` runs on Linux, with the `ci/` tests that
-`lint:repo` runs:
+The fast lane, which `python-tests` runs on Linux, with the `ci/` tests that
+`python-lint` runs:
 
 ```powershell
 uv run pytest tests scripts ci -m "not render and not export and not offline and not typst and not process_table"
 ```
 
 On Linux, `bash ci/install-typst.sh DIR` installs the pinned Typst into `DIR`
-for the `typst` tests, as `test:typst` does; the
+for the `typst` tests, as the `typst` job does; the
 [Linux notes](CONTRIBUTING.md#linux) show how.
 
 `uv run pytest` on its own runs every test in `tests/`, the slow tiers
 included. The render and export tests need LaTeX on PATH, and the offline tests
 a built bundle (see [Building the installer](#building-the-installer)). On
-Windows the bundle's TinyTeX and Typst serve all three, as
-`test:render:windows` runs them:
+Windows the bundle's TinyTeX and Typst serve all three, as the Slow
+workflow's `render` job runs them:
 
 ```powershell
 $runtime = Get-Content -Raw packaging/bundle/runtime.json | ConvertFrom-Json
@@ -157,7 +158,7 @@ npm run typecheck
 npm run format:check
 ```
 
-`npm run test:ci` runs the tests with coverage, as `test:ui` does in CI, and
+`npm run test:ci` runs the tests with coverage, as the `ui` job does in CI, and
 writes `desktop/coverage/` and `desktop/reports/junit-vitest.xml`.
 
 The shell, from `desktop/src-tauri/`, after `npm run build`:
@@ -169,7 +170,7 @@ cargo test --locked
 ```
 
 On Windows, `cargo test --locked -- --include-ignored` also runs the shell's
-ignored tests, as `test:rust:windows` does: `MATHIMATOR_WIN32_TESTS=1` lets
+ignored tests, as the `rust-windows` job does: `MATHIMATOR_WIN32_TESTS=1` lets
 the Job Object test run, and `MATHIMATOR_REAL_WORKER_TESTS=1` the tests that
 start the repository's `.venv` Python, the worker among them.
 
@@ -227,48 +228,73 @@ because it lists only the libraries that the Windows CPython links in.
 
 ## Continuous integration
 
-The pipeline in `.gitlab-ci.yml` and `ci/` runs on gitlab.com's hosted runners
-and needs only the Free tier. That tier gives the namespace about 400 compute
-minutes a month, so the pipeline runs a job only where a change needs it. It
-runs for merge requests, the default branch, tags and the Renovate schedule;
-there is no nightly pipeline.
+GitHub Actions runs the workflows in `.github/workflows` on GitHub's hosted
+runners, `ubuntu-24.04` and `windows-2025`:
 
-| Stage | Hosted Linux runners | Hosted Windows runner |
+| Workflow | When it runs | What it does |
 | --- | --- | --- |
-| build | `build:ui` | |
-| lint | `lint:repo`, `lint:python`, `lint:ui` | |
-| test | `test:python`, `test:typst`, `test:ui`, `test:rust`, `audit:python`, `audit:npm`, `audit:rust` | `test:windows`, `test:rust:windows`, `test:render:windows` |
-| package | | `package:windows` |
-| release | `release:notes`, `release:upload`, `release:publish` | |
-| maintain | `renovate` | |
+| CI (`ci.yml`) | Every pull request, every push to `main`, and every `v*` tag through Release | Lints, tests and audits the code |
+| Slow (`slow.yml`) | Every night on `main`, by hand from the Actions tab, and every `v*` tag through Release | Runs the render, export and offline suites and builds the installer |
+| Release (`release.yml`) | A pushed `v*` tag | Checks the tag, runs CI and Slow, and drafts a GitHub Release |
+| CodeQL (`codeql.yml`) | Every pull request, every push to `main`, and weekly | Scans the Python, TypeScript, Rust and workflow code |
 
-Every merge request runs `lint:repo` (the version and pin check, Ruff, the
-`ci/` tests and the remaining pre-commit hooks), GitLab SAST and Secret
-Detection. The other jobs run in a merge request only when it changes what
-they check, or the CI files that define them:
+The jobs of CI:
 
-- `lint:python` and `test:python`: the worker, the tests, the scenes, the
-  spec, the scripts, the packaging files and the Python dependencies and
-  pins;
-- `test:typst`: the worker, the tests, the Python dependencies and pins, the
-  Typst pin and `ci/install-typst.sh`;
-- `build:ui`, `lint:ui` and `test:ui`: the UI and the shared fixtures and
-  worker messages its tests read;
-- `build:ui` and `test:rust`: the shell and the fixtures its tests embed. The
-  shell's JSON configuration also runs `lint:ui`;
+| Job | Runner | What it does |
+| --- | --- | --- |
+| `changes` | Linux | Picks the lanes that a pull request needs, with `ci/changed_lanes.py` |
+| `python-lint` | Linux | The version and pin check, Ruff, mypy for win32 and linux, `uv lock --check`, the worker package build and the `ci/` tests |
+| `hygiene` | Linux | The pre-commit hooks that no other job runs: the whitespace, line-ending, merge-conflict, large-file, YAML, TOML and JSON checks, and the schema checks of the workflows and the Dependabot configuration |
+| `ui` | Linux | ESLint, tsc, Prettier, vitest with coverage, and the production build |
+| `rust-linux` | Linux | rustfmt, Clippy and cargo test |
+| `rust-windows` | Windows | rustfmt, Clippy and cargo test with the ignored tests: the Job Object test and the tests that start the real worker |
+| `python-tests` | Linux | The fast lane on Python 3.14.9 and 3.13.17, with the worker's coverage |
+| `python-tests-windows` | Windows | The fast lane with the Win32 tests, and the `ci/` tests |
+| `typst` | Linux | The Typst tests, with the pinned Typst |
+| `audit-python`, `audit-npm`, `audit-rust` | Linux | pip-audit of `uv.lock`, npm audit of the UI's runtime packages, and cargo-deny of the shell's crates with `ci/deny.toml` |
+| `result` | Linux | The `CI result` check, which passes when every other job passed or was skipped |
+
+`changes`, `python-lint`, `hygiene` and `result` run every time. Each other job
+belongs to a lane, and in a pull request a lane runs only when the change
+touches a file that its jobs test, lint or read:
+
+- `python-tests`: the worker, the tests, the scenes, the spec, the scripts,
+  the packaging files and the Python dependencies and pins;
+- `python-tests-windows`: the same files, the `ci/` tests and
+  `ci/windows-tools.ps1`;
+- `typst`: the worker, the tests, the Python dependencies and pins, the Typst
+  pin and `ci/install-typst.sh`;
+- `ui`: the UI, the shell's JSON configuration, and the shared fixtures and
+  worker messages that its tests read;
+- `rust-linux`: the shell and the fixtures its tests embed. `rust-windows`
+  also runs for a change to the worker, `.python-version` or
+  `ci/windows-tools.ps1`;
 - each audit: its lockfile and manifest, and `ci/deny.toml` for
-  `audit:rust`;
-- `test:windows`: the worker, the tests, the scenes, the scripts, the `ci/`
-  tests and the Python dependencies and pins.
+  `audit-rust`.
 
-Merges are semi-linear, so the default branch runs only `lint:repo`, SAST and
-Secret Detection. The Windows Rust build (`test:rust:windows`), the render,
-export and offline suites (`test:render:windows`) and the installer
-(`package:windows`) run on tags, and otherwise only when someone starts them
-as manual jobs. A tag runs every job, and a protected `vX.Y.Z` tag publishes a
-release, as [CONTRIBUTING.md](CONTRIBUTING.md) describes.
+A lane that a pull request does not need shows as skipped. A change to
+`ci.yml` or `ci/changed_lanes.py` runs every lane, and so does every push to
+`main` and every tag. A new push to a pull request cancels its running checks.
+`ci/test_pipeline.py` holds the lanes to the files their jobs read, and the
+workflows to the scripts, pins and paths they name.
 
-Test coverage of the worker and the UI is reported, never enforced.
+Linux never compiles the shell's `cfg(windows)` code; `rust-windows` does. The
+render, export and offline suites and the installer build are slow, so no pull
+request runs them. The Slow workflow runs them every night, for every tag, and
+whenever someone starts it on a branch from the Actions tab, as a change to
+rendering, export, the bundle or its pins should. A tag runs every job of CI
+and Slow and drafts a release, as [CONTRIBUTING.md](CONTRIBUTING.md)
+describes.
+
+The jobs upload their JUnit reports, and the worker's and the UI's coverage,
+as workflow artifacts. Coverage is reported, never enforced.
+
+CodeQL's alerts show in the repository's Security tab. GitHub's secret
+scanning and push protection check every push, and the gitleaks pre-commit
+hook checks each commit before it is made. Every week Dependabot
+(`.github/dependabot.yml`) opens grouped pull requests for the dev tools in
+`uv.lock`, the npm packages, the Rust crates and the actions the workflows
+use. It never moves the versions that the spec pins.
 
 ## Licence
 
@@ -285,5 +311,5 @@ terms, and includes a written offer of the FFmpeg source. It ships with the
 installer and with every release, and the app's Notices panel shows it.
 
 Report security problems as [SECURITY.md](SECURITY.md) describes, and see
-[CONTRIBUTING.md](CONTRIBUTING.md) before you open a merge request.
+[CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request.
 [CHANGELOG.md](CHANGELOG.md) lists the changes in each release.

@@ -1,7 +1,10 @@
-# git-cliff writes CHANGELOG.md from the Conventional Commits history (D72).
+# git-cliff writes CHANGELOG.md from the Conventional Commits history.
 #
 #   git cliff --tag v<new version> --output CHANGELOG.md   # at a release
 #   git cliff --unreleased                                 # preview
+#
+# For a pushed tag, .github/workflows/release.yml writes the notes of the
+# draft GitHub Release with `git cliff --latest --strip header`.
 #
 # Release tags are vX.Y.Z. Formatting-only (style) commits and the release
 # commits themselves are left out.

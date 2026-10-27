@@ -3,7 +3,7 @@
     generate_notices.py [BUNDLE] [--output FILE]
 
 BUNDLE defaults to packaging/bundle and FILE to BUNDLE/THIRD_PARTY_NOTICES.txt,
-which the installer ships as runtime/THIRD_PARTY_NOTICES.txt (D75). On
+which the installer ships as runtime/THIRD_PARTY_NOTICES.txt. On
 Windows, `tauri build` runs it on the built bundle, then
 scripts/check_bundle.py, which fails until it has run, before it makes the
 installer (beforeBundleCommand in tauri.windows.conf.json). The bundle build
@@ -152,7 +152,7 @@ AV_LIBRARIES = {
 # and links into the FFmpeg libraries, with no file in av.libs: the project,
 # its licence and where its source is published.
 FFMPEG_LINKED = {"mp3lame": ("LAME", "LGPL-2.0-or-later", "https://lame.sourceforge.io")}
-# D75: the GPL and LGPL libraries in av.libs ship with an offer of their source.
+# The GPL and LGPL libraries in av.libs ship with an offer of their source.
 SOURCE_OFFER = """\
 These libraries are used unmodified, as PyAV {av} ships them. The pyav-ffmpeg
 project (https://github.com/PyAV-Org/pyav-ffmpeg) builds them for PyAV and
@@ -162,10 +162,12 @@ the source address of every other library is listed above.
 
 Written offer: for at least three years after the Mathimator maintainers
 distribute this copy of Mathimator, they will give any third party who asks
-through the Mathimator issue tracker a complete machine-readable copy of the
-corresponding source code of the libraries above that are licensed under the
-GNU GPL or LGPL, for a charge no more than the cost of physically performing
-the source distribution."""
+through the Mathimator issue tracker
+(https://github.com/Farsalis/mathimator/issues) a complete machine-readable
+copy of the corresponding source code of the libraries above that are
+licensed under the GNU GPL or LGPL, for a charge no more than the cost of
+physically performing the source distribution. Mathimator's own source is at
+https://github.com/Farsalis/mathimator."""
 # The Windows installer embeds Microsoft's WebView2 offline installer
 # (webviewInstallMode in tauri.windows.conf.json), whose version is whatever
 # Microsoft publishes when the installer is built.
