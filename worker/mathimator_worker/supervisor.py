@@ -6,36 +6,36 @@ It speaks protocol 2 (``protocol.py``). The commands are ``status``,
 ``export``, ``cancel`` and ``set_tex_error``. Every request gets exactly one
 reply line, except the jobs, ``cancel`` and ``set_tex_error``: a job sends
 ``queued`` when it has to wait, ``started``, ``beat_ready`` (previews only)
-and one terminal ``done``, ``error`` or ``rejected`` (C7.1). An unexpected
+and one terminal ``done``, ``error`` or ``rejected``. An unexpected
 exception is answered with ``error internal`` and the worker keeps serving;
-every state change is all-or-nothing, so nothing is left half changed (D03).
+every state change is all-or-nothing, so nothing is left half changed.
 
-The worker is bound to at most one project folder (contract C8). While bound
-it holds the folder's lock (D58), the folder's identity (D57) and the SHA-256
-of project.json as last read or written (D59). A write or a render first
+The worker is bound to at most one project folder. While bound it holds the
+folder's lock, the folder's identity and the SHA-256 of project.json as last
+read or written. A write or a render first
 checks that the folder is still there and that project.json is unchanged on
 disk, and refuses otherwise. A bind, a render and Clear cache refuse a
 project whose own folders or log include a symbolic link or a junction, a
 render also one in its quality folder or published export, and no delete
-ever goes through one (O10). A render then refuses a scene that cannot
+ever goes through one. A render then refuses a scene that cannot
 be generated, a scene with formulas while TeX is unavailable, and a project
-path Manim cannot use (C7.2). Startup never exits on a project problem: the
+path Manim cannot use. Startup never exits on a project problem: the
 worker stays unbound and says why in ``ready.startupError``. The worker never
 creates a project folder and never writes an empty project.json over a missing
 one.
 
 This process does not import Manim or PyAV, and at most one Manim runs. A new
 preview cancels an in-flight preview, and an export cancels an in-flight
-preview, then each starts in its place (C7.2). A request whose predecessor is
+preview, then each starts in its place. A request whose predecessor is
 still alive 1 s after it was told to stop waits in a hold slot, one for an
-export and one for a preview, and gets ``queued`` (D19). While an export runs
+export and one for a preview, and gets ``queued``. While an export runs
 or waits, the newest preview request waits behind it. Document edits never
 cancel an export and never start one. Progress comes from the files Manim
-writes, not from its log (``progress.py``, D13), and a finished export is
-copied into ``exports/`` outside the document lock (F164).
+writes, not from its log (``progress.py``), and a finished export is
+copied into ``exports/`` outside the document lock.
 
 A folder without project.json, started without ``--init``, is in hand-written
-mode (D42): there is no document, and jobs render the scene.py found in
+mode: there is no document, and jobs render the scene.py found in
 ``.mathimator/codegen/``. Only the phase 1 tests use it.
 """
 
@@ -127,15 +127,15 @@ EXPORT_RUNNING = "An export is already running."
 FILES_IN_USE = (
     "Some cache files are in use and were not removed. Close other programs using this project and try again."
 )
-# worker.log moves to worker.log.1 at this size, replacing the older copy (D55).
+# worker.log moves to worker.log.1 at this size, replacing the older copy.
 LOG_LIMIT = 5 * 1024 * 1024
-# Events whose payload the log records as a size only (D55).
+# Events whose payload the log records as a size only.
 _SUMMARIZED_EVENTS = frozenset({"state", "code"})
 # How often a running preview looks for finished partials.
 _POLL_SECONDS = 0.1
-# How long a cancelled job waits for Manim's pipes to close, which a child that escaped the kill can hold open (F036).
+# How long a cancelled job waits for Manim's pipes to close, which a child that escaped the kill can hold open.
 _DRAIN_SECONDS = 0.5
-# The output lines a failure keeps as its details (D23).
+# The output lines a failure keeps as its details.
 _TAIL_LINES = 80
 # The name of a quality folder Manim renders into: <height>p<fps>.
 _QUALITY = re.compile(r"\d+p\d+")
@@ -147,7 +147,7 @@ class _Job:
     profile: ProfileName
     thread: threading.Thread
     cancel: threading.Event
-    # An export that skips the export cache (D56).
+    # An export that skips the export cache.
     force: bool = False
     proc: subprocess.Popen[str] | None = None
     win_job: int | None = None
@@ -157,17 +157,17 @@ class _Job:
     manim_dir: Path | None = None
     argv: list[str] = field(default_factory=list)
     quality: str = ""
-    # The binding generation the job started under (C7.1).
+    # The binding generation the job started under.
     generation: int = 0
     captured: Project | None = None
-    # A project-mode preview: the chain keys of the document it renders (C7.1, F135).
+    # A project-mode preview: the chain keys of the document it renders.
     capture_keys: list[str] | None = None
-    # Where its progress starts: the beats whose partial is current, and the beats Manim renders in turn (C7.2).
+    # Where its progress starts: the beats whose partial is current, and the beats Manim renders in turn.
     ready: dict[int, Path] = field(default_factory=dict)
     waiting: list[int] | None = None
     # Set with the job's one terminal line (done, error or rejected).
     ended: bool = False
-    # When the job was first told to stop, by a cancel or a newer job, on the monotonic clock (D19).
+    # When the job was first told to stop, by a cancel or a newer job, on the monotonic clock.
     stop_requested: float | None = None
 
     def tell_to_stop(self) -> float:
@@ -192,12 +192,12 @@ class _Job:
 
 @dataclass
 class _Binding:
-    """What the worker holds for its bound folder (C8.1)."""
+    """What the worker holds for its bound folder."""
 
     lock: ProjectLock
-    # The folder's (st_dev, st_ino) when it was bound (D57).
+    # The folder's (st_dev, st_ino) when it was bound.
     identity: tuple[int, int]
-    # The SHA-256 of project.json as last read or written (D59).
+    # The SHA-256 of project.json as last read or written.
     fingerprint: str
 
 
@@ -220,10 +220,10 @@ class Supervisor:
         init: bool,
     ) -> None:
         self.python = python
-        # What runs Manim: the real interpreter behind a venv launcher (D16).
+        # What runs Manim: the real interpreter behind a venv launcher.
         self._manim_python, self._venv_launcher = manim_interpreter(python)
         # Resolve like _open_project does. Windows may hand over an 8.3 alias
-        # such as C:\Users\JOHNSM~1, and TeX stops reading a path at "~" (G4.1).
+        # such as C:\Users\JOHNSM~1, and TeX stops reading a path at "~".
         # One attribute, so a bind replaces the folder and all its paths at once.
         self.layout = ProjectLayout(project.resolve())
         self._log_override = log_path
@@ -231,19 +231,19 @@ class Supervisor:
         self._state_lock = threading.Lock()
         self._doc_lock = threading.Lock()
         self._stdout_lock = threading.Lock()
-        # The job whose thread runs, and the jobs held until it ends (C7.2). A held job implies a current one.
+        # The job whose thread runs, and the jobs held until it ends. A held job implies a current one.
         self._current: _Job | None = None
         self._held_export: _Job | None = None
         self._held_preview: _Job | None = None
         self.session: Session | None = None
         self._index: PreviewIndex | None = None
         self._binding: _Binding | None = None
-        # Counts the binds. A job records the one it started under (C7.1).
+        # Counts the binds. A job records the one it started under.
         self._generation = 0
         # Why there is no session: the refusal of the startup project.json, or not_a_project in hand-written mode.
         self._startup_error: DocumentError | None = None
         self._handwritten = False
-        # Why formulas cannot render, when the shell found TeX missing or failing its self-test (D31, C14 Q4).
+        # Why formulas cannot render, when the shell found TeX missing or failing its self-test.
         # MATHIMATOR_TEX_ERROR gives it at startup and set_tex_error afterwards. It changes under the document
         # lock, so a job start reads one value.
         self._tex_error = os.environ.get("MATHIMATOR_TEX_ERROR") or None
@@ -279,10 +279,10 @@ class Supervisor:
         return self._log_override if self._log_override is not None else self.layout.log_path
 
     def _start(self, init: bool) -> None:
-        """Bind the startup folder in the order of C8.2. A refusal leaves the worker unbound and serving."""
+        """Bind the startup folder in the spec's startup order. A refusal leaves the worker unbound and serving."""
         identity = folder_identity(self.project)
         if identity is None:
-            # Nothing is created, and the log goes to stderr (G1.3).
+            # Nothing is created, and the log goes to stderr.
             self._startup_error = DocumentError(PROJECT_UNAVAILABLE, code="project_unavailable")
             return
         if not init and not self.layout.project_file.exists():
@@ -303,7 +303,7 @@ class Supervisor:
         """Stop the running job, drop the held ones and release the project lock, as exiting does.
 
         The running job gets 1 s to end, so a Manim that starts while the
-        worker closes is still killed by its job, not left running (F028).
+        worker closes is still killed by its job, not left running.
         """
         with self._state_lock:
             current, self._held_export, self._held_preview = self._current, None, None
@@ -314,7 +314,7 @@ class Supervisor:
                 self._binding.lock.release()
 
     def _sweep_interrupted_run(self) -> None:
-        """Remove what a Manim run cut off by a quit, a crash or a kill left behind (G1.1, G5.10).
+        """Remove what a Manim run cut off by a quit, a crash or a kill left behind.
 
         The run marker records what the run's quality folder held before
         Manim started, so this removes what a discard of the run would have,
@@ -346,10 +346,10 @@ class Supervisor:
             self.log(f"process table warmup failed: {exc}")
 
     def log(self, message: str) -> None:
-        """Append one line to the log. Never raises (D03) and never creates the project folder (G1.3).
+        """Append one line to the log. Never raises and never creates the project folder.
 
-        A line goes to stderr when the log file cannot take it or is a link
-        (O10), or when no folder is bound and there is no ``--log`` file.
+        A line goes to stderr when the log file cannot take it or is a link,
+        or when no folder is bound and there is no ``--log`` file.
         """
         stamp = datetime.now(UTC).isoformat(timespec="milliseconds")
         line = f"{stamp} {message}\n"
@@ -368,7 +368,7 @@ class Supervisor:
             if self._binding is None and not self._handwritten:
                 return False
             # The log is <project>/.mathimator/logs/worker.log. Its folders are made
-            # only inside the project, and no line goes through a link there (O10).
+            # only inside the project, and no line goes through a link there.
             root = log_path.parents[2]
             if first_link(root, log_path) is not None:
                 return False
@@ -393,8 +393,8 @@ class Supervisor:
         """Write one line to stdout.
 
         A line JSON cannot hold, such as one with a NaN, goes out as ``error internal``
-        for the same id instead, so the shell never reads a line it cannot parse (C2).
-        The log records ``state`` and ``code`` lines by size only (D55).
+        for the same id instead, so the shell never reads a line it cannot parse.
+        The log records ``state`` and ``code`` lines by size only.
         """
         try:
             payload = json.dumps(event, ensure_ascii=False, allow_nan=False)
@@ -436,7 +436,7 @@ class Supervisor:
         try:
             self._commands[request.cmd](request)
         except Exception as exc:
-            # D03: answer at once and keep serving, with the undo history and any
+            # Answer at once and keep serving, with the undo history and any
             # running export. Every state change is all-or-nothing, so none is half done.
             self._log_exception(f"{request.cmd} {request.id} failed")
             self.emit(internal(request.id, exc))
@@ -450,9 +450,10 @@ class Supervisor:
     def _claim(self, folder: Path, identity: tuple[int, int], *, init: bool) -> _Claim:
         """Lock ``folder``, write an empty project.json there when ``init`` asks for one, and read it.
 
-        These are steps 3 to 5 of C8.2 and 4 to 6 of C8.3, after the check that
-        none of the folder's own folders, nor its log, is a link (O10), which
-        comes before the lock writes there. Reopening the bound folder keeps its lock. A
+        These are the steps of startup and of ``open_project`` that take the
+        lock, write the empty project and read it, after the check that none of
+        the folder's own folders, nor its log, is a link, which comes before the
+        lock writes there. Reopening the bound folder keeps its lock. A
         refusal raises DocumentError after undoing what the attempt created.
         """
         layout = ProjectLayout(folder)
@@ -489,7 +490,7 @@ class Supervisor:
         A new session takes the folder's render records; the bound session
         (Save As) keeps its own. The preview index is read from the folder
         and rebuilt. A bind that fails part way puts the old binding back
-        whole, with its lock still held (D03, F005).
+        whole, with its lock still held.
         """
         previous, old_session = self._binding, self.session
         kept = (self.layout, previous, old_session, self._index, self._handwritten, self._startup_error)
@@ -523,7 +524,7 @@ class Supervisor:
         )
 
     def _set_tex_error(self, request: Request) -> None:
-        """Use the shell's latest TeX error for the jobs that start from now on; null clears it (C9.7, C14 Q4).
+        """Use the shell's latest TeX error for the jobs that start from now on; null clears it.
 
         It writes no line, and leaves a running job, the document and its undo history as they are.
         """
@@ -547,7 +548,7 @@ class Supervisor:
         return rejected(job_id, "no_project", f"No project is open.{reason}")
 
     def _edit(self, request: Request) -> None:
-        """Apply one edit in the order of C8.1. An edit that changes nothing writes nothing (D08)."""
+        """Apply one edit in the spec's order for edits. An edit that changes nothing writes nothing."""
         with self._doc_lock:
             session = self.session
             if session is None:
@@ -558,7 +559,7 @@ class Supervisor:
                     payload = dumps_project(project)
                     changed = payload != dumps_project(session.project)
                     if changed:
-                        # Saved before it is committed, so a refused or failed save changes nothing (D05).
+                        # Saved before it is committed, so a refused or failed save changes nothing.
                         self._save_locked(payload)
                 except DocumentError as exc:
                     event = _refusal(request.id, exc)
@@ -617,7 +618,7 @@ class Supervisor:
         self.emit(event)
 
     def _open_project(self, request: Request) -> None:
-        """Bind a folder, or the bound one afresh, in the order of C8.3. A refusal changes nothing."""
+        """Bind a folder, or the bound one afresh, in the spec's ``open_project`` order. A refusal changes nothing."""
         if self._export_running():
             self._reject(request.id, "export_running", EXPORT_RUNNING)
             return
@@ -643,7 +644,7 @@ class Supervisor:
         self.emit(event)
 
     def _reload(self, request: Request) -> None:
-        """Read project.json again as a new session, undo history cleared (C8.3). Jobs keep running."""
+        """Read project.json again as a new session, undo history cleared. Jobs keep running."""
         with self._doc_lock:
             session = self.session
             if session is None:
@@ -663,7 +664,7 @@ class Supervisor:
         self.emit(event)
 
     def _overwrite(self, request: Request) -> None:
-        """Write the document in memory over project.json, whatever changed on disk (D59)."""
+        """Write the document in memory over project.json, whatever changed on disk."""
         with self._doc_lock:
             session = self.session
             if session is None:
@@ -678,7 +679,7 @@ class Supervisor:
         self.emit(event)
 
     def _save_as(self, request: Request) -> None:
-        """Copy the project into an empty folder and bind that, keeping the session and its history (D29, C8.3).
+        """Copy the project into an empty folder and bind that, keeping the session and its history.
 
         The old folder is never changed. A refusal removes what was written in the target.
         """
@@ -728,15 +729,15 @@ class Supervisor:
         if self._binding is not None and identity == self._binding.identity:
             return "it is the folder of the open project"
         for name in ("project.json", ".mathimator"):
-            # A link counts, whether or not it leads anywhere (O10).
+            # A link counts, whether or not it leads anywhere.
             if os.path.lexists(target / name):
                 return f"it already holds {name}"
         return None
 
     def _copy_cache_to(self, target: Path, session: Session) -> None:
-        """Copy the render cache and the exports into ``target`` (C8.3).
+        """Copy the render cache and the exports into ``target``.
 
-        A folder the old project no longer has is skipped (D57). The cache
+        A folder the old project no longer has is skipped. The cache
         records are written from memory, with the index paths relative to the
         project, so they name the copies. Nothing else is copied: not the
         generated code, the glyph files, the logs, the lock or a temp-project
@@ -765,7 +766,7 @@ class Supervisor:
             return self._export_running_locked()
 
     def _export_running_locked(self) -> bool:
-        """Whether an export runs or is held (D22). Caller holds ``_state_lock``."""
+        """Whether an export runs or is held. Caller holds ``_state_lock``."""
         current = self._current
         return self._held_export is not None or (current is not None and current.profile == "export")
 
@@ -778,7 +779,7 @@ class Supervisor:
         }
 
     def _render_preview(self, request: Request) -> None:
-        """Start a preview, or hold it while the render before it runs or stops (C7.2)."""
+        """Start a preview, or hold it while the render before it runs or stops."""
         job = self._new_job(request.id, "preview")
         with self._state_lock:
             current = self._current
@@ -788,7 +789,7 @@ class Supervisor:
             replaced, self._held_preview = self._held_preview, job
             behind_export = self._export_running_locked()
         if replaced is not None:
-            # The newer preview takes the slot; the one it replaces is cancelled (C7.3).
+            # The newer preview takes the slot; the one it replaces is cancelled.
             self.emit(cancelled(replaced.job_id))
         if behind_export:
             self.log(f"preview {job.job_id} waiting for export")
@@ -796,7 +797,7 @@ class Supervisor:
             self._supersede(current, job)
 
     def _export(self, request: Request) -> None:
-        """Start an export, or hold it while the preview before it stops (C7.2). One export runs or waits at a time."""
+        """Start an export, or hold it while the preview before it stops. One export runs or waits at a time."""
         job = self._new_job(request.id, "export", force=request.flag("force"))
         with self._state_lock:
             current = self._current
@@ -811,10 +812,10 @@ class Supervisor:
             self._supersede(current, job)
 
     def _supersede(self, current: _Job, job: _Job) -> None:
-        """Stop the preview ``current`` for the held ``job``, which starts when ``current`` has ended (C7.2).
+        """Stop the preview ``current`` for the held ``job``, which starts when ``current`` has ended.
 
         A preview still alive 1 s after it was first told to stop keeps
-        ``job`` waiting in its slot, and ``queued`` says so (D19, F036).
+        ``job`` waiting in its slot, and ``queued`` says so.
         """
         if self._stop(current):
             return
@@ -824,7 +825,7 @@ class Supervisor:
                 self.emit(queued(job.job_id))
 
     def _stop_previews(self) -> None:
-        """Before a switch: cancel a held preview and stop a running one (C8.3).
+        """Before a switch: cancel a held preview and stop a running one.
 
         The switch goes ahead even if the running preview is still alive after 1 s.
         """
@@ -840,7 +841,7 @@ class Supervisor:
         """Cancel ``job``, kill its Manim and wait for its thread. Return whether it stopped.
 
         The wait ends 1 s after the job was first told to stop, so a job that
-        outlived an earlier stop or cancel is not waited for again (D19).
+        outlived an earlier stop or cancel is not waited for again.
         """
         self.log(f"stopping {job.job_id}")
         told = job.tell_to_stop()
@@ -874,7 +875,7 @@ class Supervisor:
         return None
 
     def _cancel(self, request: Request) -> None:
-        """Cancel a running or held job (C7.3). Success writes no line; the target ends with ``error cancelled``."""
+        """Cancel a running or held job. Success writes no line; the target ends with ``error cancelled``."""
         target = request.string("jobId")
         with self._state_lock:
             current = self._current
@@ -892,7 +893,7 @@ class Supervisor:
             self._reject(request.id, "no_such_job", "No render with that id is running.")
 
     def _kill_process(self, job: _Job) -> None:
-        """End the job's Manim and every process it started. Never raises (F025)."""
+        """End the job's Manim and every process it started. Never raises."""
         with self._state_lock:
             proc = job.proc
             if proc is None or proc.poll() is not None:
@@ -916,7 +917,7 @@ class Supervisor:
         """Close the job's Job Object, whose kill-on-close ends whatever Manim left running.
 
         The handle leaves the job under the lock, so it is closed once, by
-        whichever call takes it first (F023).
+        whichever call takes it first.
         """
         with self._state_lock:
             handle, job.win_job = job.win_job, None
@@ -927,7 +928,7 @@ class Supervisor:
                 self.log(f"job close failed: {exc}")
 
     def _clear_cache(self, request: Request) -> None:
-        """Delete the derived files (C8.3). Files another program holds stay, and the reply says so (D58)."""
+        """Delete the derived files. Files another program holds stay, and the reply says so."""
         with self._state_lock:
             # A held job waits behind the current one, so this covers held jobs too.
             busy = self._current is not None
@@ -955,11 +956,11 @@ class Supervisor:
         self.emit(event)
 
     def _remove_derived(self) -> list[str]:
-        """Delete the cache, the generated code, the glyph files and every log but the active one (D55).
+        """Delete the cache, the generated code, the glyph files and every log but the active one.
 
         The active log is emptied. project.json, exports/, the lock and the
         temp-project marker stay. A read-only file or folder is made writable
-        first (S26), and a link goes, never what it points to (O10). Return
+        first, and a link goes, never what it points to. Return
         what could not be removed, each with the OS reason.
         """
         left: list[str] = []
@@ -1002,7 +1003,7 @@ class Supervisor:
             self._finish_job(job)
 
     def _end(self, job: _Job, event: dict[str, object]) -> None:
-        """Write the job's terminal line. A job gets exactly one; any later one is dropped (C2)."""
+        """Write the job's terminal line. A job gets exactly one; any later one is dropped."""
         with self._state_lock:
             if job.ended:
                 return
@@ -1010,7 +1011,7 @@ class Supervisor:
         self.emit(event)
 
     def _finish_job(self, job: _Job) -> None:
-        """Start the held export, or else the held preview, now that ``job`` has ended (C7.2)."""
+        """Start the held export, or else the held preview, now that ``job`` has ended."""
         with self._state_lock:
             self._current = None
             if self._held_export is not None:
@@ -1052,11 +1053,11 @@ class Supervisor:
     def _clear_stale_media(self, job: _Job) -> bool:
         """Remove what this render must not reuse. Return False when it cannot start.
 
-        Manim never empties the PNG-sequence folder (F021), and it reuses any
-        partial movie that exists, complete or not (C14 Q3). TeX reads its
+        Manim never empties the PNG-sequence folder, and it reuses any
+        partial movie that exists, complete or not. TeX reads its
         inputs from Manim's TeX folder before its own, and Manim compiles any
         TeX source or DVI file it finds there, so a shared project could plant
-        one that reads local files past the formula allowlist (D18, F076).
+        one that reads local files past the formula allowlist.
         """
         layout = job.layout
         assert layout is not None
@@ -1084,7 +1085,7 @@ class Supervisor:
                 self._remove_clip(root, path)
 
     def _remove_clip(self, root: Path, path: Path) -> bool:
-        """Delete an incomplete clip, never through a link below ``root`` (O10). Return False when it is still there."""
+        """Delete an incomplete clip, never through a link below ``root``. Return False when it is still there."""
         try:
             remove_below(root, path, retry_read_only)
         except OSError as exc:
@@ -1094,7 +1095,7 @@ class Supervisor:
         return True
 
     def _write_run_marker(self, job: _Job, marker: Path, progress: ManimProgress) -> bool:
-        """Record the run before Manim starts, so a later bind can sweep it (G1.1, G1.2, G5.10).
+        """Record the run before Manim starts, so a later bind can sweep it.
 
         The record names the run's quality folder and format, and holds what
         that folder holds now (``ManimProgress.snapshot``).
@@ -1159,7 +1160,7 @@ class Supervisor:
         try:
             output, return_code = self._supervise(job, proc, progress)
         except BaseException:
-            # Whatever failed, Manim must not run on unwatched with its pipes filling up (F097).
+            # Whatever failed, Manim must not run on unwatched with its pipes filling up.
             self._kill_process(job)
             raise
         finally:
@@ -1168,7 +1169,7 @@ class Supervisor:
             self._discard(job, progress)
         elif return_code != 0:
             # Manim may have been killed from outside or crashed natively, so
-            # its newest partial can be cut off (G1.1).
+            # its newest partial can be cut off.
             self._discard(job, progress)
             tex_log = failed_tex_log(written_since(tex_logs, file_stamps(tex, "*.log")))
             message = format_render_failure(return_code, output, tex_log)
@@ -1193,19 +1194,19 @@ class Supervisor:
             self.log(f"job assigned pid={proc.pid}")
         elif sys.platform == "win32":
             # Without a Job Object, a cancel walks the process table. Its helper
-            # starts now, beside Manim, and never at startup (D15).
+            # starts now, beside Manim, and never at startup.
             threading.Thread(target=self._warm_process_control, name="process-table", daemon=True).start()
         if stopped:
             self._kill_process(job)
         else:
             self.emit({"event": "started", "jobId": job.job_id})
 
-        # Every line goes to worker.log; the last ones are a failure's details (D23).
+        # Every line goes to worker.log; the last ones are a failure's details.
         tail: deque[str] = deque(maxlen=_TAIL_LINES)
         tail_lock = threading.Lock()
 
         def drain(stream: IO[str]) -> None:
-            # To the end, cancelled or not, so Manim never blocks on a full pipe (F036).
+            # To the end, cancelled or not, so Manim never blocks on a full pipe.
             for line in stream:
                 with tail_lock:
                     tail.append(line)
@@ -1217,7 +1218,7 @@ class Supervisor:
             reader.start()
         return_code = self._wait(job, proc, progress)
         self._release_job(job)
-        # A cancelled job does not wait for a child that escaped the kill and still holds a pipe (F036).
+        # A cancelled job does not wait for a child that escaped the kill and still holds a pipe.
         deadline = time.monotonic() + _DRAIN_SECONDS if job.cancel.is_set() else None
         for reader in readers:
             reader.join(timeout=None if deadline is None else max(0.0, deadline - time.monotonic()))
@@ -1225,7 +1226,7 @@ class Supervisor:
             return "".join(tail), return_code
 
     def _wait(self, job: _Job, proc: subprocess.Popen[str], progress: ManimProgress) -> int:
-        """Wait for Manim to exit, sending each preview beat it finishes on the way (C7.2). Return its exit code."""
+        """Wait for Manim to exit, sending each preview beat it finishes on the way. Return its exit code."""
         while True:
             try:
                 return proc.wait(timeout=_POLL_SECONDS)
@@ -1234,9 +1235,9 @@ class Supervisor:
                     self._report_beats(job, progress.poll())
 
     def _discard(self, job: _Job, progress: ManimProgress) -> None:
-        """Delete what a cancelled or failed run left that may be cut off, and log it (D13, G5.10).
+        """Delete what a cancelled or failed run left that may be cut off, and log it.
 
-        A PNG sequence is whole only when the run succeeds, so Manim's PNG folder goes too (F021).
+        A PNG sequence is whole only when the run succeeds, so Manim's PNG folder goes too.
         """
         self._log_discarded(progress.discard())
         if job.output_format == "png_sequence":
@@ -1253,7 +1254,7 @@ class Supervisor:
         return not failed
 
     def _remove_frames(self, layout: ProjectLayout) -> bool:
-        """Delete Manim's PNG folder, whose sequence may be cut off (F021). Return False when it is still there."""
+        """Delete Manim's PNG folder, whose sequence may be cut off. Return False when it is still there."""
         frames = layout.png_frames_dir
         if not frames.exists():
             return True
@@ -1298,11 +1299,11 @@ class Supervisor:
             self._finish_preview(job, movie, segments, progress.finish(segments))
 
     def _report_beats(self, job: _Job, beats: list[tuple[int, Path]]) -> None:
-        """Record finished preview beats in the index and send their ``beat_ready`` lines (C7.1). Exports send none.
+        """Record finished preview beats in the index and send their ``beat_ready`` lines. Exports send none.
 
         Both happen under the document lock, which is taken before the stdout
         lock. An edit, undo, reload or bind therefore either commits first, and
-        no line is sent, or its reply follows the lines on stdout (F135).
+        no line is sent, or its reply follows the lines on stdout.
         """
         if not beats:
             return
@@ -1316,7 +1317,7 @@ class Supervisor:
             self._emit_beats(job, beats)
 
     def _finish_preview(self, job: _Job, movie: Path, segments: list[Path], beats: list[tuple[int, Path]]) -> None:
-        """Record the finished preview, send the beats not sent yet, then ``done``. No ``state`` line follows (C5).
+        """Record the finished preview, send the beats not sent yet, then ``done``. No ``state`` line follows.
 
         The segment list holds the full beat order, so it settles every partial
         the run recorded while it ran.
@@ -1330,14 +1331,14 @@ class Supervisor:
                     self._save_sidecars_locked()
                 self._emit_beats(job, beats)
             elif self._index is not None and self._index.output == str(movie):
-                # The run overwrote the movie of an earlier preview with one of another document (F010).
+                # The run overwrote the movie of an earlier preview with one of another document.
                 self._index.output = None
                 self._write_index_locked()
         if not job.cancel.is_set():
             self._end(job, {"event": "done", "jobId": job.job_id, "path": str(movie)})
 
     def _may_report_locked(self, job: _Job) -> bool:
-        """Whether ``job`` may record and send its beats (C7.1). Caller holds ``_doc_lock``.
+        """Whether ``job`` may record and send its beats. Caller holds ``_doc_lock``.
 
         The job is not cancelled and belongs to the folder bound now. A
         project-mode preview must also render the document open now; a
@@ -1356,17 +1357,17 @@ class Supervisor:
             self.emit({"event": "beat_ready", "jobId": job.job_id, "beatIndex": index, "path": str(path)})
 
     def _finish_export(self, job: _Job, movie: Path) -> None:
-        """Publish the finished export, then send ``done`` with whether it is the current export (C7.1, C7.2)."""
+        """Publish the finished export, then send ``done`` with whether it is the current export."""
         captured = job.captured
         if job.cancel.is_set():
             return
         if captured is None:
-            # Hand-written mode: Manim's own output, with no copy in exports/ and no current (C7.7).
+            # Hand-written mode: Manim's own output, with no copy in exports/ and no current.
             self._end(job, {"event": "done", "jobId": job.job_id, "path": str(movie)})
             return
         assert job.layout is not None
         try:
-            # Outside the document lock, so edits do not wait for the copy (F031, F164).
+            # Outside the document lock, so edits do not wait for the copy.
             published = publish_export(job.layout, captured, movie, job.quality)
         except PublishFailed as exc:
             self._end(job, error(job.job_id, "publish_failed", str(exc)))
@@ -1376,7 +1377,7 @@ class Supervisor:
         self._end(job, {"event": "done", "jobId": job.job_id, "path": str(published), "current": current})
 
     def _prepare_job_locked(self, job: _Job) -> bool:
-        """Run the start checks of C7.2 in order, then write the scene and the argv.
+        """Run the checks for starting a job in order, then write the scene and the argv.
 
         Return False when the job has ended without Manim.
         """
@@ -1394,9 +1395,9 @@ class Supervisor:
             own.append(layout.export_path(project))
         try:
             # The start never writes project.json: every edit has saved it, and
-            # a file changed outside Mathimator must not be overwritten (D59).
+            # a file changed outside Mathimator must not be overwritten.
             self._check_disk_locked()
-            # Manim writes, and the job deletes, only in the project's own folders (O10).
+            # Manim writes, and the job deletes, only in the project's own folders.
             _check_links(layout, *own)
             source = _scene_source(project)
             latex = needs_latex(project)
@@ -1412,7 +1413,7 @@ class Supervisor:
         if job.profile == "export":
             export_format = project.export_profile.format
             export_transparent = project.export_profile.transparent
-            # Re-export skips the cache; the older file stays until the new one replaces it (D56).
+            # Re-export skips the cache; the older file stays until the new one replaces it.
             existing = None if job.force else existing_export(layout, project)
             if existing is not None:
                 self.log("export cache hit")
@@ -1421,7 +1422,7 @@ class Supervisor:
         # A shared project folder could carry a planted codegen/__pycache__ or a
         # module that shadows one Manim imports. Manim imports scene.py from
         # this folder, and runs in it, so it holds nothing but the scene just
-        # written (F170, D60).
+        # written.
         codegen = layout.scene_path.parent
         try:
             _remove_tree(layout.root, codegen)
@@ -1453,9 +1454,9 @@ class Supervisor:
         return True
 
     def _prepare_handwritten_locked(self, job: _Job) -> bool:
-        """Render the scene.py already in the folder (C7.7), with no document, checks or index."""
+        """Render the scene.py already in the folder, with no document, checks or index."""
         if not self._handwritten:
-            # D42: a project.json that was refused never renders a scene.py left from before.
+            # A project.json that was refused never renders a scene.py left from before.
             self._end(job, self._no_project(job.job_id))
             return False
         layout = self.layout
@@ -1480,7 +1481,7 @@ class Supervisor:
             if beat.fresh or beat.last_good is None:
                 continue
             source = Path(beat.last_good)
-            # Reading the index kept only paths inside these folders; check again before reading the file (F035).
+            # Reading the index kept only paths inside these folders; check again before reading the file.
             if not any(source.is_relative_to(folder) for folder in (layout.media_dir, layout.last_good_dir)):
                 continue
             if not source.is_file():
@@ -1506,36 +1507,36 @@ class Supervisor:
         )
 
     def _check_root_locked(self) -> _Binding:
-        """Check 1 of C8.1: the bound folder is still there, with the identity it was bound with (D57)."""
+        """Check 1 of the write and render checks: the folder is still there, with the identity it was bound with."""
         binding = self._binding
         if binding is None or folder_identity(self.project) != binding.identity:
             raise DocumentError(PROJECT_UNAVAILABLE, code="project_unavailable")
         return binding
 
     def _check_file_locked(self) -> _Binding:
-        """Checks 1 and 2 of C8.1: the folder, and a project.json in it."""
+        """Checks 1 and 2 of the write and render checks: the folder, and a project.json in it."""
         binding = self._check_root_locked()
         if not self.layout.project_file.exists():
             raise DocumentError(PROJECT_UNAVAILABLE, code="project_unavailable")
         return binding
 
     def _read_disk_locked(self) -> tuple[_Binding, bytes]:
-        """Checks 1 to 3 of C8.1: the folder, then the bytes of its project.json (G5.9)."""
+        """Checks 1 to 3 of the write and render checks: the folder, then the bytes of its project.json."""
         binding = self._check_file_locked()
         return binding, _read_project_bytes(self.layout.project_file)
 
     def _check_disk_locked(self) -> _Binding:
-        """The checks of C8.1 before a write or a render, ending with the fingerprint (D59)."""
+        """The write and render checks, all four, ending with the fingerprint."""
         binding, data = self._read_disk_locked()
         if fingerprint(data) != binding.fingerprint:
             raise DocumentError(PROJECT_CHANGED, code="project_changed")
         return binding
 
     def _save_locked(self, payload: str, *, overwrite: bool = False) -> None:
-        """Write ``payload`` as project.json after the checks of C8.1, and take its fingerprint.
+        """Write ``payload`` as project.json after the write and render checks, and take its fingerprint.
 
-        ``overwrite`` skips the fingerprint check (D59). Raises DocumentError,
-        leaving the file and the fingerprint as they were (D05).
+        ``overwrite`` skips the fingerprint check. Raises DocumentError,
+        leaving the file and the fingerprint as they were.
         """
         binding = self._check_file_locked() if overwrite else self._check_disk_locked()
         data = payload.encode("utf-8")
@@ -1557,7 +1558,7 @@ class Supervisor:
         self._write_record(self.layout.index_path, self._index.stored(self.project))
 
     def _write_record(self, path: Path, value: object) -> None:
-        """Write one cache record. A record that cannot be written is logged, not fatal (C8.1)."""
+        """Write one cache record. A record that cannot be written is logged, not fatal."""
         try:
             make_folders(self.project, path.parent)
             path.write_text(dumps_record(value), encoding="utf-8", newline="\n")
@@ -1568,7 +1569,7 @@ class Supervisor:
         return read_record(self.layout.rendered_path)
 
     def _read_index(self) -> PreviewIndex | None:
-        """The stored index, keeping only paths inside this project's media and last-good folders (D18, F035)."""
+        """The stored index, keeping only paths inside this project's media and last-good folders."""
         layout = self.layout
         return load_index(read_record(layout.index_path), layout.root, (layout.media_dir, layout.last_good_dir))
 
@@ -1586,7 +1587,7 @@ def _segments(folder: Path) -> list[Path]:
 
 
 def _read_project_bytes(project_file: Path) -> bytes:
-    """The bytes of project.json, or ``read_failed`` with the OS reason (G5.9)."""
+    """The bytes of project.json, or ``read_failed`` with the OS reason."""
     try:
         return project_file.read_bytes()
     except OSError as exc:
@@ -1594,7 +1595,7 @@ def _read_project_bytes(project_file: Path) -> bytes:
 
 
 def _lock_folder(folder: Path) -> ProjectLock:
-    """Take ``folder``'s project lock (D58), or refuse with ``project_locked`` or ``lock_failed``."""
+    """Take ``folder``'s project lock, or refuse with ``project_locked`` or ``lock_failed``."""
     try:
         return ProjectLock.acquire(folder)
     except ProjectLocked as exc:
@@ -1606,7 +1607,7 @@ def _lock_folder(folder: Path) -> ProjectLock:
 def _check_links(layout: ProjectLayout, *also: Path) -> None:
     """Refuse with ``linked_folder`` when a path the project keeps Mathimator's files in, or one of ``also``, is a link.
 
-    A symbolic link or a junction there would point the worker's writes and deletes at another place (O10).
+    A symbolic link or a junction there would point the worker's writes and deletes at another place.
     """
     link = layout.linked_path(*also)
     if link is not None:
@@ -1614,7 +1615,7 @@ def _check_links(layout: ProjectLayout, *also: Path) -> None:
 
 
 def _rotate_log(log_path: Path) -> None:
-    """Move a full log to ``<log>.1``, replacing the older copy (D55).
+    """Move a full log to ``<log>.1``, replacing the older copy.
 
     A log that another program holds open is rotated by a later line.
     """
@@ -1636,7 +1637,7 @@ def _refusal(job_id: str, exc: DocumentError) -> dict[str, object]:
 
 
 def _scene_source(project: Project) -> str:
-    """The generated scene.py, or ``invalid_document`` with the codegen message (C7.2)."""
+    """The generated scene.py, or ``invalid_document`` with the codegen message."""
     try:
         return generate(project)
     except CodegenError as exc:
@@ -1644,7 +1645,7 @@ def _scene_source(project: Project) -> str:
 
 
 def _rendered_in_order(project: Project, stale: list[int]) -> list[int]:
-    """The beats of ``stale``, those that are not fresh, whose partials Manim writes in turn (C7.2).
+    """The beats of ``stale``, those that are not fresh, whose partials Manim writes in turn.
 
     Manim's key for a play holds the camera, which a camera move leaves in a
     state that depends on the frames drawn, so after the first beat whose kind
@@ -1657,7 +1658,7 @@ def _rendered_in_order(project: Project, stale: list[int]) -> list[int]:
 
 
 def _interrupted_run(layout: ProjectLayout, record: object) -> tuple[dict[Path, dict[Path, Stamp]], bool]:
-    """What the run marker ``record`` says an interrupted run may have written (G1.1, G5.10).
+    """What the run marker ``record`` says an interrupted run may have written.
 
     That is each quality folder it wrote into, with what the folder held
     before the run, and whether it wrote Manim's PNG folder. A record that
@@ -1681,9 +1682,9 @@ def _interrupted_run(layout: ProjectLayout, record: object) -> tuple[dict[Path, 
 def _remove_tree(root: Path, path: Path) -> None:
     """Delete a folder below ``root`` that may not exist, retrying for about 0.5 s while Windows reports it in use.
 
-    A read-only file or folder in it is made writable first (S26). A link
+    A read-only file or folder in it is made writable first. A link
     goes, never what it points to, and a link above ``path`` raises
-    LinkedFolder (``remove_below``, O10).
+    LinkedFolder (``remove_below``).
     """
     for attempt in range(5):
         try:
@@ -1703,7 +1704,7 @@ def _remove_tex_inputs(root: Path, tex: Path) -> None:
     Manim writes a TeX source and its DVI file again when it needs them. A
     link goes, never what it points to: ``remove_file`` removes a link to a
     folder on Windows too. A link above ``tex`` raises LinkedFolder, and
-    nothing is deleted (O10).
+    nothing is deleted.
     """
     link = first_link(root, tex.parent)
     if link is not None:

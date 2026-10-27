@@ -1,4 +1,4 @@
-"""Manim's command line with two faults of its scene writer fixed (D61, G4.3, spec section 7).
+"""Manim's command line with two faults of its scene writer fixed (spec section 7).
 
 ``python -m mathimator_worker.manim_main render ...`` runs what
 ``python -m manim render ...`` runs, with two changes. Manim 0.22 writes the

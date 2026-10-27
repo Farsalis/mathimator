@@ -7,7 +7,7 @@ only that opt-in is allowed to turn the job back on.
 Tests marked ``typst`` run the ``typst`` binary from PATH. They are skipped,
 not failed, when PATH has no ``typst``. Tests marked ``process_table`` are
 skipped off Windows where there is no ``/proc`` to walk, as on macOS, which is
-untested (D47).
+untested.
 
 The ``fake_manim`` fixture puts ``support.FakeManim`` on PYTHONPATH for the
 tests that run jobs without Manim, ``stdout`` reads what an in-process

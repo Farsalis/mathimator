@@ -1,4 +1,4 @@
-"""The worker started as the shell starts it answers requests.json as expected and as replies.json records (PR1 C).
+"""The worker started as the shell starts it answers requests.json as expected and as replies.json records.
 
 The worker starts on a debug shell's spawn line (lib.rs ``supervisor_command``
 and runtime.rs ``python_command``): behind a Windows venv launcher the real
@@ -47,7 +47,7 @@ from tests.support import (
 )
 
 GOLDEN = REPO / "tests" / "fixtures" / "protocol" / "replies.json"
-# The commands that start a job, whose lines end with its one terminal line (C7.1).
+# The commands that start a job, whose lines end with its one terminal line.
 JOBS = frozenset({"render_preview", "export"})
 
 
@@ -92,7 +92,7 @@ def _replay(client: SupervisorClient, rows: list[dict[str, Any]]) -> list[list[d
     """The lines that carry the id of each row's request, read as the shell reads them; there are no others.
 
     Each request goes once the last line the one before expects has come, and
-    the worker writes that line after the others it expects (C7.1).
+    the worker writes that line after the others it expects.
     """
     try:
         for row in rows:
@@ -172,7 +172,7 @@ def _as_the_shell_reads(raw: bytes) -> dict[str, Any]:
 
 
 def _inside(path: str, folder: str) -> bool:
-    """Whether ``path`` is the path string ``folder`` joined with a relative path inside it (C5).
+    """Whether ``path`` is the path string ``folder`` joined with a relative path inside it.
 
     The shell grants the webview the folder by that string, so a path must
     spell it exactly, case and separators included, and must not leave it

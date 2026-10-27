@@ -120,7 +120,7 @@ def error(job_id: str | None, code: str, message: str, details: str | None = Non
 
 
 def queued(job_id: str) -> dict[str, object]:
-    """A job held because the render before it did not stop within 1 s (D19). It starts when that one ends."""
+    """A job held because the render before it did not stop within 1 s. It starts when that one ends."""
     return {
         "event": "queued",
         "jobId": job_id,
@@ -135,5 +135,5 @@ def cancelled(job_id: str) -> dict[str, object]:
 
 
 def internal(job_id: str | None, exc: BaseException) -> dict[str, object]:
-    """The failure for an unexpected exception (D03). The traceback goes to worker.log."""
+    """The failure for an unexpected exception. The traceback goes to worker.log."""
     return error(job_id, "internal", f"Internal error: {type(exc).__name__}: {exc}. Details are in worker.log.")

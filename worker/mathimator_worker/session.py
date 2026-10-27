@@ -101,7 +101,7 @@ class Session:
         The edited document is read back as project.json is, which checks it
         whole. Reading it back must not change it: load rewrites every field
         a template owns from the template, so an edit that changed such a
-        field without its template would be accepted and lost (F072). Such an
+        field without its template would be accepted and lost. Such an
         edit is refused with ``invalid_edit``, naming the field's JSON path.
         """
         trial = load_text(dumps_project(self.project))
@@ -177,7 +177,7 @@ class Session:
         return [index >= mismatch for index in range(count)]
 
     def output_current(self, profile: ProfileName) -> bool:
-        """Whether the last full render of ``profile`` was of the document as it is now, beat for beat (F010).
+        """Whether the last full render of ``profile`` was of the document as it is now, beat for beat.
 
         Unlike the dirty flags, a document with fewer beats than that render does not count.
         """
@@ -209,7 +209,7 @@ class Session:
             self.rendered[profile] = Rendered(stamp=stamp, keys=list(keys))
 
     def state_event(self, job_id: str, project_path: str, index: PreviewIndex | None) -> dict[str, object]:
-        """The ``state`` reply, with the preview index the supervisor keeps (C5.1)."""
+        """The ``state`` reply, with the preview index the supervisor keeps."""
         durations = [beat.duration for beat in self.project.scene.beats]
         try:
             source: str | None = generate(self.project)
@@ -232,7 +232,7 @@ class Session:
                 "onScreen": simulate(self.project).on_screen,
             },
             "index": None if index is None else index.to_dict(),
-            # The generated scene.py, which View code shows (D25).
+            # The generated scene.py, which View code shows.
             "source": source,
         }
         if source_error is not None:
@@ -933,7 +933,7 @@ def _shift_value(value: object) -> list[JsonValue]:
     return [_finite(value[0], "shift"), _finite(value[1], "shift")]
 
 
-# The edit of each op (contract C4.1).
+# The edit of each op.
 _EDITS: dict[str, Edit] = {
     "set_project_name": _set_project_name,
     "set_object_name": _set_object_name,

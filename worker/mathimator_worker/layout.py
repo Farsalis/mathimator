@@ -6,7 +6,7 @@ the published exports, the logs and the project lock. Manim writes a render
 into the quality folder of its media, ``videos/scene/<height>p<fps>``, and
 a PNG sequence into one folder for every size and frame rate. None of the
 folders Mathimator keeps its files in, nor its log, may be a symbolic link or
-a junction, which would point its writes and deletes at another place (O10).
+a junction, which would point its writes and deletes at another place.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ class ProjectLayout:
 
     @property
     def run_marker(self) -> Path:
-        """The record of a Manim run in progress, which a later bind sweeps after a crash (G1.1)."""
+        """The record of a Manim run in progress, which a later bind sweeps after a crash."""
         return self.cache_dir / "manim-run.json"
 
     @property
@@ -78,7 +78,7 @@ class ProjectLayout:
 
     @property
     def managed_paths(self) -> tuple[Path, ...]:
-        """The folders Mathimator writes its files into and deletes them from, and its log: none may be a link (O10).
+        """The folders Mathimator writes its files into and deletes them from, and its log: none may be a link.
 
         Each comes with the folders between it and the project folder:
         ``.mathimator``, its cache and the media folder.
@@ -95,7 +95,7 @@ class ProjectLayout:
         )
 
     def linked_path(self, *also: Path) -> Path | None:
-        """The first of ``managed_paths`` and ``also``, or a folder above one, that is a link, or None (O10).
+        """The first of ``managed_paths`` and ``also``, or a folder above one, that is a link, or None.
 
         ``also`` are the paths of one job, which the layout cannot know: its
         quality folder, and the file or folder an export is published as.

@@ -1,7 +1,7 @@
 """Offline proof for the phase 5 bundle. Requires packaging/build-bundle.sh.
 
 Manim runs with the worker's own command line and environment, in a project's
-codegen folder (D60, D61), with the worker from this checkout. runtime.json
+codegen folder, with the worker from this checkout. runtime.json
 must name the bundled worker, this checkout's uv.lock and the Python the build
 chose, and Typst's LICENSE and NOTICE must ship beside it.
 """

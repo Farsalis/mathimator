@@ -1,16 +1,15 @@
 """Process control: the fallback tree kill, Job Object handles, the 1 s cancel and Manim's interpreter.
 
 The fallback walks a process list with creation times and never kills a
-process created before its supposed parent (D15, F024, F144). The Windows
-helper's answers come from a stand-in, and Job Object handles from a recording
-kernel32, so these tests create no Job Object and start no PowerShell, but for
-the two marked ``process_table``: one pins the real helper's checked kill, and
-one cancels a fake Manim and its child with the kill this process really has
-(F023, F101, F106, F142). A job that has a Job Object never asks the process
-table (D15). Manim runs the real interpreter behind a venv launcher (D16), a
-worker that closes waits for its job (F028), and ``process_alive`` works
-without ``/proc`` (D47). Supervisors run in this process with the
-``fake_manim`` stand-in.
+process created before its supposed parent. The Windows helper's answers come
+from a stand-in, and Job Object handles from a recording kernel32, so these
+tests create no Job Object and start no PowerShell, but for the two marked
+``process_table``: one pins the real helper's checked kill, and one cancels a
+fake Manim and its child with the kill this process really has. A job that has
+a Job Object never asks the process table. Manim runs the real interpreter
+behind a venv launcher, a worker that closes waits for its job, and
+``process_alive`` works without ``/proc``. Supervisors run in this process
+with the ``fake_manim`` stand-in.
 """
 
 from __future__ import annotations
@@ -39,7 +38,7 @@ CANCELLED = {"event": "error", "code": "cancelled", "message": "cancelled"}
 windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Job Objects and venv launchers are Windows only")
 
 
-# The tree the fallback kills (D15, F024, F144)
+# The tree the fallback kills
 
 
 def test_the_tree_is_killed_deepest_first() -> None:
@@ -109,7 +108,7 @@ def test_without_proc_a_process_is_alive_while_a_signal_reaches_it(
     assert not process_group.process_alive(proc.pid)
 
 
-# The Windows fallback and its helper (D15, F027, F028, F098)
+# The Windows fallback and its helper
 
 
 def test_the_helper_lists_parents_and_creation_times_and_kills_by_both(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -207,7 +206,7 @@ def test_skipping_the_process_table_never_asks_it(monkeypatch: pytest.MonkeyPatc
     assert table.killed == []
 
 
-# Job Object handles (F023, F101, F106)
+# Job Object handles
 
 
 def test_a_cancelled_job_terminates_its_job_object_then_closes_it_once(
@@ -343,7 +342,7 @@ def test_closing_the_worker_waits_for_the_running_job(
     job = _current(supervisor)
     fake_manim.wait_until_held()
     supervisor.close()
-    # serve() closes at the end of stdin; nothing the job started is left running (F028).
+    # serve() closes at the end of stdin; nothing the job started is left running.
     assert not job.thread.is_alive()
     assert job.proc is not None and job.proc.poll() is not None
     assert stdout.of("preview-1")[-1] == {**CANCELLED, "jobId": "preview-1"}
@@ -353,7 +352,7 @@ def test_closing_the_worker_waits_for_the_running_job(
 def test_a_cancel_ends_manim_and_its_tex_child_within_one_second(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
-    """Spec section 2's 1 s cancel, with no real Manim: the fake runs a child that sleeps as a TeX run would (F142).
+    """Spec section 2's 1 s cancel, with no real Manim: the fake runs a child that sleeps as a TeX run would.
 
     The kill is whichever this process has: the Job Object, the process table or the process group.
     """
@@ -364,7 +363,7 @@ def test_a_cancel_ends_manim_and_its_tex_child_within_one_second(
     job = _current(supervisor)
     fake_manim.wait_until_held()
     if not win32_job.jobs_enabled():
-        # Without a Job Object the kill walks the process table, whose helper starts beside Manim (D15).
+        # Without a Job Object the kill walks the process table, whose helper starts beside Manim.
         process_group.warm_process_table()
     assert job.proc is not None
     watched = [job.proc.pid, fake_manim.child_pid()]
@@ -378,7 +377,7 @@ def test_a_cancel_ends_manim_and_its_tex_child_within_one_second(
     assert stdout.of("preview-1")[-1] == {**CANCELLED, "jobId": "preview-1"}
 
 
-# Manim's interpreter (D16)
+# Manim's interpreter
 
 
 @windows_only
@@ -393,7 +392,7 @@ def test_manim_runs_the_real_interpreter_behind_the_workers_venv_launcher(
     monkeypatch.setattr(sys, "executable", str(launcher))
     monkeypatch.setattr(sys, "_base_executable", str(other), raising=False)
     assert manim_interpreter(str(launcher)) == (str(other), str(launcher))
-    # Another interpreter, such as the installed app's real one (D33), runs as it is.
+    # Another interpreter, such as the installed app's real one, runs as it is.
     assert manim_interpreter(str(other)) == (str(other), None)
     assert manim_interpreter(str(tmp_path / "missing.exe")) == (str(tmp_path / "missing.exe"), None)
 
@@ -531,6 +530,6 @@ def _join(job: _Job) -> None:
 
 
 def _sleeper() -> subprocess.Popen[str]:
-    """A process that sleeps for a minute: the real interpreter, so killing it leaves nothing behind (D16)."""
+    """A process that sleeps for a minute: the real interpreter, so killing it leaves nothing behind."""
     python: str = getattr(sys, "_base_executable", sys.executable)
     return subprocess.Popen([python, "-c", "import time; time.sleep(60)"], text=True)

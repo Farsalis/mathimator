@@ -1,21 +1,21 @@
-"""The project path Manim and TeX get, checked before a render starts (D61).
+"""The project path Manim and TeX get, checked before a render starts.
 
 Manim runs from the project's ``.mathimator/codegen`` with relative paths, so
 TeX never reads the user's folder names and ``%``, ``~``, ``^^`` and ``'``
-need no check (G4.5); ``manim_main`` quotes the apostrophe for FFmpeg (G4.3).
+need no check; ``manim_main`` quotes the apostrophe for FFmpeg.
 Three things are left for this preflight:
 
 - Manim formats its absolute scene path as a template while it holds a ``{``,
-  so such a path cannot render at all (G4.4).
+  so such a path cannot render at all.
 - dvisvgm reads its arguments, and the folder it runs in, in the ANSI code
   page. A path with other characters goes to Manim through its 8.3 alias
-  when Windows keeps one, and refuses formulas otherwise (G4.6).
+  when Windows keeps one, and refuses formulas otherwise.
 - dvisvgm cannot open a path of MAX_PATH characters or more, even with
   Windows long paths on, and without them neither can Python, which watches
-  the partial movies (G4.7).
+  the partial movies.
 
 A refusal is ``path_unsupported``. The alias is used only for Manim; every
-path the worker sends stays in the long form (contract C5).
+path the worker sends stays in the long form.
 """
 
 from __future__ import annotations

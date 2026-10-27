@@ -5,16 +5,16 @@ On Windows each Manim normally runs in a kill-on-close Job Object
 (``MATHIMATOR_WIN32_JOBS=0``) or assigning or terminating one fails. A hidden
 PowerShell helper lists every process on the system with its parent and its
 creation time. It starts with the first job that runs without a Job Object,
-never when the worker starts (D15). Windows keeps the parent id of a process
+never when the worker starts. Windows keeps the parent id of a process
 whose parent has exited, and gives that id to new processes, so a process
 counts as a child only when it was created no earlier than its parent, and
 the helper ends one only while a handle shows it is still the process it
-listed (D15, F024). With ``MATHIMATOR_SKIP_PROCESS_TABLE=1`` the helper never
+listed. With ``MATHIMATOR_SKIP_PROCESS_TABLE=1`` the helper never
 starts and the fallback ends Manim alone.
 
 Linux keeps the phase 1 mechanism: Manim leads a new session, cancel kills its
 process group, and one scan of ``/proc`` finds a TeX helper that left the
-group. macOS is untested (D47). It has no ``/proc``, so only the group is
+group. macOS is untested. It has no ``/proc``, so only the group is
 killed there.
 
 ``process_alive``, ``process_name`` and ``descendant_pids`` are for the tests.
@@ -259,16 +259,16 @@ class _WindowsProcessTable:
                     continue
                 rows[pid] = _Process(ppid, created, parts[3].strip())
             if not rows:
-                # A live system always lists System and Idle, so an empty table is a failed snapshot (F098).
+                # A live system always lists System and Idle, so an empty table is a failed snapshot.
                 raise OSError("process table helper listed no processes")
             self._rows = rows
             self._rows_at = now
             return dict(rows)
 
     def kill(self, victims: list[tuple[int, int]]) -> None:
-        """End each ``(pid, created)`` in order, while ``pid`` is still the process created then (D15).
+        """End each ``(pid, created)`` in order, while ``pid`` is still the process created then.
 
-        Raises OSError naming each process that still runs because it could not be ended (F098).
+        Raises OSError naming each process that still runs because it could not be ended.
         """
         with self._lock:
             self._ask("KILL " + " ".join(f"{pid}:{created}" for pid, created in victims))
@@ -292,7 +292,7 @@ class _WindowsProcessTable:
                 self._script = None
 
     def _ask(self, command: str) -> list[str]:
-        """Send ``command`` and return the lines of the answer. An ``ERROR`` line raises OSError (F098)."""
+        """Send ``command`` and return the lines of the answer. An ``ERROR`` line raises OSError."""
         proc = self._ensure()
         assert proc.stdin is not None
         assert proc.stdout is not None
@@ -327,7 +327,7 @@ class _WindowsProcessTable:
             raise OSError("the process table helper runs only on Windows")
         if self._proc is not None and self._proc.poll() is None:
             return self._proc
-        # Named for this worker, so two workers never rewrite each other's script (F027).
+        # Named for this worker, so two workers never rewrite each other's script.
         self._script = Path(tempfile.gettempdir()) / f"mathimator-proc-table-{os.getpid()}.ps1"
         self._script.write_text(_HELPER_SCRIPT, encoding="utf-8")
         startup = subprocess.STARTUPINFO()
@@ -367,7 +367,7 @@ atexit.register(_close_table)
 
 
 def _table() -> _WindowsProcessTable | None:
-    """The Windows process table, or None off Windows and while ``MATHIMATOR_SKIP_PROCESS_TABLE=1`` (F028)."""
+    """The Windows process table, or None off Windows and while ``MATHIMATOR_SKIP_PROCESS_TABLE=1``."""
     if os.environ.get("MATHIMATOR_SKIP_PROCESS_TABLE") == "1":
         return None
     return _TABLE
@@ -381,10 +381,10 @@ def warm_process_table() -> None:
 
 
 def terminate_process_group(proc: subprocess.Popen[str]) -> None:
-    """Kill ``proc`` and the processes it started, never one created before its parent (D15).
+    """Kill ``proc`` and the processes it started, never one created before its parent.
 
     On Windows a failed process table, or a process the helper could not
-    end, raises OSError after ``proc`` itself is killed (F025, F098).
+    end, raises OSError after ``proc`` itself is killed.
     """
     if proc.poll() is not None:
         return
@@ -412,7 +412,7 @@ def process_alive(pid: int) -> bool:
     """Whether ``pid`` still runs and is not a zombie. For the tests.
 
     Without ``/proc``, as on macOS, every process ``os.kill(pid, 0)`` reaches
-    counts, zombies too (D47).
+    counts, zombies too.
     """
     if pid <= 0:
         return False
@@ -477,7 +477,7 @@ def _descendants(root: int, parents: Mapping[int, tuple[int, int]]) -> list[int]
     """The processes below ``root``, deepest first. ``parents`` maps a pid to its parent's pid and its creation time.
 
     A process is a child of its parent only when both creation times are known
-    and it was created no earlier than the parent (D15). Windows keeps the
+    and it was created no earlier than the parent. Windows keeps the
     parent id of a process whose parent has exited and reuses ids, so a
     long-running process could otherwise pass for a child of a new one.
     """

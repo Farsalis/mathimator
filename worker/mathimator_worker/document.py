@@ -8,11 +8,11 @@ timeline in ``timeline.py``.
 (any ``start`` but the start point of a line or an arrow), an unknown key, or
 any other schema version is refused. Beat start times are derived and are not
 stored. An older ``generatorVersion`` is read as the current one, so the next
-save writes the current number; a newer one is refused (C13.3).
+save writes the current number; a newer one is refused.
 
 Every refusal is a DocumentError with a protocol code, and its message and
 ``field`` name the JSON path of the failing value. Numbers are judged at the
-three decimals codegen emits (D02), so a step or a range that rounds to
+three decimals codegen emits, so a step or a range that rounds to
 nothing is refused instead of reaching Manim. The value on disk is kept as
 written.
 """
@@ -51,7 +51,7 @@ MIN_BEAT_SECONDS = 0.1
 MAX_TOTAL_SECONDS = 120.0
 MAX_TICKS_PER_AXIS = 500
 # Manim samples a curve every 0.01 of t, so a span of 50 is 5000 samples:
-# as many as a plot gets from 500 x steps of ten samples each (D04).
+# as many as a plot gets from 500 x steps of ten samples each.
 MAX_CURVE_SPAN = 50
 MAX_LATEX_LENGTH = 500
 MAX_TEXT_LENGTH = 200
@@ -110,7 +110,7 @@ PLOT_VARIABLES = frozenset({"x"})
 
 _ID = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
-# Lone surrogates, NUL and every C0 control except tab, LF and CR (D06). CR
+# Lone surrogates, NUL and every C0 control except tab, LF and CR. CR
 # stays so that CRLF text written by Windows tools opens.
 _UNSTORABLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff]")
 
@@ -309,7 +309,7 @@ def load_bytes(data: bytes) -> Project:
     """Decode project.json bytes and return a project, or raise DocumentError.
 
     One leading UTF-8 byte order mark is dropped. Any other encoding, such as
-    the UTF-16 that Windows PowerShell 5 writes, is refused (D07). JSON in
+    the UTF-16 that Windows PowerShell 5 writes, is refused. JSON in
     UTF-8 never holds a NUL byte, so one marks UTF-16 without a byte order
     mark, which ASCII text would otherwise pass as UTF-8.
     """
@@ -462,10 +462,10 @@ def fresh_id(prefix: str, used: set[str]) -> str:
 
 
 def parse_text(value: object, path: str, limit: int | None = None) -> str:
-    """A string that can be saved, hashed and written into scene.py (D06).
+    """A string that can be saved, hashed and written into scene.py.
 
     Load and every edit that stores text use this check. ``limit`` is the
-    length cap of the field, if it has one (D04).
+    length cap of the field, if it has one.
     """
     if not isinstance(value, str):
         raise DocumentError(f"{path} must be a string", field=path)
@@ -477,7 +477,7 @@ def parse_text(value: object, path: str, limit: int | None = None) -> str:
 
 
 def parse_latex(value: object, path: str) -> str:
-    """Formula LaTeX: storable text of at most 500 characters, with allowlisted commands only (D04, D18)."""
+    """Formula LaTeX: storable text of at most 500 characters, with allowlisted commands only."""
     latex = parse_text(value, path, MAX_LATEX_LENGTH)
     check_latex(latex, path)
     return latex
@@ -497,7 +497,7 @@ def parse_number(value: object, path: str) -> Number:
 
 
 def parse_axis_range(value: object, path: str) -> list[JsonValue]:
-    """``[min, max, step]`` of an axis that draws at most 500 ticks (D02, D04).
+    """``[min, max, step]`` of an axis that draws at most 500 ticks.
 
     Load and edit share this check. It judges the numbers as codegen emits
     them and returns them as given.
@@ -527,7 +527,7 @@ def parse_anchor(value: object, path: str) -> str:
 def parse_param(param: Param, value: object, path: str) -> JsonValue:
     """One setting of a beat or a shape, as its row in ``beats.py`` describes it.
 
-    Bounds are inclusive and judged at the three decimals codegen emits (D02).
+    Bounds are inclusive and judged at the three decimals codegen emits.
     The value is returned as given.
     """
     if param.type == "number":
@@ -720,7 +720,7 @@ def _check_length(params: dict[str, JsonValue], path: str) -> None:
 
 
 def _quantized(value: JsonValue) -> list[Number]:
-    """Numbers as codegen emits them (D02)."""
+    """Numbers as codegen emits them."""
     return [quantize(_as_number(item, "number")) for item in _copy_numbers(value)]
 
 
@@ -935,7 +935,7 @@ def _check_identity(project: Project) -> None:
 
 
 def _check_generated_names(project: Project) -> None:
-    """Refuse an object id that clashes with a name the generated code makes (D09, F013).
+    """Refuse an object id that clashes with a name the generated code makes.
 
     Labelled axes add ``<id>_labels`` and ``<id>_group``, whatever ``showLabels``
     says now, since it can be switched on later. The lambda of a surface or a
@@ -982,7 +982,7 @@ def _check_timeline(project: Project) -> None:
 
 
 def _check_sampling(plot: SceneObject, axes: SceneObject, path: str) -> None:
-    """Manim samples a plot ten times per x step of its axes, so the domain is capped like the ticks (D04)."""
+    """Manim samples a plot ten times per x step of its axes, so the domain is capped like the ticks."""
     x_step = float(quantize(_as_number(_copy_numbers(axes.params["xRange"])[2], "xRange")))
     x_min = float(_as_number(plot.params["xMin"], "xMin"))
     x_max = float(_as_number(plot.params["xMax"], "xMax"))
@@ -1359,7 +1359,7 @@ def _id_list(value: object, path: str) -> list[str]:
 
 
 def _is_int(value: object) -> TypeIs[int]:
-    """A JSON integer: ``true`` and ``1.0`` are not integers (F014)."""
+    """A JSON integer: ``true`` and ``1.0`` are not integers."""
     return isinstance(value, int) and not isinstance(value, bool)
 
 
@@ -1382,7 +1382,7 @@ def _numbers(value: object, path: str, count: int) -> list[Number]:
 
 
 def _check_greater(high: Number, low: Number, field: str, than: str, part: str = "") -> None:
-    """``high > low``, also at the three decimals codegen emits (D02)."""
+    """``high > low``, also at the three decimals codegen emits."""
     subject = f"{field} {part}" if part else field
     if float(high) <= float(low):
         raise DocumentError(f"{subject} must be greater than {than}", field=field)
@@ -1397,7 +1397,7 @@ def _positive(value: object, path: str) -> Number:
 
 
 def _check_bounds(param: Param, number: Number, path: str) -> None:
-    """``number`` from ``param.low`` to ``param.high`` inclusive, at the three decimals codegen emits (D02)."""
+    """``number`` from ``param.low`` to ``param.high`` inclusive, at the three decimals codegen emits."""
     if param.low is None or param.high is None:
         return
     if not param.low <= quantize(number) <= param.high:
@@ -1447,7 +1447,7 @@ def _pair_range(value: object, path: str) -> list[JsonValue]:
 
 
 def _curve_range(value: object, path: str) -> list[JsonValue]:
-    """``[tMin, tMax]`` of a curve, which spans less than 50 to bound its sampling (D04)."""
+    """``[tMin, tMax]`` of a curve, which spans less than 50 to bound its sampling."""
     numbers = _numbers(value, path, 2)
     low, high = numbers
     _check_greater(high, low, path, "min", "max")

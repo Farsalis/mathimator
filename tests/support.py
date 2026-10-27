@@ -39,7 +39,7 @@ RUNTIME_ERROR = SCENES / "runtime_error.py"
 WIN32_FIXTURES = REPO / "tests" / "fixtures" / "win32"
 FAKE_MANIM = REPO / "tests" / "fixtures" / "fake_manim" / "manim"
 SHARED_REQUESTS = REPO / "tests" / "fixtures" / "protocol" / "requests.json"
-# The lines that end a job; exactly one of them does (C7.1).
+# The lines that end a job; exactly one of them does.
 TERMINAL_EVENTS = frozenset({"done", "error", "rejected"})
 # The stderr lines a SupervisorClient keeps for its failure messages.
 _STDERR_LINES = 200
@@ -310,7 +310,7 @@ class Stdout:
         return [line for line in self.read() if line["jobId"] == job_id]
 
     def wait_for(self, job_id: str, event: str) -> dict[str, Any]:
-        """The job's first ``event`` line. Fails at once when the job ended without one (C7.1)."""
+        """The job's first ``event`` line. Fails at once when the job ended without one."""
         deadline = time.monotonic() + 30
         while True:
             lines = self.of(job_id)
@@ -424,7 +424,7 @@ class SupervisorClient:
                 self._condition.wait(timeout=remaining)
 
     def wait_for_end(self, job_id: str, timeout: float) -> dict[str, object]:
-        """The job's one terminal line: ``done``, ``error`` or ``rejected`` (C7.1)."""
+        """The job's one terminal line: ``done``, ``error`` or ``rejected``."""
         return self.wait_for(
             lambda event: event.get("jobId") == job_id and event.get("event") in TERMINAL_EVENTS, timeout
         )

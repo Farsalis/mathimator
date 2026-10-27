@@ -205,7 +205,7 @@ def _check_state(
     else:
         gone = exits[target]
         if gone.destination is not None:
-            # Manim would bring a transformed formula back (D09, F012), so the wording names the transform.
+            # Manim would bring a transformed formula back, so the wording names the transform.
             reason = f"when it was transformed into {gone.destination}"
         else:
             reason = f"at scene.beats[{gone.beat_index}]"
@@ -214,7 +214,7 @@ def _check_state(
 
 
 def _check_axes(objects: Sequence[SceneObject], on: set[str], came: set[str], left: set[str], index: int) -> None:
-    """After the beat, everything on screen that is drawn on axes has its axes on screen (F011).
+    """After the beat, everything on screen that is drawn on axes has its axes on screen.
 
     When the axes left in this beat, keeping them on is the repair; otherwise
     the object drawn on them came on while they were off, and keeping it off is.

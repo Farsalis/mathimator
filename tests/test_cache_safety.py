@@ -1,4 +1,4 @@
-"""Scene code and cache safety (fix-plan S13 to S16 and S41, owner answer Q3).
+"""Scene code and cache safety.
 
 The generated-code folder, the startup project path, PNG-sequence frames, the
 interrupted-run marker, and the completeness check for partial movies. No test
@@ -53,7 +53,7 @@ _PNG_PROFILE = {"format": "png_sequence", "width": 1280, "height": 720, "fps": 3
 _PNG_FRAMES = 240
 _WEBM_PROFILE = {"format": "webm", "width": 1920, "height": 1080, "fps": 30, "transparent": False}
 
-# Completeness check (owner answer Q3)
+# Completeness check
 
 
 @pytest.mark.parametrize("suffix", SUFFIXES)
@@ -226,7 +226,7 @@ def test_png_export_ignores_the_segment_list_of_another_render(
     assert cut_off.is_file()
 
 
-# Codegen folder (F170)
+# Codegen folder
 
 
 def test_a_render_replaces_a_planted_codegen_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,7 +263,7 @@ def test_a_render_replaces_a_read_only_codegen_folder(
     bytecode.parent.mkdir(parents=True)
     bytecode.write_bytes(b"planted")
     scene.write_text("REAL = True\n", encoding="utf-8")
-    # A copied or shared project folder can carry the read-only attribute (S26).
+    # A copied or shared project folder can carry the read-only attribute.
     for path in (bytecode, bytecode.parent, scene):
         path.chmod(stat.S_IREAD)
     fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
@@ -274,7 +274,7 @@ def test_a_render_replaces_a_read_only_codegen_folder(
     assert scene.read_text(encoding="utf-8") == generate(supervisor.session.project)
 
 
-# Read-only files (S26). The tree removals call the handler only on Windows,
+# Read-only files. The tree removals call the handler only on Windows,
 # so these call it directly.
 
 
@@ -324,7 +324,7 @@ def test_the_read_only_handler_never_changes_a_link_or_its_target(tmp_path: Path
     assert not target.stat().st_mode & stat.S_IWRITE
 
 
-# Startup path (G4.1, G4.10)
+# Startup path
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="8.3 aliases exist only on Windows")
@@ -345,7 +345,7 @@ def test_startup_resolves_a_short_path_alias(tmp_path: Path, monkeypatch: pytest
     assert job.manim_dir == folder / ".mathimator" / "codegen"
 
 
-# Interrupted-run marker (G1.1, G1.2, G5.10)
+# Interrupted-run marker
 
 
 def test_startup_sweeps_media_left_by_an_interrupted_run(
@@ -415,7 +415,7 @@ def test_a_marker_that_cannot_be_read_sweeps_every_quality_folder(
     swept.append(_written(frames / "0000.png", b"png"))
     marker = _write_marker(project, text)
     _supervisor(project, monkeypatch)
-    # Complete partials stay, and nothing outside the project is touched, through a link or not (O10).
+    # Complete partials stay, and nothing outside the project is touched, through a link or not.
     assert all(path.is_file() for path in [*kept, *outside])
     assert [path for path in swept if path.exists()] == []
     assert not frames.exists()
@@ -427,7 +427,7 @@ def test_a_marker_that_cannot_be_read_sweeps_every_quality_folder(
     [pytest.param("", id="quality-folder"), pytest.param("partial_movie_files", id="partial-movie-files")],
 )
 def test_the_sweep_never_deletes_through_a_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked: str) -> None:
-    """A link planted in the quality folder the marker names never lets a bind delete outside the project (O10)."""
+    """A link planted in the quality folder the marker names never lets a bind delete outside the project."""
     project = _project(tmp_path / "linked")
     outside = _foreign_quality_folder(tmp_path / "outside")
     link = ProjectLayout(project).video_dir("1080p30") / linked
@@ -440,7 +440,7 @@ def test_the_sweep_never_deletes_through_a_link(tmp_path: Path, monkeypatch: pyt
 
 
 def test_a_handwritten_startup_never_sweeps_through_a_linked_media_folder(tmp_path: Path, link_kind: str) -> None:
-    """Hand-written mode binds without the link check, so each delete of its sweep checks for links (O10)."""
+    """Hand-written mode binds without the link check, so each delete of its sweep checks for links."""
     elsewhere = tmp_path / "elsewhere"
     outside = _foreign_quality_folder(elsewhere / "videos" / "scene" / "1080p30")
     (elsewhere / "images" / "scene" / "MainScene").mkdir(parents=True)
@@ -496,7 +496,7 @@ def test_a_render_into_a_linked_quality_folder_is_refused(
     linked: str,
     link_kind: str,
 ) -> None:
-    """Manim would write, and prune its partial movies, through a link in the render's quality folder (O10)."""
+    """Manim would write, and prune its partial movies, through a link in the render's quality folder."""
     supervisor, events = _supervisor(_project(tmp_path / "shared"), monkeypatch)
     outside = tmp_path / "outside"
     _foreign_quality_folder(outside)
@@ -520,7 +520,7 @@ def test_an_export_into_a_linked_export_folder_is_refused_and_changes_nothing(
     export: dict[str, object] | None,
     link_kind: str,
 ) -> None:
-    """A link at exports/<key16> would publish an export, or find a finished one, outside the project (O10)."""
+    """A link at exports/<key16> would publish an export, or find a finished one, outside the project."""
     supervisor, events = _supervisor(_project(tmp_path / "shared", export=export), monkeypatch)
     assert supervisor.session is not None
     project = supervisor.session.project
@@ -593,7 +593,7 @@ def test_open_project_leaves_a_running_export_alone(
     try:
         fake_manim.wait_until_held()
         supervisor.handle_line(json.dumps({"cmd": "open_project", "id": "open", "path": str(project)}))
-        # The open is refused before it can sweep the export's media (D22).
+        # The open is refused before it can sweep the export's media.
         assert (events[-1]["event"], events[-1]["code"]) == ("rejected", "export_running")
         assert supervisor.layout.run_marker.is_file()
         assert all(path.is_file() for path in files)
@@ -610,7 +610,7 @@ def test_reopening_a_folder_leaves_a_preview_that_outlived_its_stop_alone(
 ) -> None:
     project = _project(tmp_path / "busy")
     supervisor, events = _supervisor(project, monkeypatch)
-    # A Manim that is still alive when the 1 s the switch waits for it is over (C8.3).
+    # A Manim that is still alive when the 1 s the switch waits for it is over.
     monkeypatch.setattr(supervisor, "_kill_process", lambda job: None)
     files = video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4)
     fake_manim.plan(files, hold=True)
@@ -669,7 +669,7 @@ def test_a_failed_run_discards_its_cut_off_partial(
     finished = folder / ("e" * 64 + suffix)
     cut_off = folder / ("f" * 64 + suffix)
     listing = folder / "partial_movie_file_list.txt"
-    # The finished partial stays for the next render, whatever its container (D13, C14 Q3).
+    # The finished partial stays for the next render, whatever its container.
     fake_manim.plan(
         {finished: complete_clip(suffix), cut_off: _cut_off_clip(suffix), listing: b""},
         ["RuntimeError: killed"],
@@ -684,7 +684,7 @@ def test_a_failed_run_discards_its_cut_off_partial(
     assert not supervisor.layout.run_marker.exists()
 
 
-# PNG sequence (F021) and the 480p15 guard (G4.9)
+# PNG sequence and the 480p15 guard
 
 
 def test_png_export_publishes_only_the_frames_of_this_run(

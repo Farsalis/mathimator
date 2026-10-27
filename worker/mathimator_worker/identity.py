@@ -58,7 +58,7 @@ def beat_chain_keys(project: Project, profile: ProfileName) -> list[str]:
     """Each beat's identity together with everything before it: the scene stamp and the keys of beats 0 to i.
 
     A partial movie shows the scene as every earlier beat left it, so it
-    belongs to a document only while this key is unchanged (F135).
+    belongs to a document only while this key is unchanged.
     """
     chain = scene_stamp(project)
     keys: list[str] = []

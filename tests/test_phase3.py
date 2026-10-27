@@ -171,7 +171,7 @@ def test_journey_a_codegen_is_still_mathtex() -> None:
 def test_typst_refuses_the_empty_root_the_translator_emits(tmp_path: Path) -> None:
     """An empty root passes the translator as ``sqrt()``, which Typst refuses without writing an SVG.
 
-    Keeping the last good SVG after such a run is the shell's and the UI's job, tested there (F139).
+    Keeping the last good SVG after such a run is the shell's and the UI's job, tested there.
     """
     broken = translate(r"\sqrt{}")
     assert broken.supported is True

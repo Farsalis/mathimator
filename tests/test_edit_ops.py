@@ -1,4 +1,4 @@
-"""Every edit op of contract C4.1, from ``tests/fixtures/protocol/edit-ops.json``, and the template check of an edit (F072, F094).
+"""Every edit op of the protocol, from ``tests/fixtures/protocol/edit-ops.json``, and the template check of an edit.
 
 The fixture lists each op with the type of each field and examples, each
 accepted on a start document; the UI's edit builders are tested against the

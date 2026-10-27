@@ -78,7 +78,7 @@ def test_worker_source_has_no_manim_av_or_win32() -> None:
     assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in job_object
     for path in files:
         body = path.read_text(encoding="utf-8")
-        # The Job Object, and the 8.3 alias of a project path that TeX cannot take (D61).
+        # The Job Object, and the 8.3 alias of a project path that TeX cannot take.
         if path.name in {"win32_job.py", "manim_paths.py"}:
             continue
         assert "ctypes" not in body, path
@@ -233,7 +233,7 @@ def test_cancel_ends_grandchild_within_one_second() -> None:
 
         manim_pid, tex = _wait_for_tex_child(client, log_path, "job-cancel")
         watched = {manim_pid, *descendant_pids(manim_pid)}
-        # The 1 s rule is about TeX, so a TeX child must still run when the cancel goes out (F142).
+        # The 1 s rule is about TeX, so a TeX child must still run when the cancel goes out.
         running_tex = [pid for pid in tex if pid in watched and process_alive(pid)]
         assert running_tex, f"the TeX children {tex} ended before the cancel"
         started = time.perf_counter()
@@ -338,7 +338,7 @@ def test_last_beat_keeps_the_first_seven_partial_hashes(preview: dict[str, objec
 
 @pytest.mark.render
 def test_half_second_beats_draw_the_frames_of_the_timeline() -> None:
-    """D63, G3.5: each beat starts on the frame nearest its start, a half frame rounding up.
+    """Each beat starts on the frame nearest its start, a half frame rounding up.
 
     At 15 fps a 0.5 s beat is 7.5 frames, so the beats are 8 and 7 frames in
     turn, plays and waits alike, and the preview is 150 frames.
@@ -442,7 +442,7 @@ def _wait_for_tex_child(client: SupervisorClient, log_path: Path, job_id: str) -
     """Manim's pid and its running TeX children by name, as soon as one runs.
 
     Fails when the render ends first: a cancel that meets no TeX child would
-    leave the 1 s rule for TeX untested (F142).
+    leave the 1 s rule for TeX untested.
     """
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:

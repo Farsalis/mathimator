@@ -18,7 +18,7 @@ written before easings compiles to the code it always did.
 
 Every beat covers the frames between its start and its end on the timeline,
 each rounded to the nearest frame from whole milliseconds, halves up, as the
-editor's playback rounds them (D63). A whole second is a whole number of
+editor's playback rounds them. A whole second is a whole number of
 frames at every frame rate, so a beat between whole seconds keeps its length
 as a literal. Any other beat calls ``_beat_time``, which the scene defines only
 then. It reads the frame rate when the scene renders, because one ``scene.py``
@@ -125,7 +125,7 @@ def generate(project: Project) -> str:
 
 
 def needs_latex(project: Project) -> bool:
-    """Whether the scene runs LaTeX: it has a formula, or axes with their labels (D31)."""
+    """Whether the scene runs LaTeX: it has a formula, or axes with their labels."""
     return any(
         item.type == "math_formula" or (item.type == "axes" and item.params.get("showLabels") is True)
         for item in project.scene.objects
@@ -322,7 +322,7 @@ def _filled(template: str | None, kind: BeatKind, **fields: str) -> str:
 
 
 def _settings(kind: BeatKind, beat: Beat) -> dict[str, str]:
-    """The text of each setting, as its row says: a number at three decimals (D02), a vector as ``<name>_x``, ``_y``."""
+    """The text of each setting, as its row says: a number at three decimals, a vector as ``<name>_x``, ``_y``."""
     if not kind.params:
         return {}
     params = _params(beat)
@@ -351,7 +351,7 @@ def _params(beat: Beat) -> dict[str, JsonValue]:
 
 
 def _length(start: float, end: float, *, wait: bool = False) -> str:
-    """The emitted length of a beat from ``start`` to ``end`` on the timeline (D63)."""
+    """The emitted length of a beat from ``start`` to ``end`` on the timeline."""
     if start.is_integer() and end.is_integer():
         return _number(end - start)
     arguments = f"{_number(start)}, {_number(end)}"
@@ -359,7 +359,7 @@ def _length(start: float, end: float, *, wait: bool = False) -> str:
 
 
 def _variable(kind: BeatKind, target: SceneObject) -> str:
-    """The variable a beat animates. Labels belong to their axes and act with them (D12), except under a bare kind."""
+    """The variable a beat animates. Labels belong to their axes and act with them, except under a bare kind."""
     if not kind.bare and target.type == "axes" and target.params.get("showLabels") is True:
         return f"{target.id}_group"
     return target.id
@@ -578,7 +578,7 @@ def _float(value: object) -> float:
 
 
 def _number(value: object) -> str:
-    """``value`` at the three decimals load judges it at (D02), a whole number as an integer."""
+    """``value`` at the three decimals load judges it at, a whole number as an integer."""
     quantized = quantize(_float(value))
     if isinstance(quantized, int):
         return str(quantized)

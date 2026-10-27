@@ -1,14 +1,14 @@
 """Job Object cancel and quit.
 
-Set ``MATHIMATOR_WIN32_TESTS=1`` to run these; the owner approved running them
-on this PC and on the Windows CI runner (D14). They set
+Set ``MATHIMATOR_WIN32_TESTS=1`` to run these on a Windows PC; the Windows CI
+runner sets it. They set
 ``MATHIMATOR_WIN32_JOBS=1`` so the supervisor assigns each Manim child to a
 kill-on-close job.
 
 The stand-ins are compiled from ``tests/fixtures/win32``. The cancel test runs
 the supervisor through ``launcher.exe``, shaped like a venv's python.exe: it
 starts the real interpreter at once. The supervisor must start Manim with that
-real interpreter (D16), and Manim, a fake ``manim`` package, starts
+real interpreter, and Manim, a fake ``manim`` package, starts
 ``latex.exe`` and ``dvisvgm.exe`` at once, with no handshake, as a render of a
 formula does. In the quit test the supervisor runs the real interpreter, and
 the Manim stand-in, ``job_tree.cs``, waits for a go file the test writes after

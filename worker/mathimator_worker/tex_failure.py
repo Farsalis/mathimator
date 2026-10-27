@@ -1,16 +1,16 @@
-"""The ``render_failed`` message for a Manim run that exited non-zero (D11, D23).
+"""The ``render_failed`` message for a Manim run that exited non-zero.
 
 A failure is a LaTeX failure only when Manim's own TeX markers are in its
 output: the "LaTeX compilation error:" it logs, or the exception it raises when
 a TeX compiler fails. A project folder, a user name or a formula that merely
-mentions LaTeX or ``.log`` does not make one (F017). A LaTeX failure reads
+mentions LaTeX or ``.log`` does not make one. A LaTeX failure reads
 "LaTeX failed." followed by TeX's ``!`` error line, the ``<argument>`` line
 that ends at the bad command when TeX shows one, and the ``l.N`` line that
-names where TeX stopped, which for a formula is MathTex's ``\\end{align*}``
-(D11). They are taken from the TeX log on disk, since Rich wraps Manim's copy
-of them to its own width (F016). Any other failure is one line,
+names where TeX stopped, which for a formula is MathTex's ``\\end{align*}``.
+They are taken from the TeX log on disk, since Rich wraps Manim's copy of them
+to its own width. Any other failure is one line,
 "manim exited with status N: <ExceptionType: text>", the exception Rich prints
-below its traceback frames (F095). The whole output stays in worker.log.
+below its traceback frames. The whole output stays in worker.log.
 """
 
 from __future__ import annotations

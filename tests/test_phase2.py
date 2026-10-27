@@ -1,7 +1,7 @@
 """Phase 2 document, codegen, invalidation, and job queue tests.
 
 These tests do not start a GUI and they do not measure the 50 ms or 100 ms
-budgets. Scrub belongs to the UI (D44); its acceptance test is a vitest over
+budgets. Scrub belongs to the UI; its acceptance test is a vitest over
 ``playbackAt``.
 """
 
@@ -43,9 +43,9 @@ REFERENCE_SCENE = REPO / "scenes" / "reference_60.py"
 JOURNEY = FIXTURES / "journey-a" / "project.json"
 REFERENCE = FIXTURES / "reference-60" / "project.json"
 LESSON = FIXTURES / "lesson-60" / "project.json"
-# Beat boundaries and the frames they land on, which playback.test.ts checks too (D63).
+# Beat boundaries and the frames they land on, which playback.test.ts checks too.
 TIMING = json.loads((FIXTURES / "timing" / "frame-boundaries.json").read_text(encoding="utf-8"))
-# Twenty beats of 0.5 s, whose frames the render tier counts (G3.5).
+# Twenty beats of 0.5 s, whose frames the render tier counts.
 FRACTIONAL = FIXTURES / "fractional-10" / "project.json"
 
 FOUR_LINES = (
@@ -232,7 +232,7 @@ def test_expression_grammar() -> None:
     ],
 )
 def test_unary_minus_applies_to_the_power_after_it(expression: str, body: str) -> None:
-    """D01: -x^2 is -(x^2), as in usual math and in Python."""
+    """-x^2 is -(x^2), as in usual math and in Python."""
     assert expression_to_python(expression, frozenset({"x"})) == body
 
 
@@ -265,7 +265,7 @@ def test_power_chains_and_other_forms_stay_unsupported(rejected: str) -> None:
     ],
 )
 def test_formula_literals_are_used_exactly(expression: str, body: str) -> None:
-    """D02: no rounding to three decimals; whole numbers print as integers."""
+    """No rounding to three decimals; whole numbers print as integers."""
     assert expression_to_python(expression, frozenset({"x"})) == body
 
 
@@ -299,7 +299,7 @@ def test_the_frame_helper_matches_the_spec() -> None:
 
 @pytest.mark.parametrize("fps", [15, 30, 60])
 def test_every_beat_boundary_lands_on_the_nearest_frame(fps: int) -> None:
-    """D63, G3.1, G3.3: frames counted the way Manim 0.22 draws them, at the preview and export rates."""
+    """Frames counted the way Manim 0.22 draws them, at the preview and export rates."""
     raw = json.loads(JOURNEY.read_text(encoding="utf-8"))
     beats = raw["scene"]["beats"]
     for beat, duration in zip(beats, [0.5, 0.267, 1.333, 0.5], strict=True):
@@ -343,7 +343,7 @@ def test_every_beat_boundary_lands_on_the_nearest_frame(fps: int) -> None:
     [(boundary["seconds"], boundary["fps"], boundary["frame"]) for boundary in TIMING["boundaries"]],
 )
 def test_a_boundary_on_a_half_frame_rounds_up_as_in_the_ui(seconds: float, fps: int, frame: int) -> None:
-    """D63: in floats each of these boundaries comes to just under a half frame and would round down.
+    """In floats each of these boundaries comes to just under a half frame and would round down.
 
     The first beat ends there, and so does an export of that length, whose PNG sequence has as many frames.
     """
@@ -354,13 +354,13 @@ def test_a_boundary_on_a_half_frame_rounds_up_as_in_the_ui(seconds: float, fps: 
 
 
 def test_each_beat_draws_the_frames_the_ui_gives_it() -> None:
-    """D63: beat index 2 of [2, 2.1, 1] starts on frame 62 at 15 fps, in the movie and in playback.ts."""
+    """Beat index 2 of [2, 2.1, 1] starts on frame 62 at 15 fps, in the movie and in playback.ts."""
     beats = TIMING["beats"]
     assert _manim_frame_counts(generate(_journey_a(beats["durations"])), beats["fps"]) == beats["frames"]
 
 
 def test_half_second_beats_are_the_frames_the_render_tier_counts() -> None:
-    """D63, G3.5: the fractional fixture's beats are 8 and 7 frames in turn at 15 fps and 15 each at 30.
+    """The fractional fixture's beats are 8 and 7 frames in turn at 15 fps and 15 each at 30.
 
     Manim draws a plain 0.5 s as 8 frames for a play and 7 for a wait at 15 fps.
     After the first beat the fixture's plays are 7-frame beats and its waits
@@ -375,7 +375,7 @@ def test_half_second_beats_are_the_frames_the_render_tier_counts() -> None:
 
 
 def test_the_last_beat_ends_at_the_reported_total() -> None:
-    """D63: the bounds are the reported starts and total, where adding in order is 1 ms off a compensated sum."""
+    """The bounds are the reported starts and total, where adding in order is 1 ms off a compensated sum."""
     project = _journey_a([3.5823, 2.7902, 2.069, 1])
     assert derived_starts([beat.duration for beat in project.scene.beats])[-1] == 8.442
     assert total_duration(project) == 9.441
@@ -474,7 +474,7 @@ def test_a_new_preview_cancels_the_in_flight_preview(tmp_path: Path, monkeypatch
         assert time.perf_counter() - started < 1.0
         cancelled = client.wait_for_end("preview-1", 10)
         assert (cancelled["event"], cancelled["code"]) == ("error", "cancelled")
-        # The newer preview runs in its place, which a stop that did not wait for the old one would break (F141).
+        # The newer preview runs in its place, which a stop that did not wait for the old one would break.
         second = client.wait_for(
             lambda event: event.get("jobId") == "preview-2" and event.get("event") in {"started", *TERMINAL_EVENTS},
             10,
@@ -613,6 +613,6 @@ def _wait_manim(log_path: Path) -> int:
 
 
 def _end(client: SupervisorClient, job_id: str) -> None:
-    """Cancel the job and wait for its last line, so closing the worker leaves no fake Manim behind (F028)."""
+    """Cancel the job and wait for its last line, so closing the worker leaves no fake Manim behind."""
     client.send({"cmd": "cancel", "id": f"cancel-{job_id}", "jobId": job_id})
     client.wait_for_end(job_id, 10)

@@ -1,4 +1,4 @@
-"""The project lifecycle: lock, fingerprint, folder identity, links, the project commands, and the log (C8, C10).
+"""The project lifecycle: lock, fingerprint, folder identity, links, the project commands, and the log.
 
 Every test runs Supervisors in this process through ``handle_line`` and reads
 their replies from the captured stdout. Jobs run the ``fake_manim`` stand-in.
@@ -69,7 +69,7 @@ def start(monkeypatch: pytest.MonkeyPatch) -> Iterator[Start]:
         supervisor.close()
 
 
-# The project lock (D58)
+# The project lock
 
 
 def test_a_locked_project_is_refused_until_its_worker_exits(tmp_path: Path, start: Start, stdout: Stdout) -> None:
@@ -113,7 +113,7 @@ def test_init_writes_only_behind_the_lock(tmp_path: Path, start: Start, stdout: 
     assert not (held / "project.json").exists()
 
 
-# Folders that are links (O10)
+# Folders that are links
 
 
 @pytest.mark.parametrize(
@@ -194,7 +194,7 @@ def test_save_as_refuses_a_folder_whose_mathimator_is_a_link(
     assert [path.name for path in target.iterdir()] == [".mathimator"]
 
 
-# open_project, reload, overwrite (C8.3)
+# open_project, reload, overwrite
 
 
 def test_a_refused_open_changes_nothing(tmp_path: Path, start: Start, stdout: Stdout) -> None:
@@ -297,7 +297,7 @@ def test_a_moved_folder_refuses_the_change_and_keeps_the_earlier_ones(
     tmp_path: Path, start: Start, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     folder = _journey(tmp_path / "lesson")
-    # The log lives in the folder, so logging after the move must not bring the folder back (G1.3).
+    # The log lives in the folder, so logging after the move must not bring the folder back.
     supervisor = start(folder, log=False)
     _send(supervisor, cmd="edit", id="before", edit=_rename("Before the move"))
     # Windows refuses to rename a folder while a file in it is open, so the lock lets go first.
@@ -310,13 +310,13 @@ def test_a_moved_folder_refuses_the_change_and_keeps_the_earlier_ones(
     for job_id in ("after", "undo", "clear", "preview-1"):
         (refused,) = stdout.of(job_id)
         assert (refused["code"], refused["message"]) == ("project_unavailable", PROJECT_UNAVAILABLE)
-    # An edit that changes nothing writes nothing, so it runs no check (C8.1).
+    # An edit that changes nothing writes nothing, so it runs no check.
     _send(supervisor, cmd="edit", id="same", edit=_rename("Before the move"))
     assert (stdout.last()["event"], stdout.last()["changed"]) == ("state", False)
     assert not folder.exists()
     assert not fake_manim.ran()
 
-    # D57, C14 Q1: the edits saved before the move stay in memory, and Save As keeps them.
+    # The edits saved before the move stay in memory, and Save As keeps them.
     rescue = tmp_path / "rescue"
     rescue.mkdir()
     _send(supervisor, cmd="save_as", id="save", path=str(rescue))
@@ -337,7 +337,7 @@ def test_a_folder_put_in_place_of_the_bound_one_is_not_written(
     _send(supervisor, cmd="edit", id="before", edit=_rename("Before the move"))
     _binding_lock(supervisor).release()
     moved = folder.rename(tmp_path / "lesson moved")
-    # The same bytes at the same path: only the folder's identity tells it from the bound one (D57).
+    # The same bytes at the same path: only the folder's identity tells it from the bound one.
     replacement = _made(folder / "project.json")
     replacement.write_bytes((moved / "project.json").read_bytes())
     saved = replacement.read_bytes()
@@ -356,7 +356,7 @@ def test_a_deleted_project_json_is_not_written_again(tmp_path: Path, start: Star
     supervisor = start(_journey(tmp_path / "journey"))
     supervisor.layout.project_file.unlink()
     _send(supervisor, cmd="edit", id="edit", edit=_rename("Renamed"))
-    # Overwrite skips the fingerprint, but not the check that project.json is there (D57).
+    # Overwrite skips the fingerprint, but not the check that project.json is there.
     _send(supervisor, cmd="overwrite", id="overwrite")
     _send(supervisor, cmd="reload", id="reload")
     for job_id in ("edit", "overwrite", "reload"):
@@ -377,7 +377,7 @@ def test_a_cache_record_that_cannot_be_written_does_not_refuse_the_edit(
     assert f"could not write {supervisor.layout.rendered_path}" in supervisor.log_path.read_text(encoding="utf-8")
 
 
-# Saving project.json (D05, C13.2 E3, G5.9)
+# Saving project.json
 
 
 def test_a_save_is_synced_before_it_replaces_project_json(
@@ -431,7 +431,7 @@ def test_replace_waits_only_while_windows_reports_the_file_in_use(
 
 
 def test_undo_and_redo_answer_within_their_budget(tmp_path: Path, start: Start, stdout: Stdout) -> None:
-    # Spec section 2 gives undo 50 ms, and every project.json write is synced (C13.2 E3).
+    # Spec section 2 gives undo 50 ms, and every project.json write is synced.
     supervisor = start(_journey(tmp_path / "journey"))
     _send(supervisor, cmd="edit", id="rename", edit=_rename("Renamed"))
     times: list[float] = []
@@ -443,7 +443,7 @@ def test_undo_and_redo_answer_within_their_budget(tmp_path: Path, start: Start, 
     assert statistics.median(times) < 0.05, times
 
 
-# Edits that change nothing (D08, C10)
+# Edits that change nothing
 
 
 def test_an_edit_that_changes_nothing_is_not_recorded(tmp_path: Path, start: Start, stdout: Stdout) -> None:
@@ -489,7 +489,7 @@ def test_an_edit_that_changes_nothing_skips_the_disk_checks(tmp_path: Path, star
     assert supervisor.layout.project_file.read_text(encoding="utf-8") == outside
 
 
-# Startup (C8.2)
+# Startup
 
 
 def test_startup_on_a_missing_folder_creates_nothing(tmp_path: Path, start: Start, stdout: Stdout) -> None:
@@ -527,7 +527,7 @@ def test_startup_starts_no_helper_process(tmp_path: Path, monkeypatch: pytest.Mo
     assert started == []
 
 
-# Save As (D29, C8.3)
+# Save As
 
 
 def test_save_as_moves_a_rendered_project(tmp_path: Path, start: Start, stdout: Stdout, fake_manim: FakeManim) -> None:
@@ -636,7 +636,7 @@ def test_open_and_save_as_wait_for_a_running_export(
     assert [line["event"] for line in stdout.of("export-1")] == ["started", "done"]
 
 
-# The preview index on disk (D18, F035, F092)
+# The preview index on disk
 
 
 def test_a_copied_project_finds_its_own_previews(
@@ -688,7 +688,7 @@ def test_a_stored_path_outside_the_project_is_dropped(tmp_path: Path, start: Sta
     assert [beat["partial"] for beat in index["beats"]] == [None, None, str(inside.resolve()), None]
 
 
-# Clear cache (D55, D58, G5.8)
+# Clear cache
 
 
 def test_clear_cache_keeps_the_project_files_and_empties_the_log(tmp_path: Path, start: Start, stdout: Stdout) -> None:
@@ -727,7 +727,7 @@ def test_clear_cache_reports_files_another_program_holds(tmp_path: Path, start: 
 def test_clear_cache_removes_read_only_files(tmp_path: Path, start: Start, stdout: Stdout) -> None:
     supervisor = start(_journey(tmp_path / "journey"), log=False)
     state = supervisor.project / ".mathimator"
-    # A copied or shared project folder can carry the read-only attribute (S26).
+    # A copied or shared project folder can carry the read-only attribute.
     read_only = [
         _made(state / "codegen" / "__pycache__" / "scene.cpython-314.pyc"),
         _made(state / "cache" / "media" / "videos" / "scene" / "480p15" / "MainScene.mp4"),
@@ -787,7 +787,7 @@ def test_clear_cache_removes_links_and_never_what_they_point_to(
     assert [path.name for path in elsewhere.iterdir()] == [mine.name]
 
 
-# The worker log (D55)
+# The worker log
 
 
 def test_the_log_keeps_one_older_copy(tmp_path: Path, start: Start, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -846,7 +846,7 @@ def _journey(root: Path) -> Path:
 
 
 def _linked(link: Path) -> str:
-    """The refusal of a project whose own folder or log ``link`` is a symbolic link or a junction (O10)."""
+    """The refusal of a project whose own folder or log ``link`` is a symbolic link or a junction."""
     return (
         f"Mathimator cannot use {link}: it is a link to another location, and Mathimator keeps its files inside "
         "the project. Delete the link and try again."

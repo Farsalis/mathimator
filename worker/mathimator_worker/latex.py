@@ -1,4 +1,4 @@
-"""Formula LaTeX limited to an allowlist of math commands (D18).
+"""Formula LaTeX limited to an allowlist of math commands.
 
 A project can come from someone else, and TeX reads files when asked:
 ``\\input`` would draw any file the user can read into the frame. Every control

@@ -46,7 +46,7 @@ class Param:
     type: ParamType
     # What an edit stores when it names no value; it copies a list first. None: the edit computes it.
     default: JsonValue
-    # Inclusive bounds of a number or of each component of a vector, judged at three decimals (D02).
+    # Inclusive bounds of a number or of each component of a vector, judged at three decimals.
     low: float | None = None
     high: float | None = None
     # Greater than 0 at three decimals, with the message of every positive field.

@@ -1,4 +1,4 @@
-"""Follow a Manim run through the files it writes, never through its log (D13, F022).
+"""Follow a Manim run through the files it writes, never through its log.
 
 Manim writes one partial movie per beat into the ``partial_movie_files/MainScene``
 folder of the job's quality, one at a time (``--max-inflight-encoders 1``), and
@@ -6,7 +6,7 @@ reuses a partial that already exists instead of writing it again. Before Manim
 starts, ``ManimProgress`` records the size and mtime of every file in that
 quality folder and in its partials folder (``run_files``). A file that is new
 or changed since then is one this run wrote, so the comparison needs no clock
-(G5.10) and leaves other runs' files alone (F030, G5.7). A partial counts as
+and leaves other runs' files alone. A partial counts as
 finished once one with a later mtime exists, and only when its container is
 complete (``clip_check``). When Manim exits, the segment list it wrote,
 ``partial_movie_file_list.txt``, gives the full beat order, including the
@@ -35,7 +35,7 @@ Discarded = tuple[list[Path], list[tuple[Path, OSError]]]
 
 
 class ManimProgress:
-    """One Manim run of the project in ``root``, followed through its quality folder ``video_dir`` (C7.2).
+    """One Manim run of the project in ``root``, followed through its quality folder ``video_dir``.
 
     ``ready`` are the beats whose partial is current already, so Manim reuses
     it, and ``waiting`` are the beats Manim renders, in order. ``waiting`` is
@@ -87,7 +87,7 @@ class ManimProgress:
         """The partials in the segment list this run wrote, in beat order, or none when it wrote none.
 
         Only the file names are read from the list, and each is spelled inside
-        this run's folder, so no path in an event is one Manim wrote (C5).
+        this run's folder, so no path in an event is one Manim wrote.
         """
         manifest = self._partials / MANIFEST
         if manifest not in self._written(self._partials, MANIFEST):
@@ -147,7 +147,7 @@ def run_files(video_dir: Path) -> dict[Path, Stamp]:
 
 
 def discard_written(root: Path, video_dir: Path, before: dict[Path, Stamp], clips: ClipChecker) -> Discarded:
-    """Delete what an unfinished run wrote into its quality folder ``video_dir`` that may be cut off (D13, G1.1).
+    """Delete what an unfinished run wrote into its quality folder ``video_dir`` that may be cut off.
 
     The run wrote the files that ``before``, what ``run_files`` listed when it
     started, lacks or holds with another stamp. What may be cut off is an
@@ -155,7 +155,7 @@ def discard_written(root: Path, video_dir: Path, before: dict[Path, Stamp], clip
     and the scene movie. Complete partials stay, so the next render reuses
     them. Nothing is deleted through a link below the project folder
     ``root``, so a link planted in the project cannot point a discard outside
-    it (O10). Return the files removed and those that could not be (G5.10).
+    it. Return the files removed and those that could not be.
     """
     removed: list[Path] = []
     failed: list[tuple[Path, OSError]] = []

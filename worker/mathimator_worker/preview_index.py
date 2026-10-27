@@ -2,16 +2,16 @@
 
 The supervisor keeps it, writes it to ``preview-index.json`` and sends it in
 every ``state`` reply. The UI chooses the file under the playhead from it; the
-worker has no scrub command (D44).
+worker has no scrub command.
 
 In memory and in ``state`` the paths are absolute. On disk they are relative
 to the project folder, so a copied or moved project still finds its own
-media (F092). A stored path that does not lie inside the project's media or
-last-good folder is dropped when the index is read (D18, F035).
+media. A stored path that does not lie inside the project's media or
+last-good folder is dropped when the index is read.
 
 Each file carries the chain key of the beat it was rendered for
 (``identity.beat_chain_keys``), so a file counts as fresh only for the
-document it shows (F135). The keys stay on disk and are not sent in ``state``.
+document it shows. The keys stay on disk and are not sent in ``state``.
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ class PreviewIndex:
         return PreviewIndex(output=mapped(self.output), beats=beats)
 
     def record(self, partials: Iterable[tuple[int, Path]], keys: Sequence[str]) -> None:
-        """Make each partial the fresh file of its beat, tagged with the chain key it was rendered for (F034, F135).
+        """Make each partial the fresh file of its beat, tagged with the chain key it was rendered for.
 
         ``partials`` pairs beat indexes with files, and ``keys`` are the chain
         keys of the document they were rendered from.
@@ -91,7 +91,7 @@ class PreviewIndex:
                 continue
             beat = self.beats[index]
             beat.partial, beat.partial_key, beat.fresh = str(path), keys[index], True
-            # A fresh partial replaces the older last good file (F034).
+            # A fresh partial replaces the older last good file.
             beat.last_good = beat.last_good_key = None
 
 
@@ -102,12 +102,12 @@ def rebuild_index(
     complete: Callable[[Path], bool],
     output_current: Callable[[], bool],
 ) -> PreviewIndex:
-    """The index of a document with ``beats``, whose chain keys are ``keys``, kept from ``previous`` (F010, F034, F135).
+    """The index of a document with ``beats``, whose chain keys are ``keys``, kept from ``previous``.
 
     A beat is fresh when one of its files was rendered for it as it is now,
     that is, for its chain key. A stale beat keeps its newest file as last
     good, which the canvas shows under the badge until a new partial is
-    ready. Only a file ``complete`` accepts counts (C14 Q3). The full movie
+    ready. Only a file ``complete`` accepts counts. The full movie
     stays only while every beat is fresh and ``output_current`` says it is the
     render of this very document.
     """

@@ -1,14 +1,14 @@
-"""The project folder on disk: its lock, its identity, and safe writes (contract C8.1).
+"""The project folder on disk: its lock, its identity, and safe writes.
 
 A worker holds an exclusive OS lock on ``<project>/.mathimator/lock`` while it
-is bound to the folder (D58). The lock, not the file, means "in use", and the
+is bound to the folder. The lock, not the file, means "in use", and the
 OS drops it when the process dies. The folder's ``(st_dev, st_ino)`` tells a
-moved or replaced folder from the one that was bound (D57). project.json is
+moved or replaced folder from the one that was bound. project.json is
 replaced through a unique temporary file in the same folder, synced before the
-rename (C13.2 E3), and a finished export is published the same way (C7.2).
+rename, and a finished export is published the same way.
 Nothing here creates a project folder: folders are made only inside one that
 exists. A delete below the project folder removes a symbolic link or a
-junction, and never goes through one (O10).
+junction, and never goes through one.
 """
 
 from __future__ import annotations
@@ -60,14 +60,14 @@ class ProjectLocked(OSError):
 
 
 class LinkedFolder(OSError):
-    """A folder below the project folder is a symbolic link or a junction, so nothing is deleted through it (O10)."""
+    """A folder below the project folder is a symbolic link or a junction, so nothing is deleted through it."""
 
     def __init__(self, link: Path) -> None:
         super().__init__(f"{link} is a link to another folder")
 
 
 class ProjectLock:
-    """The exclusive lock on one project folder (D58).
+    """The exclusive lock on one project folder.
 
     ``created`` is what taking the lock created: the ``.mathimator`` folder, or
     the lock file inside one that existed, or None.
@@ -136,7 +136,7 @@ def folder_identity(path: Path) -> tuple[int, int] | None:
 
 
 def make_folders(root: Path, folder: Path) -> None:
-    """Create ``folder`` and the folders between it and ``root``. ``root`` itself is never created (D57)."""
+    """Create ``folder`` and the folders between it and ``root``. ``root`` itself is never created."""
     if folder.is_dir():
         return
     current = root
@@ -146,7 +146,7 @@ def make_folders(root: Path, folder: Path) -> None:
 
 
 def fingerprint(data: bytes) -> str:
-    """The disk fingerprint of project.json: the SHA-256 of its exact bytes (D59)."""
+    """The disk fingerprint of project.json: the SHA-256 of its exact bytes."""
     return hashlib.sha256(data).hexdigest()
 
 
@@ -199,12 +199,12 @@ def copy_atomically(source: Path, target: Path) -> None:
 
 
 def replace(source: Path, target: Path) -> None:
-    """``os.replace``, retried for about 0.5 s while Windows reports a file in use (errors 5 and 32, G5.9)."""
+    """``os.replace``, retried for about 0.5 s while Windows reports a file in use (errors 5 and 32)."""
     _retry_in_use(lambda: os.replace(source, target))
 
 
 def remove_file(path: Path) -> None:
-    """Delete a file that may not exist, retried for about 0.5 s while Windows reports it in use (G5.10)."""
+    """Delete a file that may not exist, retried for about 0.5 s while Windows reports it in use."""
     _retry_in_use(lambda: path.unlink(missing_ok=True))
 
 
@@ -230,7 +230,7 @@ def is_link(path: Path) -> bool:
 
 
 def first_link(root: Path, path: Path) -> Path | None:
-    """The first folder from below ``root`` down to ``path``, ``path`` included, that is a link, or None (O10).
+    """The first folder from below ``root`` down to ``path``, ``path`` included, that is a link, or None.
 
     ``root`` is the project folder, resolved when it was bound, so a link above it is the user's own.
     """
@@ -243,7 +243,7 @@ def first_link(root: Path, path: Path) -> Path | None:
 
 
 def link_refusal(link: Path) -> str:
-    """The message of ``linked_folder``: ``link``, one of the project's own files or folders, is a link (O10)."""
+    """The message of ``linked_folder``: ``link``, one of the project's own files or folders, is a link."""
     return (
         f"Mathimator cannot use {link}: it is a link to another location, and Mathimator keeps its files "
         "inside the project. Delete the link and try again."
@@ -251,7 +251,7 @@ def link_refusal(link: Path) -> str:
 
 
 def remove_below(root: Path, path: Path, onexc: OnExc) -> None:
-    """Delete ``path`` below ``root``: a folder with all it holds, a file or a link, never through a link (O10).
+    """Delete ``path`` below ``root``: a folder with all it holds, a file or a link, never through a link.
 
     A link goes, never what it points to, whether it is ``path`` or inside it,
     where shutil.rmtree removes links without following them. While a folder
@@ -271,7 +271,7 @@ def remove_below(root: Path, path: Path, onexc: OnExc) -> None:
 
 
 def retry_read_only(function: Callable[..., object], path: str, exc: BaseException) -> None:
-    """An ``onexc`` for ``remove_below``: make a read-only file or folder writable, then remove it again (S26).
+    """An ``onexc`` for ``remove_below``: make a read-only file or folder writable, then remove it again.
 
     Windows will not delete either while it is read-only, as a copied or
     shared project folder can carry them. A link is never changed, and any

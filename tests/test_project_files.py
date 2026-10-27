@@ -1,4 +1,4 @@
-"""The supervisor's pure parts, without a supervisor: the project layout, links, the preview index and exports (F088)."""
+"""The supervisor's pure parts, without a supervisor: the project layout, links, the preview index and exports."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def test_the_layout_is_the_folder_tree_of_spec_section_4(tmp_path: Path) -> None
         "tex_dir": ".mathimator/cache/media/Tex",
     }
     assert [path.name for path in layout.derived_dirs] == ["cache", "codegen", "equation", "typst"]
-    # With the folders above them: .mathimator, its cache and the media folder (O10).
+    # With the folders above them: .mathimator, its cache and the media folder.
     assert [path.relative_to(tmp_path).as_posix() for path in layout.managed_paths] == [
         ".mathimator/codegen",
         ".mathimator/cache/media/Tex",
@@ -77,7 +77,7 @@ def test_the_layout_watches_the_files_manim_is_given(tmp_path: Path) -> None:
     assert (runs_in / MEDIA_DIR).resolve() == layout.media_dir.resolve()
 
 
-# Links (O10)
+# Links
 
 
 @pytest.mark.parametrize(
@@ -194,7 +194,7 @@ def test_a_rebuilt_index_keeps_only_files_rendered_for_each_beat_as_it_is() -> N
         (True, "b1.mp4", keys[0], None, None),
         # The newest file stays as last good, under the badge.
         (False, None, None, "b2.mp4", "another document"),
-        # A cut-off clip never counts (C14 Q3).
+        # A cut-off clip never counts.
         (False, None, None, None, None),
         (False, None, None, None, None),
     ]
@@ -255,7 +255,7 @@ def test_a_finished_export_is_published_with_its_manifest_and_then_reused(tmp_pa
 
 @pytest.mark.parametrize("fmt", ["mp4", "png_sequence"])
 def test_an_export_is_never_published_through_a_link(tmp_path: Path, fmt: str, link_kind: str) -> None:
-    """A link made in exports/ after the job started is refused as at the start, so nothing outside changes (O10)."""
+    """A link made in exports/ after the job started is refused as at the start, so nothing outside changes."""
     layout = ProjectLayout(tmp_path / "project")
     project = _journey()
     project.export_profile.format = fmt

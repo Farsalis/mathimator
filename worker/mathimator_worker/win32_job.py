@@ -1,7 +1,7 @@
 """Windows Job Object teardown for a Manim grandchild.
 
-Craig approved this binding: on Windows each Manim process is assigned to a
-job with ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``. Cancel calls
+On Windows each Manim process is assigned to a job with
+``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``. Cancel calls
 ``TerminateJobObject``, which also ends ``latex`` and ``dvisvgm``. When no job
 can be used, ``process_group`` stops the tree instead.
 
@@ -9,8 +9,8 @@ On Windows the job is the default. ``MATHIMATOR_WIN32_JOBS=0`` turns it off.
 The tests that create a job are skipped unless ``MATHIMATOR_WIN32_TESTS=1``.
 
 A job handle has one owner, which may terminate the job any number of times
-and closes the handle once (F023). A failed call raises the OSError of its
-Windows error code (F101).
+and closes the handle once. A failed call raises the OSError of its
+Windows error code.
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ class _ExtendedLimit(ctypes.Structure):
 
 @functools.cache
 def _kernel32() -> ctypes.CDLL:
-    """kernel32 with the prototype of every call this module makes, bound once (F106)."""
+    """kernel32 with the prototype of every call this module makes, bound once."""
     if sys.platform != "win32":
         raise OSError("Job Objects exist only on Windows")
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)

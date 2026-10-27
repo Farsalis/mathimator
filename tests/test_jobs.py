@@ -1,4 +1,4 @@
-"""Jobs, progress and publishing (contract C7.1, C7.2; fix-plan S28, S35 to S38).
+"""Jobs, progress and publishing.
 
 The job queue with its hold slots, progress from the files Manim writes,
 ``beat_ready`` under the document lock, the tagged preview index, publishing an
@@ -38,7 +38,7 @@ from tests.support import REPO, FakeManim, Stdout, complete_clip, iso_box, video
 
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 CAPTURES = REPO / "tests" / "fixtures" / "manim"
-# The message for the TeX log in CAPTURES of a formula that misspells \sin (D11).
+# The message for the TeX log in CAPTURES of a formula that misspells \sin.
 UNDEFINED_SINN = "LaTeX failed.\n! Undefined control sequence.\n<argument>  y = \\sinn\nl.8 \\end{align*}"
 QUEUED = {"event": "queued", "code": "stopping_previous", "message": "Waiting for the previous render to stop."}
 CANCELLED = {"event": "error", "code": "cancelled", "message": "cancelled"}
@@ -51,7 +51,7 @@ def quick_kill(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(supervisor_module, "terminate_process_group", lambda proc: proc.kill())
 
 
-# The queue (C7.2, D19, F036)
+# The queue
 
 
 def test_a_preview_that_will_not_stop_holds_the_next_one(
@@ -155,7 +155,7 @@ def test_a_render_that_outlived_its_stop_is_not_waited_for_again(
         _send(supervisor, cmd="cancel", id="cancel-1", jobId="preview-1")
         time.sleep(1)
     else:
-        # This request waits the 1 s for preview-1 (D19).
+        # This request waits the 1 s for preview-1.
         _send(supervisor, cmd="render_preview", id="preview-0")
     asked = time.monotonic()
     _send(supervisor, cmd="render_preview", id="preview-2")
@@ -206,7 +206,7 @@ def test_a_cancelled_job_does_not_wait_for_a_child_that_holds_its_output(
         cancelled_at = time.monotonic()
         _send(supervisor, cmd="cancel", id="cancel-1", jobId="preview-1")
         job.thread.join(timeout=10)
-        # The child sleeps for a minute; the job ends without waiting for it (F036).
+        # The child sleeps for a minute; the job ends without waiting for it.
         assert not job.thread.is_alive()
         assert time.monotonic() - cancelled_at < 5
         assert stdout.of("preview-1")[-1] == {**CANCELLED, "jobId": "preview-1"}
@@ -215,7 +215,7 @@ def test_a_cancelled_job_does_not_wait_for_a_child_that_holds_its_output(
             os.kill(fake_manim.child_pid(), signal.SIGTERM)
 
 
-# Progress from the files Manim writes (D13, F022, F029, F030, F032, G5.7, G5.10)
+# Progress from the files Manim writes
 
 
 def test_progress_hands_out_each_finished_partial_in_beat_order(tmp_path: Path) -> None:
@@ -292,12 +292,12 @@ def test_progress_reads_only_the_segment_list_this_run_wrote(tmp_path: Path) -> 
     manifest = folder / MANIFEST
     manifest.write_text("file 'file:C:/old/a.mp4'\n", encoding="utf-8")
     progress = ManimProgress(tmp_path, video, ClipChecker(), {}, [0, 1])
-    # A list from an earlier render, or from another quality folder, is not this run's (F032).
+    # A list from an earlier render, or from another quality folder, is not this run's.
     other = tmp_path / "videos" / "scene" / "480p15" / "partial_movie_files" / "MainScene"
     other.mkdir(parents=True)
     (other / MANIFEST).write_text("file 'file:C:/x/b.mp4'\n", encoding="utf-8")
     assert progress.segments() == []
-    # Only the names are read, and each is spelled inside this run's folder (C5).
+    # Only the names are read, and each is spelled inside this run's folder.
     manifest.write_text(
         "# This file records the segment order used by Manim.\n"
         "file 'file:C:/Users/O'Brien/media/one.mp4'\n"
@@ -336,13 +336,13 @@ def test_a_discard_removes_only_what_this_run_wrote_that_may_be_cut_off(tmp_path
     folder.mkdir(parents=True)
     before = [_clip(folder / "earlier.mp4", 0, at=-1), _clip(video / "MainScene.mp4", 0, at=-1)]
     (folder / MANIFEST).write_text("file 'file:earlier.mp4'\n", encoding="utf-8")
-    # Another quality folder, which another window may be rendering into right now (G5.7).
+    # Another quality folder, which another window may be rendering into right now.
     other = media / "videos" / "scene" / "1080p30" / "partial_movie_files" / "MainScene"
     other.mkdir(parents=True)
     progress = ManimProgress(tmp_path, video, ClipChecker(), {}, [0, 1, 2])
     elsewhere = [_clip(other / "busy.mp4", 1, at=1, complete=False), _clip(other / "done.mp4", 1, at=1)]
     finished = _clip(folder / "finished.mp4", 1, at=1)
-    # A file server whose clock runs an hour behind stamps this run's file in the past (G5.10).
+    # A file server whose clock runs an hour behind stamps this run's file in the past.
     cut_off = _clip(folder / "cut-off.mp4", 2, at=-3600, complete=False)
     rewritten = [_clip(video / "MainScene.mp4", 2, at=2, complete=False)]
     (folder / MANIFEST).write_text("file 'file:finished.mp4'\n", encoding="utf-8")
@@ -421,7 +421,7 @@ def test_a_cancelled_preview_keeps_the_partials_it_finished(
     ]
 
 
-# beat_ready (C7.1, D17, F135)
+# beat_ready
 
 
 @pytest.mark.parametrize("change", ["edit", "undo"])
@@ -451,7 +451,7 @@ def test_beat_ready_stops_once_the_document_changes(
     lines = stdout.read()
     after = lines[lines.index(reply) + 1 :]
     assert [line["event"] for line in after if line["jobId"] == "preview-1"] == ["done"]
-    # No state line closes a preview (C5).
+    # No state line closes a preview.
     assert [line["event"] for line in stdout.of("preview-1")] == ["started", "beat_ready", "done"]
     beats = json.loads(supervisor.layout.index_path.read_text(encoding="utf-8"))["beats"]
     assert [beat["fresh"] for beat in beats] == [True, False, False, False]
@@ -467,7 +467,7 @@ def test_an_export_sends_no_beat_ready(
     assert all(beat.partial is None for beat in _index(supervisor).beats)
 
 
-# The preview index (F010, F034, F135)
+# The preview index
 
 
 def test_the_full_movie_is_current_only_for_the_document_it_shows() -> None:
@@ -478,7 +478,7 @@ def test_the_full_movie_is_current_only_for_the_document_it_shows() -> None:
     session.edit({"op": "add_text", "afterBeatId": session.project.scene.beats[-1].id})
     session.mark_rendered("preview")
     session.undo()
-    # Every remaining beat matches the render, but the movie also shows the removed one (F010).
+    # Every remaining beat matches the render, but the movie also shows the removed one.
     assert session.dirty_flags("preview") == [False] * len(session.project.scene.beats)
     assert not session.output_current("preview")
 
@@ -511,13 +511,13 @@ def test_a_beat_shows_its_newest_render_and_undo_brings_it_back(
     )
     _send(supervisor, cmd="edit", id="green", edit=_color("#00FF00"))
     _prepared(supervisor)
-    # The last good copy is the render just before the edit, not one two edits old (F034).
+    # The last good copy is the render just before the edit, not one two edits old.
     last_good = supervisor.layout.last_good_dir / "beat_2.mp4"
     assert last_good.read_bytes() == _bytes(1)
     _send(supervisor, cmd="undo", id="undo-red")
     beat = stdout.last()["index"]["beats"][1]
     assert (beat["fresh"], beat["partial"]) == (True, str(last_good))
-    # The red render does not show the blue document as current (F135).
+    # The red render does not show the blue document as current.
     _send(supervisor, cmd="undo", id="undo-blue")
     beat = stdout.last()["index"]["beats"][1]
     assert (beat["fresh"], beat["partial"], beat["lastGood"]) == (False, None, str(last_good))
@@ -538,7 +538,7 @@ def test_a_job_of_an_earlier_binding_records_nothing(
     assert [line["event"] for line in stdout.read() if line["jobId"] == "preview-1"] == ["beat_ready"]
 
 
-# Publishing an export (C7.2, D56, F031, F164, G1.2)
+# Publishing an export
 
 
 def test_re_export_skips_the_export_cache(
@@ -568,7 +568,7 @@ def test_an_export_of_another_profile_renders_again(
     profile = {"format": "mp4", "width": 1920, "height": 1080, "fps": 60, "transparent": False}
     _send(supervisor, cmd="edit", id="fps", edit={"op": "set_export_profile", **profile})
     _run(supervisor, cmd="export", id="export-2")
-    # The export cache misses, so Manim renders the new profile (F136).
+    # The export cache misses, so Manim renders the new profile.
     assert [line["event"] for line in stdout.of("export-2")] == ["started", "done"]
     first, second = (Path(stdout.of(job_id)[-1]["path"]) for job_id in ("export-1", "export-2"))
     assert first.parent != second.parent
@@ -627,7 +627,7 @@ def test_an_edit_does_not_wait_for_an_export_to_be_copied(
     _send(supervisor, cmd="export", id="export-1")
     job = _current(supervisor)
     assert copying.wait(30)
-    # The copy holds no document lock, so the edit is answered while it runs (F031, F164).
+    # The copy holds no document lock, so the edit is answered while it runs.
     _send(supervisor, cmd="edit", id="recolor", edit=_color("#FF0000"))
     assert stdout.last()["jobId"] == "recolor"
     copied.set()
@@ -664,7 +664,7 @@ def test_a_folder_is_published_whole_or_not_at_all(tmp_path: Path, monkeypatch: 
     assert [path.name for path in target.parent.iterdir()] == ["frames"]
 
 
-# render_failed (D11, D23, F016, F017, F095)
+# render_failed
 
 
 def test_a_tex_error_shows_the_error_line_the_bad_command_and_where_tex_stopped() -> None:
@@ -695,7 +695,7 @@ def test_a_tex_failure_without_a_log_shows_manims_exception() -> None:
 
 
 def test_a_failure_is_latex_only_when_manim_says_so() -> None:
-    # A real Manim 0.22 traceback, from a project under C:\Users\j.logan\Documents\LaTeX (F017).
+    # A real Manim 0.22 traceback, from a project under C:\Users\j.logan\Documents\LaTeX.
     traceback = (CAPTURES / "runtime-error.txt").read_text(encoding="utf-8")
     assert "LaTeX" in traceback and ".log" in traceback
     assert format_render_failure(1, traceback) == (
@@ -726,7 +726,7 @@ def test_a_failed_render_reads_the_tex_log_it_wrote(
     failed = stdout.of("preview-1")[-1]
     assert (failed["event"], failed["code"]) == ("error", "render_failed")
     assert failed["message"] == UNDEFINED_SINN
-    # The details are the last lines Manim wrote; worker.log keeps them all (D23).
+    # The details are the last lines Manim wrote; worker.log keeps them all.
     assert failed["details"].splitlines() == output
 
 
@@ -758,7 +758,7 @@ def test_a_manim_that_cannot_start_ends_the_job_without_started(
 
     monkeypatch.setattr(supervisor_module.subprocess, "Popen", missing)
     _run(supervisor, cmd=command, id=job_id)
-    # The terminal line is the job's only line: Manim never started (C7.2).
+    # The terminal line is the job's only line: Manim never started.
     (failed,) = stdout.of(job_id)
     assert (failed["event"], failed["code"]) == ("error", "render_failed")
     assert failed["message"].startswith("Could not start Manim: ")
@@ -783,7 +783,7 @@ def _supervisor(project: Path, monkeypatch: pytest.MonkeyPatch) -> Supervisor:
 
 
 def _unkillable(supervisor: Supervisor, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A render whose kill does nothing, so it outlives the 1 s its stop waits (D19).
+    """A render whose kill does nothing, so it outlives the 1 s its stop waits.
 
     A subprocess fake cannot ignore a real kill, so this stands in for one that will not stop.
     """

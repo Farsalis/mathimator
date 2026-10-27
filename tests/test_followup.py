@@ -155,7 +155,7 @@ def test_queued_preview_starts_once_after_export(tmp_path: Path, monkeypatch) ->
 
 
 def test_a_wait_fails_as_soon_as_the_supervisor_dies_and_shows_its_stderr() -> None:
-    """A supervisor that crashes fails the test at once, with its traceback, not at the timeout (F145)."""
+    """A supervisor that crashes fails the test at once, with its traceback, not at the timeout."""
     crash = "import sys; sys.stderr.write('Traceback (most recent call last):\\nRuntimeError: boom\\n'); sys.exit(3)"
     pipes = {"stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
     client = SupervisorClient(subprocess.Popen([sys.executable, "-c", crash], **pipes))
@@ -188,9 +188,9 @@ _CUT_OFF = b"\x00" * 48
 def test_a_discard_takes_only_what_the_run_wrote_that_may_be_cut_off(
     tmp_path: Path, relative: str, data: bytes, earlier: bool, discarded: bool
 ) -> None:
-    """Each rule of the discard on its own, so a broken one cannot hide behind another (F140).
+    """Each rule of the discard on its own, so a broken one cannot hide behind another.
 
-    A cancel, a failure and the interrupted-run sweep all discard this way (G5.10).
+    A cancel, a failure and the interrupted-run sweep all discard this way.
     """
     video = tmp_path / "videos" / "scene" / "480p15"
     path = video / relative
@@ -211,7 +211,7 @@ def test_a_discard_takes_only_what_the_run_wrote_that_may_be_cut_off(
     ],
 )
 def test_a_discard_never_deletes_through_a_link(tmp_path: Path, linked: str, link_kind: str) -> None:
-    """A link planted anywhere in the project never lets a discard delete outside it (O10)."""
+    """A link planted anywhere in the project never lets a discard delete outside it."""
     project, outside = tmp_path / "project", tmp_path / "outside"
     partials = outside / _VIDEO / _PARTIALS
     partials.mkdir(parents=True)

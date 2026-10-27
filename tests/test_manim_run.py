@@ -1,4 +1,4 @@
-"""How Manim and LaTeX are run (contract C7.2 job start; fix-plan S39, S40, S42; D18, D31, D60, D61, C14 Q4).
+"""How Manim and LaTeX are run.
 
 The command line, the folder and environment Manim gets, the TeX folder it
 finds, the segment list FFmpeg reads, the PNG a sequence saves for each frame,
@@ -64,7 +64,7 @@ _PROFILES = (
     ("export", "png_sequence", True),
 )
 
-# The command line and Manim's settings (D60, F124, F170, G2.1, G2.2)
+# The command line and Manim's settings
 
 
 @pytest.mark.parametrize(("profile", "fmt", "transparent"), _PROFILES)
@@ -88,7 +88,7 @@ def test_manim_keeps_every_clip_of_the_longest_document() -> None:
 def test_every_beat_of_a_long_document_stays_fresh_after_one_preview(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
-    """G2.1: Manim keeps all 101 clips of the render it just finished, where its default bound of 100 would not.
+    """Manim keeps all 101 clips of the render it just finished, where its default bound of 100 would not.
 
     The fake Manim deletes clips above the bound as Manim does, so without the
     config file the oldest, beat 0's, would go and the preview would fail.
@@ -169,7 +169,7 @@ def test_manim_hashes_strings_with_one_seed_whatever_the_user_set(tmp_path: Path
     ]
 
 
-# The segment list FFmpeg reads (D61, G4.3)
+# The segment list FFmpeg reads
 
 
 def test_the_segment_list_quotes_an_apostrophe_for_ffmpeg(tmp_path: Path) -> None:
@@ -231,7 +231,7 @@ def test_a_movie_still_encodes_a_held_frame_once_with_its_repeat_count() -> None
     assert movie.images == []
 
 
-# Where Manim runs, and what it gets (D60, D61, D18)
+# Where Manim runs, and what it gets
 
 
 def test_manim_runs_in_the_scene_folder_with_its_own_home(
@@ -294,7 +294,7 @@ def test_a_link_in_the_tex_folder_goes_and_what_it_points_to_stays(tmp_path: Pat
 
 
 def test_a_link_above_the_tex_folder_deletes_nothing(tmp_path: Path, link_kind: str) -> None:
-    """A media folder that leads elsewhere never lets the TeX clean-up delete there (O10)."""
+    """A media folder that leads elsewhere never lets the TeX clean-up delete there."""
     elsewhere = tmp_path / "elsewhere"
     (elsewhere / "Tex").mkdir(parents=True)
     notes = elsewhere / "Tex" / "notes.tex"
@@ -339,7 +339,7 @@ def test_hand_written_mode_runs_in_the_scene_folder_with_no_checks(
     assert fake_manim.seen()["cwd"] == str(supervisor.layout.scene_path.parent)
 
 
-# Start checks (C7.2: codegen, TeX, path)
+# Start checks: codegen, TeX, path
 
 
 def test_a_scene_that_cannot_be_generated_is_refused_before_manim(
@@ -400,7 +400,7 @@ def test_a_path_manim_cannot_use_is_refused_before_manim(
     assert not fake_manim.ran()
 
 
-def test_the_start_checks_run_in_the_contract_order(
+def test_the_start_checks_run_in_the_documented_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
     monkeypatch.setenv("MATHIMATOR_TEX_ERROR", TEX_ERROR)
@@ -425,11 +425,11 @@ def test_the_start_checks_run_in_the_contract_order(
     assert not fake_manim.ran()
 
 
-# The path preflight (D61, G4.4, G4.6, G4.7)
+# The path preflight
 
 
 def test_the_length_limits_are_those_of_tex_and_windows() -> None:
-    # G4.7: dvisvgm fails from 211 characters. Python without long paths fails from 117 for a preview
+    # dvisvgm fails from 211 characters. Python without long paths fails from 117 for a preview
     # clip, and from 115 for the longest, a 1080p60 WebM clip.
     assert longest_folder(TEX_FILE) == 210
     assert longest_folder(PARTIAL_FILE) == 114
@@ -489,13 +489,13 @@ def test_manim_runs_through_the_alias_and_events_keep_the_long_path(
     fake_manim.plan(video_render(supervisor.layout, "480p15", [complete_clip(".mp4")] * 4))
     _run(supervisor, cmd="render_preview", id="preview-1")
     assert fake_manim.seen()["cwd"] == str(alias / ".mathimator" / "codegen")
-    # Every path sent is the bound folder's long path joined with a path inside it (C5).
+    # Every path sent is the bound folder's long path joined with a path inside it.
     paths = [line["path"] for line in stdout.of("preview-1") if "path" in line]
     assert len(paths) == 5
     assert all(path.startswith(str(folder) + "\\") for path in paths)
 
 
-# A project in a folder with an unusual name, through every command with the fake Manim (G4.10)
+# A project in a folder with an unusual name, through every command with the fake Manim
 
 
 @pytest.mark.parametrize(
@@ -506,7 +506,7 @@ def test_manim_runs_through_the_alias_and_events_keep_the_long_path(
 def test_a_folder_name_with_unusual_characters(
     name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout, fake_manim: FakeManim
 ) -> None:
-    """Every path the worker sends is the folder's own, character for character (C5).
+    """Every path the worker sends is the folder's own, character for character.
 
     The scene has no formula, so a name outside the ANSI code page renders
     with or without an 8.3 alias. A "{" is refused before Manim starts.
@@ -545,7 +545,7 @@ def test_a_folder_name_with_unusual_characters(
     assert (opened["projectPath"], opened["document"]["name"]) == (root, name)
 
 
-# A formula rendered by Manim, LaTeX, dvisvgm and FFmpeg from such a folder (D61, G4.10)
+# A formula rendered by Manim, LaTeX, dvisvgm and FFmpeg from such a folder
 
 
 @pytest.mark.render

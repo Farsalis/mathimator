@@ -1,4 +1,4 @@
-"""Document validation and refusal codes (fix-plan S21 to S23, S42, S48 to S52).
+"""Document validation and refusal codes.
 
 Every refusal is a DocumentError whose ``code`` is the protocol refusal code
 and whose ``field`` names the failing value: the JSON path on load, the edit
@@ -27,7 +27,7 @@ from tests.support import REPO
 JOURNEY = REPO / "tests" / "fixtures" / "journey-a" / "project.json"
 LESSON = REPO / "tests" / "fixtures" / "lesson-60" / "project.json"
 
-# Strings that a careless raw-string literal would turn into broken or hostile scene code (F137).
+# Strings that a careless raw-string literal would turn into broken or hostile scene code.
 HOSTILE_TEXT = [
     "a\\",
     "\\",
@@ -45,7 +45,7 @@ HOSTILE_TEXT = [
 ]
 
 
-# One project.json reader: UTF-8, a stripped BOM, read_failed (D07, F077, F080)
+# One project.json reader: UTF-8, a stripped BOM, read_failed
 
 
 def test_a_utf8_bom_is_stripped_and_saves_drop_it() -> None:
@@ -92,7 +92,7 @@ def test_malformed_json_is_invalid_json(text: str, detail: str) -> None:
     assert str(refused) == f"project.json is not valid JSON: {detail}."
 
 
-# Versions take integers only (F014); an older generatorVersion opens as the current one (C13.3)
+# Versions take integers only; an older generatorVersion opens as the current one
 
 
 @pytest.mark.parametrize(
@@ -143,7 +143,7 @@ def test_the_next_save_rewrites_an_older_generator_version(tmp_path: Path, monke
     assert (project / "project.json").read_bytes() == JOURNEY.read_bytes().replace(b"Sine introduction", b"Sine")
 
 
-# One text validator on load and on every edit that stores text (D06, F007)
+# One text validator on load and on every edit that stores text
 
 
 @pytest.mark.parametrize("bad", ["\ud83d", "\x00", "\x1b", "\x7f\x08"])
@@ -184,7 +184,7 @@ def test_unstorable_characters_are_refused_on_edit(edit: dict[str, object], fiel
     assert str(refused) == f"{field} contains a character Mathimator cannot store."
 
 
-# Expression limits (D04, F004)
+# Expression limits
 
 
 def test_an_expression_of_1000_characters_parses_and_emits() -> None:
@@ -231,7 +231,7 @@ def test_expression_limits_on_load_and_edit() -> None:
     assert "lambda x: x + x + " in generate(session.project)
 
 
-# Document numbers: finite, in range, valid at three decimals (D02, F006, F084)
+# Document numbers: finite, in range, valid at three decimals
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), 10**400])
@@ -312,7 +312,7 @@ def test_seed_range(seed: int, accepted: bool) -> None:
     )
 
 
-# Ticks and plot sampling (D04, F078)
+# Ticks and plot sampling
 
 
 def test_an_axis_holds_at_most_500_ticks_on_load() -> None:
@@ -419,7 +419,7 @@ def test_size_limits_on_edit(edit: dict[str, object], field: str) -> None:
     assert (refused.code, refused.field) == ("limit_exceeded", field)
 
 
-# A child enters after its axes (F011)
+# A child enters after its axes
 
 
 def test_a_plot_cannot_enter_before_its_axes() -> None:
@@ -440,7 +440,7 @@ def test_a_surface_cannot_enter_before_its_axes() -> None:
     assert str(_refused(raw)) == "scene.beats[0] brings surface_1 on screen before its axes axes_1"
 
 
-# A transform takes its source off screen; ids do not collide with generated names (D09, F012, F013)
+# A transform takes its source off screen; ids do not collide with generated names
 
 
 @pytest.mark.parametrize(
@@ -528,7 +528,7 @@ def test_a_2d_axes_may_be_called_x() -> None:
     assert "plot_1 = x.plot(\n            lambda x: np.sin(x)," in generate(load_text(text))
 
 
-# Formula LaTeX is limited to allowlisted math commands (D18, F076)
+# Formula LaTeX is limited to allowlisted math commands
 
 
 @pytest.mark.parametrize(
@@ -546,7 +546,7 @@ def test_a_2d_axes_may_be_called_x() -> None:
         (r"x \end{align*} \input{secret}", r"\end{align*}"),
         (r"\begin input", r"\begin"),
         (r"\@input{secret}", r"\@"),
-        # Only \hline draws the rules of an array (D04).
+        # Only \hline draws the rules of an array.
         (r"\begin{array}{cc} a & b \\ \cline{1-2} c & d \end{array}", r"\cline"),
         ("\\é", "\\é"),
     ],
@@ -601,7 +601,7 @@ def test_untrusted_latex_is_refused_in_edits_and_template_params() -> None:
     assert (refused.code, refused.field) == ("untrusted_latex", "scene.templateInstances[0].params.destinationLatex")
 
 
-# Every message names the field (F173, F082)
+# Every message names the field
 
 
 @pytest.mark.parametrize(
@@ -716,7 +716,7 @@ def test_empty_history_codes() -> None:
     assert (redo.value.code, str(redo.value)) == ("nothing_to_redo", "Nothing to redo.")
 
 
-# Scene code escaping (F137)
+# Scene code escaping
 
 
 @pytest.mark.parametrize("value", HOSTILE_TEXT)

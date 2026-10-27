@@ -1,10 +1,10 @@
-"""Protocol 2: the request envelope, replies, every refusal, cancel, the TeX state and hand-written mode (C2 to C8).
+"""Protocol 2: the request envelope, replies, every refusal, cancel, the TeX state and hand-written mode.
 
 Every test runs a Supervisor in this process through ``handle_line`` and reads
 its replies from the captured stdout. Each line is parsed the strict way the
 shell parses it, so a line with NaN or any other non-JSON fails the test. Jobs
 run the ``fake_manim`` stand-in. Together with the job, lifecycle and document
-tests, each refusal code of each command in C4 is sent here at least once.
+tests, each refusal code of each command is sent here at least once.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ DOCUMENT_DEFECTS: dict[str, tuple[bytes, str | None]] = {
         "scene.beats[0].start",
     ),
 }
-# What the write and render checks of C8.1 refuse, problem by problem.
+# What the write and render checks refuse, problem by problem.
 _REFUSALS = {
     "moved": "project_unavailable",
     "deleted": "project_unavailable",
@@ -107,7 +107,7 @@ DISK_CHECKS: list[tuple[str, str, str | None]] = [
     ("clear_cache", "moved", "project_unavailable"),
     ("clear_cache", "deleted", None),
     ("clear_cache", "changed", None),
-    # A folder of the project's own that became a link stops only what deletes or renders there (O10).
+    # A folder of the project's own that became a link stops only what deletes or renders there.
     *((command, "linked", None) for command in ("edit", "undo", "redo", "overwrite", "reload")),
     *((command, "linked", "linked_folder") for command in ("render_preview", "export", "clear_cache")),
 ]
@@ -119,7 +119,7 @@ def quick_kill(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(supervisor_module, "terminate_process_group", lambda proc: proc.kill())
 
 
-# The envelope (C2, C4)
+# The envelope
 
 
 def test_status_reports_protocol_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: Stdout) -> None:
@@ -229,7 +229,7 @@ def test_an_edit_its_template_would_undo_is_an_invalid_edit_refusal(
 ) -> None:
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
     saved = supervisor.layout.project_file.read_bytes()
-    # The plot's color belongs to the axes_function template, which this edit now leaves alone (F072).
+    # The plot's color belongs to the axes_function template, which this edit now leaves alone.
     monkeypatch.setattr("mathimator_worker.session._template_plot", lambda *args: None)
     _send(supervisor, cmd="edit", id="e", edit={"op": "set_object_color", "objectId": "plot_1", "color": "#FF0000"})
     assert stdout.read() == [
@@ -357,7 +357,7 @@ def test_the_export_choices_and_duration_limits_match_the_shared_list() -> None:
     assert shared["opaqueReasons"] == opaque
 
 
-# The handshake and startup errors (C6)
+# The handshake and startup errors
 
 
 def test_status_reports_a_refused_startup_project_until_a_project_opens(
@@ -466,7 +466,7 @@ def test_a_switch_that_fails_part_way_keeps_the_old_binding(
     assert sorted(path.name for path in second.iterdir()) == ["project.json"]
 
 
-# Every refusal of each command (C4, C5.2, C8.1)
+# Every refusal of each command
 
 
 @pytest.mark.parametrize(
@@ -555,7 +555,7 @@ def test_a_document_refusal_names_its_code_and_field(
     _renamed, refused, state = stdout.read()
     assert (refused["event"], refused["code"], refused.get("field")) == ("rejected", code, field)
     assert refused["message"]
-    # The binding, the document and its undo history are as they were (C8.3).
+    # The binding, the document and its undo history are as they were.
     assert state["projectPath"] == str(supervisor.project)
     assert (state["document"]["name"], state["derived"]["canUndo"]) == ("Renamed", True)
 
@@ -570,7 +570,7 @@ def test_the_disk_checks_of_each_command_that_writes_or_renders(
     stdout: Stdout,
     fake_manim: FakeManim,
 ) -> None:
-    """C8.1: each command meets each problem with its refusal, or with a state reply when it skips that check."""
+    """Each command meets each problem with its refusal, or with a state reply when it skips that check."""
     supervisor = _supervisor(_journey(tmp_path / "journey"), monkeypatch, init=False)
     _send(supervisor, cmd="edit", id="first", edit=_rename("First"))
     _send(supervisor, cmd="edit", id="second", edit=_rename("Second"))
@@ -588,7 +588,7 @@ def test_the_disk_checks_of_each_command_that_writes_or_renders(
         return
     assert (reply["event"], reply["code"]) == ("rejected", code)
     assert (after, _undo_depth(supervisor)) == (before, depth)
-    # A moved folder is never made again (D57).
+    # A moved folder is never made again.
     assert supervisor.project.exists() is (problem != "moved")
     assert not fake_manim.ran()
 
@@ -636,7 +636,7 @@ def test_an_overwrite_that_cannot_be_saved_changes_nothing(
         "message": "Could not save project.json: There is not enough space on the disk. The change was undone.",
     }
     assert supervisor.layout.project_file.read_bytes() == outside
-    # The fingerprint is the one before the failed overwrite, so the file is still the outside one (D59).
+    # The fingerprint is the one before the failed overwrite, so the file is still the outside one.
     assert again["code"] == "project_changed"
 
 
@@ -679,7 +679,7 @@ def test_a_job_that_fails_unexpectedly_ends_with_an_internal_error(
     assert "job job failed\nTraceback (most recent call last):" in supervisor.log_path.read_text(encoding="utf-8")
 
 
-# Cancel (C7.3)
+# Cancel
 
 
 def test_cancel_without_a_matching_job_is_refused(
@@ -795,7 +795,7 @@ def test_held_previews_are_cancelled_while_the_export_runs_on(
     assert supervisor.log_path.read_text(encoding="utf-8").count("argv: ") == 1
 
 
-# The TeX state the shell sets (C9.7, C14 Q4)
+# The TeX state the shell sets
 
 
 def test_a_tex_error_refuses_later_formula_jobs_and_stops_nothing(
@@ -834,7 +834,7 @@ def test_a_null_tex_error_lets_formula_jobs_render_again(
     assert stdout.of("preview-3")[-1]["event"] == "done"
 
 
-# Robust kills (F025, F097, F098)
+# Robust kills
 
 
 def test_a_cancel_whose_kill_helper_fails_still_ends_the_job(
@@ -910,7 +910,7 @@ def test_a_failure_after_manim_started_kills_it_and_releases_its_job(
     assert "job preview-1 failed" in supervisor.log_path.read_text(encoding="utf-8")
 
 
-# Hand-written scene mode (C7.7, D42)
+# Hand-written scene mode
 
 
 def test_hand_written_mode_renders_the_scene_in_the_folder(

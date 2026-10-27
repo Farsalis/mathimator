@@ -1,4 +1,4 @@
-"""Pinned cache identities, what changes them, and generated code (F073, F085, F136).
+"""Pinned cache identities, what changes them, and generated code.
 
 A refactor of the document model, the cache identity or codegen must leave
 these values byte for byte as they are. A change here throws away every
@@ -102,7 +102,7 @@ IDENTITIES = {
 
 # One change to each input of an export, made to Journey A. The profile fields
 # change one at a time, whether or not the result is a valid profile, so that
-# a key that lost any one of them fails here (F136).
+# a key that lost any one of them fails here.
 EXPORT_INPUTS: dict[str, Callable[[Project], None]] = {
     "format": lambda project: setattr(project.export_profile, "format", "webm"),
     "width": lambda project: setattr(project.export_profile, "width", 1280),

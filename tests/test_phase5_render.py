@@ -128,7 +128,7 @@ def test_reference_60_mp4_and_second_export_skips_manim() -> None:
 
 
 def test_half_second_beats_export_as_the_frames_of_the_timeline() -> None:
-    """Spec section 7 and D63: 20 beats of 0.5 s export as 300 frames at 30 fps, exactly 10 s."""
+    """Spec section 7 and the frame rule: 20 beats of 0.5 s export as 300 frames at 30 fps, exactly 10 s."""
     project = PHASE5 / "fractional-10"
     log_path = PHASE5 / "logs" / "fractional-10.log"
     _reset(project)
@@ -240,7 +240,7 @@ def test_surface_transparent_webm_and_png_sequence(surface: dict[str, Path]) -> 
 
 
 def test_transparent_webm_keeps_its_alpha(surface: dict[str, Path]) -> None:
-    """D54, G2.5: the alpha the WebM stores, as a libvpx-vp9 decoder such as WebView2's reads it."""
+    """The alpha the WebM stores, as a libvpx-vp9 decoder such as WebView2's reads it."""
     alpha = _alpha_webm(surface["webm"])
     assert _has_alpha(alpha), f"transparent WebM lost its alpha: {alpha} command={_argv_with(surface['log'], 'webm')}"
 
@@ -322,7 +322,7 @@ def _alpha_png(path: Path) -> dict[str, object]:
 
 
 def _alpha_webm(path: Path) -> dict[str, object]:
-    """The alpha of the WebM's last frame, decoded with libvpx-vp9 (G2.5).
+    """The alpha of the WebM's last frame, decoded with libvpx-vp9.
 
     A VP9 WebM keeps its alpha in a separate block stream, which the track tag
     ``alpha_mode`` announces. FFmpeg's own vp9 decoder ignores that stream and

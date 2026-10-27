@@ -2,7 +2,7 @@
 
 The grammar is the one in section 4. Anything outside it, including the
 rejected examples, raises DocumentError with "This expression is not supported."
-So does a source over 1000 characters or nested deeper than 64 levels (D04),
+So does a source over 1000 characters or nested deeper than 64 levels,
 which keeps parsing and emitting well inside the interpreter's stack. The
 translator never evaluates the source.
 """
@@ -141,7 +141,7 @@ class _Parser:
         return left
 
     def _parse_unary(self) -> Expression:
-        """A unary minus applies to the power after it, so ``-x^2`` is ``-(x^2)`` (D01)."""
+        """A unary minus applies to the power after it, so ``-x^2`` is ``-(x^2)``."""
         if self._peek() == "-":
             self.index += 1
             return UnaryMinus(self._nested(self._parse_unary))
@@ -311,7 +311,7 @@ def _needs_parentheses(expression: Expression, operator: str, *, on_right: bool)
 
 
 def _format_number(value: float) -> str:
-    """A literal exactly as typed (D02). A whole number prints as an integer, so ``2*x`` stays ``2 * x``."""
+    """A literal exactly as typed. A whole number prints as an integer, so ``2*x`` stays ``2 * x``."""
     if value.is_integer() and abs(value) < 2**53:
         return str(int(value))
     return repr(value)

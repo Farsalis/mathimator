@@ -1,10 +1,10 @@
-"""Finding, checking and publishing a finished export (spec section 6, C7.2).
+"""Finding, checking and publishing a finished export (spec section 6).
 
 Manim writes an export into the project's media folder. The supervisor finds
 it there, checks that it is this export and not the preview, and copies it
 into ``.mathimator/exports/<key16>/`` with an ``export.json`` that records its
 key. A published export whose ``export.json`` records the current key is
-returned without rendering again, unless the user asks for a re-export (D56).
+returned without rendering again, unless the user asks for a re-export.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ _PREVIEW_QUALITY = f"{PREVIEW_HEIGHT}p{PREVIEW_FPS}"
 
 
 class PublishFailed(Exception):
-    """A finished export that could not be published. The message is for the user (C5.2)."""
+    """A finished export that could not be published. The message is for the user."""
 
 
 def find_export_output(layout: ProjectLayout, quality: str, fmt: str) -> Path | None:
@@ -66,7 +66,7 @@ def find_export_output(layout: ProjectLayout, quality: str, fmt: str) -> Path | 
 
 
 def export_frame_count(project: Project) -> int:
-    """The frames of an export of ``project``: its total, to the nearest frame at the export rate (D63).
+    """The frames of an export of ``project``: its total, to the nearest frame at the export rate.
 
     The total is whole milliseconds and a half frame rounds up, as for every
     beat boundary, so this is integer math: in floats, 4.1 s at 15 fps is
@@ -76,7 +76,7 @@ def export_frame_count(project: Project) -> int:
 
 
 def frame_count_problem(frames: Path, output: str, expected: int) -> str | None:
-    """Describe why a PNG sequence cannot be published, or return None (F021, spec section 7).
+    """Describe why a PNG sequence cannot be published, or return None (spec section 7).
 
     The frames in the folder must be as many as Manim reports in ``output``,
     the last lines it wrote, which guards against frames left from before.
@@ -114,11 +114,11 @@ def publish_export(layout: ProjectLayout, captured: Project, movie: Path, qualit
 
     ``captured`` is the document the export rendered, in the ``quality``
     folder of the project at ``layout``. Only ``exports/`` is written, so this
-    needs no document lock (F031, F164). A link on the way to the published
-    file, made since the job started, is refused here as it was there (O10).
+    needs no document lock. A link on the way to the published
+    file, made since the job started, is refused here as it was there.
     The copy replaces the older file of the same key only once it is whole,
     and export.json is written after it, so a failure leaves both as they
-    were (C7.2). Raises PublishFailed with the message.
+    were. Raises PublishFailed with the message.
     """
     target = layout.export_path(captured)
     folder = target.parent
@@ -143,7 +143,7 @@ def _export_problem(movie: Path, target: Path, fmt: str, media_dir: Path, qualit
     """Why ``movie`` must not be published as a ``fmt`` export at ``target``, or None (the preview-file guard).
 
     The path is judged below ``media_dir`` only, so a user folder named
-    480p15 above the project does not look like the preview (G4.9).
+    480p15 above the project does not look like the preview.
     """
     try:
         parts = movie.resolve().relative_to(media_dir.resolve()).parts

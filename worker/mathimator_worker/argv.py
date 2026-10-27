@@ -2,11 +2,11 @@
 
 Manim runs in the job's ``.mathimator/codegen`` folder, which holds nothing
 but ``scene.py``, and takes that folder as its home, so no per-user or
-per-folder manim.cfg applies (D60). Its paths are relative to that folder, so
-TeX never sees the user's folder names (D61). Python runs with ``-P`` and
+per-folder manim.cfg applies. Its paths are relative to that folder, so
+TeX never sees the user's folder names. Python runs with ``-P`` and
 checks hash-based bytecode against its source, so nothing planted beside the
-scene runs in its place (F124, F170). The interpreter is always a real one,
-never a venv launcher (D16).
+scene runs in its place. The interpreter is always a real one,
+never a venv launcher.
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ SEED = "1"
 # Relative to the folder Manim runs in, .mathimator/codegen.
 SCENE_FILE = "scene.py"
 MEDIA_DIR = "../cache/media"
-# Mathimator's Manim settings (D60).
+# Mathimator's Manim settings.
 CONFIG_FILE = Path(__file__).with_name("manim.cfg")
-# Runs Manim's command line with FFmpeg's quoting fixed (D61).
+# Runs Manim's command line with FFmpeg's quoting fixed.
 LAUNCHER = "mathimator_worker.manim_main"
 
 FORBIDDEN_TOKENS = (
@@ -45,12 +45,12 @@ FORBIDDEN_TOKENS = (
     "--from_animation_number",
 )
 
-# kpathsea's settings for the LaTeX child (D18).
+# kpathsea's settings for the LaTeX child.
 _TEX_SETTINGS = {"shell_escape": "f", "openin_any": "p", "openout_any": "p"}
 
 
 def manim_interpreter(python: str) -> tuple[str, str | None]:
-    """The interpreter that runs Manim for ``--python``, and the venv launcher it stands in for (D16).
+    """The interpreter that runs Manim for ``--python``, and the venv launcher it stands in for.
 
     A venv's python.exe on Windows is a launcher that starts the real
     interpreter as its child, so Manim would run one process below the one put
@@ -59,7 +59,7 @@ def manim_interpreter(python: str) -> tuple[str, str | None]:
     Manim runs the real interpreter instead, and ``__PYVENV_LAUNCHER__`` names
     the launcher so the venv still applies, as ``multiprocessing`` does
     (bpo-35797). Any other interpreter, such as the real one the installer
-    ships (D33), runs as it is.
+    ships, runs as it is.
     """
     base: str = getattr(sys, "_base_executable", sys.executable)
     if sys.platform != "win32" or base == sys.executable:
@@ -153,7 +153,7 @@ def build_manim_argv(
 
 
 def manim_environment(base: Mapping[str, str], home: Path, launcher: str | None = None) -> dict[str, str]:
-    """The environment of a Manim run in ``home``, the folder it runs in (D60, D18).
+    """The environment of a Manim run in ``home``, the folder it runs in.
 
     ``home`` stands in for the user's home folder, so Manim reads no per-user
     manim.cfg. kpathsea reads ``shell_escape``, ``openin_any`` and
@@ -164,7 +164,7 @@ def manim_environment(base: Mapping[str, str], home: Path, launcher: str | None 
     opens files as paranoidly as the TeX release allows. The formula
     allowlist keeps a formula from reading files, and the worker removes TeX
     inputs planted in Manim's TeX folder before each render. ``launcher`` is
-    the venv launcher of ``manim_interpreter``, if any (D16).
+    the venv launcher of ``manim_interpreter``, if any.
 
     ``PYTHONHASHSEED`` is fixed whatever the user set: Manim's key for a play
     serialises a function's global names in the order of Python's string
