@@ -1,27 +1,32 @@
-# Build the Windows NSIS installer as a release ships it, for package:windows
-# in ci/windows.yml (D73, F061). Node and Rust must be on PATH
-# (ci/windows-tools.ps1 -Node -Rust).
+# Build the Windows NSIS installer as a release ships it, for the installer
+# job in .github/workflows/slow.yml. Node and Rust must be on PATH
+# (actions/setup-node and ci/windows-tools.ps1 -Rust in that job).
 #
 #   1. packaging/build-bundle.ps1 builds packaging/bundle.
 #   2. npm ci, and cargo fetch, because the notices read the installed npm
 #      packages and run cargo metadata offline.
 #   3. The bundled interpreter runs scripts/generate_notices.py, which writes
-#      THIRD_PARTY_NOTICES.txt (D75), then scripts/check_bundle.py, which
-#      fails on a bundle that is stale, incomplete or for another platform
-#      (D30, D64).
+#      THIRD_PARTY_NOTICES.txt, then scripts/check_bundle.py, which fails on a
+#      bundle that is stale, incomplete or for another platform.
 #   4. tauri build makes the installer. It runs both scripts again first, as
 #      its beforeBundleCommand (tauri.windows.conf.json).
 #   5. out/package receives the installer, THIRD_PARTY_NOTICES.txt and
 #      SHA256SUMS for both.
 #
-# Signing (D74): v1 ships unsigned, so the hook is off. Setting the protected
-# CI/CD variable WINDOWS_SIGN_COMMAND to a Tauri bundle.windows.signCommand
-# (%1 stands for the file) makes tauri build sign mathimator.exe and the
-# installer with it. GitLab cannot mask a value with spaces or %, so the
-# variable holds only the command line: any secret the signing tool needs,
-# such as a certificate password or Azure Trusted Signing credentials, goes in
-# its own protected, masked variable, which the tool reads from the
-# environment. Adopting signing then takes no change here.
+# Signing: v1 ships unsigned, so the hook is off. Setting WINDOWS_SIGN_COMMAND
+# to a Tauri bundle.windows.signCommand (%1 stands for the file) makes tauri
+# build sign mathimator.exe and the installer with it. The installer job sets
+# it from the repository variable of that name, which stays unset until
+# signing is adopted. The variable holds only the command line, which is not
+# secret: any secret the signing tool needs, such as a certificate password or
+# Azure Trusted Signing credentials, goes in a repository secret. Adopting
+# signing therefore takes two workflow edits besides the variable and the
+# secret. The installer job in slow.yml maps the secret into its env (for
+# example SIGN_PASSWORD: ${{ secrets.SIGN_PASSWORD }}). The slow job in
+# release.yml passes it on, with secrets: inherit or with a secrets: entry
+# that slow.yml declares under on.workflow_call.secrets, because a workflow
+# that release.yml calls for a tag sees no secrets otherwise, and the release
+# would build an unsigned installer or fail.
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"

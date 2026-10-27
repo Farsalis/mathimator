@@ -1,0 +1,68 @@
+name: Bug report
+description: Something in Mathimator does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        A security problem? Do not report it here: report it privately, as
+        SECURITY.md describes.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Attach the project's project.json if you can share it, or the smallest
+        project that shows the problem.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Mathimator version
+      description: >-
+        The installer's file name, such as Mathimator_0.1.0_x64-setup.exe, or
+        the commit of a development build.
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: The edition and build that winver shows.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >-
+        Attach the logs from around the problem: shell.log and supervisor.err,
+        from %LOCALAPPDATA%\com.mathimator.desktop\logs, or out\logs in a
+        development build; and worker.log, from the project's
+        .mathimator\logs folder. The logs contain folder names, which can
+        include your user name.
+  - type: textarea
+    id: render
+    attributes:
+      label: Wrong frames, timing or exports
+      description: >-
+        For a render problem: the beat, the export format, resolution, frame
+        rate and transparency, and a screenshot or the exported file. Leave it
+        empty otherwise.

@@ -1,20 +1,19 @@
 ## What and why
 
-<!-- What changes and why. Link the issue, and name the audit findings or
-decisions the change follows. -->
+<!-- What changes and why. Link the issue it resolves. -->
 
 ## How it was tested
 
-<!-- The commands you ran and what they reported, and the CI lanes that cover
+<!-- The commands you ran and what they reported, and the CI jobs that cover
 the change. -->
 
 ## Checklist
 
 - [ ] The commits follow Conventional Commits, one per verified step, with no
       AI attribution trailers.
-- [ ] Tests cover the change, and the lanes it touches pass. A change to
-      rendering, export or the bundle also ran the manual
-      `test:render:windows` job.
+- [ ] Tests cover the change, and the CI jobs it touches pass. A change to
+      rendering, export or the bundle also ran the Slow workflow on its branch
+      (Actions, Slow, Run workflow).
 - [ ] `docs/design-spec.md` describes any change of behaviour.
 - [ ] A change to the generated scene code bumps `GENERATOR_VERSION` in
       `worker/mathimator_worker/document.py` and updates `scenes/` and spec

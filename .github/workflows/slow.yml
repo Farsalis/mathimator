@@ -1,0 +1,119 @@
+# The slow lanes on Windows: the render, export and offline suites against a
+# runtime bundle built here, and the NSIS installer, built as a release ships
+# it. They run every night on main, whenever someone starts them from the
+# Actions tab (run them on a branch that changes rendering, export, the bundle
+# or its pins), and for every v* tag: the release workflow (release.yml) calls
+# this one and attaches the installer it builds to the draft release.
+
+name: Slow
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: slow-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_LOCKED: "1"
+  UV_MANAGED_PYTHON: "1"
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  # The offline tests check the bundle, and its TinyTeX and Typst serve the
+  # render tests. Job Objects stay on, as in the app. An xfail that passes
+  # fails the lane, so a fixed transparent WebM is noticed.
+  render:
+    name: Render, export and offline tests (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 180
+    env:
+      MATHIMATOR_WIN32_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install the pinned uv
+        run: ./ci/windows-tools.ps1 -Uv
+      # The bundle downloads. packaging/build-bundle.ps1 checks each one it
+      # reuses against packaging/versions.env.
+      - uses: actions/cache@v4
+        with:
+          path: packaging/.cache
+          key: bundle-windows-${{ hashFiles('packaging/versions.env', 'uv.lock') }}
+      - name: Build the runtime bundle
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/build-bundle.ps1
+      - name: Put the bundle's TinyTeX and Typst on PATH
+        run: |
+          $runtime = Get-Content -Raw packaging/bundle/runtime.json | ConvertFrom-Json
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value (Join-Path $PWD "packaging\bundle\$($runtime.tinytexBin.Replace('/', '\'))")
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value (Join-Path $PWD "packaging\bundle\typst")
+      - name: Render, export and offline tests
+        run: uv run pytest tests -m "render or export or offline" -o xfail_strict=true --junitxml=reports/junit-render-windows.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: render-reports
+          path: |
+            reports/
+            out/**/*.json
+            out/**/*.log
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ci/package-windows.ps1 builds the bundle, its notices and check, runs tauri
+  # build, and leaves the installer, THIRD_PARTY_NOTICES.txt and SHA256SUMS in
+  # out/package.
+  installer:
+    name: Installer (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      # The signing hook in ci/package-windows.ps1. It stays off while the
+      # repository variable WINDOWS_SIGN_COMMAND is unset: v1 installers are
+      # unsigned. The script describes the format. A secret the signing tool
+      # needs is mapped here too, from secrets, and release.yml's slow job
+      # must pass it on, since a called workflow gets no secrets by itself.
+      WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: ./ci/windows-tools.ps1 -Rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: desktop/.nvmrc
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: actions/cache@v4
+        with:
+          path: packaging/.cache
+          key: bundle-windows-${{ hashFiles('packaging/versions.env', 'uv.lock') }}
+      - name: Build the installer
+        run: ./ci/package-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: out/package/
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer-logs
+          path: out/bundle.log
+          retention-days: 7
+          if-no-files-found: ignore

@@ -1,0 +1,36 @@
+# Code owners: @Farsalis owns every area. The last rule that matches a file
+# wins, so the first rule gives every file outside the areas an owner too.
+
+* @Farsalis
+
+# Worker
+/worker/ @Farsalis
+/tests/ @Farsalis
+/scenes/ @Farsalis
+/pytest.ini @Farsalis
+
+# Desktop UI
+/desktop/* @Farsalis
+/desktop/src/ @Farsalis
+
+# Rust shell
+/desktop/src-tauri/ @Farsalis
+
+# Packaging
+/packaging/ @Farsalis
+/scripts/ @Farsalis
+/pyproject.toml @Farsalis
+/uv.lock @Farsalis
+/.python-version @Farsalis
+/.bumpversion.toml @Farsalis
+/cliff.toml @Farsalis
+
+# CI
+/.github/ @Farsalis
+/ci/ @Farsalis
+/.pre-commit-config.yaml @Farsalis
+
+# Docs
+/docs/ @Farsalis
+/*.md @Farsalis
+/LICENSE @Farsalis

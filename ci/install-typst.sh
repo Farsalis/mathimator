@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Install the Typst CLI that packaging/versions.env pins into DIR, for the
-# test:typst job in ci/linux.yml:
+# typst job in .github/workflows/ci.yml:
 #
 #   bash ci/install-typst.sh DIR
 #
 # The archive is checked against TYPST_LINUX_SHA256 before it is unpacked, as
-# the bundle scripts check theirs (D35), and the script fails unless DIR/typst
-# then reports TYPST_VERSION. Needs curl, sha256sum, tar and xz.
+# the bundle scripts check theirs, and the script fails unless DIR/typst then
+# reports TYPST_VERSION. Needs curl, sha256sum, tar and xz.
 
 set -euo pipefail
 

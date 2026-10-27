@@ -1,0 +1,508 @@
+# Continuous integration for every pull request and every push to main. The
+# release workflow (release.yml) also calls it for a v* tag.
+#
+# Every run checks the version and toolchain pins, lints the Python code, runs
+# the ci/ tests and runs the pre-commit hygiene hooks. The other jobs belong to
+# lanes: in a pull request a lane runs only when the change touches a file its
+# jobs test, lint or read, and ci/changed_lanes.py lists those files. A change
+# to this workflow or to that script runs every lane, and so does every push to
+# main and every tag. A lane that a pull request does not need shows as
+# skipped, and the "CI result" job, the one check that branch protection needs,
+# passes when every job passed or was skipped.
+#
+# The render, export and offline suites and the installer build are slow, so
+# they run in slow.yml: every night, by hand and for every tag.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its running checks. Pushes to main and
+# tags each run to the end.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # uv syncs uv.lock as committed, with the CPython builds that uv manages, as
+  # the bundle build does.
+  UV_LOCKED: "1"
+  UV_MANAGED_PYTHON: "1"
+
+defaults:
+  run:
+    # bash -eo pipefail. The Windows jobs run PowerShell instead.
+    shell: bash
+
+jobs:
+  changes:
+    name: Changed lanes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.lanes.outputs.python }}
+      typst: ${{ steps.lanes.outputs.typst }}
+      windows: ${{ steps.lanes.outputs.windows }}
+      ui: ${{ steps.lanes.outputs.ui }}
+      rust: ${{ steps.lanes.outputs.rust }}
+      rust_windows: ${{ steps.lanes.outputs.rust_windows }}
+      audit_python: ${{ steps.lanes.outputs.audit_python }}
+      audit_npm: ${{ steps.lanes.outputs.audit_npm }}
+      audit_rust: ${{ steps.lanes.outputs.audit_rust }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # A pull request checks out its merge commit, whose first parent is
+          # the base it merges into.
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Pick the lanes
+        id: lanes
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            git diff --name-only --no-renames -z HEAD^1 HEAD | python3 ci/changed_lanes.py | tee -a "$GITHUB_OUTPUT"
+          else
+            python3 ci/changed_lanes.py --all | tee -a "$GITHUB_OUTPUT"
+          fi
+
+  # The checks that span the lanes, so they run every time: the app version and
+  # the toolchain pins agree across their manifests, Ruff and mypy, the lock,
+  # the worker package build (setuptools only warns about a deprecation, so the
+  # job reads the build log) and the ci/ tests, which hold the workflows and
+  # the documents to the code.
+  python-lint:
+    name: Python lint and CI checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # The render group needs pycairo and ManimPango, which publish no Linux
+      # wheels, and no Linux job imports Manim: the render suites run on
+      # Windows. The dev group carries what these jobs import.
+      UV_NO_GROUP: render
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          # [tool.uv] required-version in pyproject.toml and UV_VERSION in
+          # packaging/versions.env: uv refuses to run as any other release.
+          version: "0.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Versions and toolchain pins agree
+        run: uv run python scripts/check_versions.py
+      - name: Ruff
+        run: uv run ruff check --output-format=github
+      - name: Ruff format
+        run: uv run ruff format --check
+      # mypy checks the code as it runs on Windows (pyproject.toml), then the
+      # POSIX branches.
+      - name: mypy (win32)
+        run: uv run mypy
+      - name: mypy (linux)
+        run: uv run mypy --platform linux
+      - name: uv.lock is up to date
+        run: uv lock --check
+      - name: The worker package builds without deprecation warnings
+        run: |
+          mkdir -p reports
+          uv build worker --out-dir out/worker-dist 2>&1 | tee reports/build-worker.log
+          if grep -q SetuptoolsDeprecationWarning reports/build-worker.log; then
+            echo "the worker build warns about a setuptools deprecation" >&2
+            exit 1
+          fi
+      - name: CI checks
+        run: uv run pytest ci --junitxml=reports/junit-ci.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-lint-reports
+          path: reports/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The hooks in .pre-commit-config.yaml that no other job runs. The other jobs
+  # run Ruff, mypy, Prettier, ESLint, tsc and rustfmt with the project's own
+  # environments. gitleaks scans what is staged at commit time and has nothing
+  # to scan here; GitHub's secret scanning and push protection cover pushes.
+  hygiene:
+    name: Pre-commit hooks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      UV_NO_GROUP: render
+      SKIP: ruff-check,ruff-format,mypy,mypy-linux,gitleaks,prettier,eslint,tsc,cargo-fmt
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: pre-commit
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+
+  # The UI: ESLint, tsc, Prettier (which reaches the shell's JSON
+  # configuration too), the tests with their coverage, reported and never
+  # enforced, and the production build.
+  ui:
+    name: UI
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          # Node 24, the major desktop/.nvmrc names: npm's engine-strict
+          # refuses any other.
+          node-version-file: desktop/.nvmrc
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run format:check
+      - name: Tests with coverage
+        # JUnit goes to desktop/reports (vite.config.ts), coverage to
+        # desktop/coverage, with the text total in the log.
+        run: npm run test:ci
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-test-reports
+          path: |
+            desktop/reports/
+            desktop/coverage/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # rustfmt, Clippy and the tests on Linux, with the system libraries that
+  # Tauri's Linux backend links: WebKitGTK 4.1, which brings GTK 3 and libsoup
+  # 3, and libxdo for the menus. Linux never compiles the cfg(windows) code, so
+  # the Win32 Job Object test stays ignored here; rust-windows runs it.
+  rust-linux:
+    name: Rust (Linux)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install Tauri's Linux system libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libwebkit2gtk-4.1-dev libxdo-dev
+      - name: Install the toolchain that rust-toolchain.toml pins
+        working-directory: desktop/src-tauri
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: desktop/.nvmrc
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      # The default custom-protocol feature embeds desktop/dist.
+      - name: Build the UI that the shell embeds
+        working-directory: desktop
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: rustfmt
+        working-directory: desktop/src-tauri
+        run: cargo fmt --check
+      - name: Clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Tests
+        working-directory: desktop/src-tauri
+        run: cargo test --locked
+
+  # Only Windows compiles the shell's cfg(windows) code. cargo test runs the
+  # ignored tests too: MATHIMATOR_WIN32_TESTS=1 lets the Job Object reap test
+  # run, and MATHIMATOR_REAL_WORKER_TESTS=1 the tests that start the
+  # repository's Python from .venv as a debug shell does: the real worker
+  # against the shell, its project lock included, and the interpreter behind
+  # the venv launcher. The worker needs only the standard library, so a bare
+  # venv of the pinned Python serves them.
+  rust-windows:
+    name: Rust (Windows)
+    needs: changes
+    if: needs.changes.outputs.rust_windows == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      MATHIMATOR_WIN32_TESTS: "1"
+      MATHIMATOR_REAL_WORKER_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install the pinned uv and Rust toolchain
+        run: ./ci/windows-tools.ps1 -Uv -Rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: desktop/.nvmrc
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Make the bare .venv that the real-worker tests start
+        run: uv venv
+      - name: Install the UI's packages
+        working-directory: desktop
+        run: npm ci --no-audit --no-fund
+      - name: Build the UI that the shell embeds
+        working-directory: desktop
+        run: npm run build
+      - name: rustfmt
+        working-directory: desktop/src-tauri
+        run: cargo fmt --check
+      - name: Clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Tests, the ignored ones included
+        working-directory: desktop/src-tauri
+        run: cargo test --locked -- --include-ignored
+
+  # The fast lane on both interpreters the bundle may ship (PYTHON_VERSION and
+  # PYTHON_FALLBACK_VERSION in packaging/versions.env): every test in tests/
+  # and scripts/ except Manim, the export, the offline bundle, Typst (the typst
+  # job) and the process-table walks (python-tests-windows). The worker's
+  # coverage is reported, never enforced.
+  python-tests:
+    name: Python tests (Linux, ${{ matrix.python }})
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.14.9", "3.13.17"]
+    env:
+      UV_NO_GROUP: render
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Fast tests with coverage
+        run: >-
+          uv run pytest tests scripts
+          -m "not render and not export and not offline and not typst and not process_table"
+          --junitxml="reports/junit-python-$UV_PYTHON.xml"
+          --cov --cov-report=term --cov-report="xml:reports/coverage-python-$UV_PYTHON.xml"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-tests-linux-${{ matrix.python }}
+          path: reports/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The fast lane on Windows, with the Win32 tests: the process-table walks and
+  # the Job Object reap tests. The worker refuses a project path longer than
+  # 114 characters while Windows long paths are off, and a test project under
+  # the runner profile's temp folder can pass that, so pytest works in a short
+  # folder at the drive root: pytest creates --basetemp but not its parent.
+  python-tests-windows:
+    name: Python tests (Windows)
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      MATHIMATOR_WIN32_TESTS: "1"
+      # As on Linux, the fast lane needs no Manim.
+      UV_NO_GROUP: render
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install the pinned uv
+        run: ./ci/windows-tools.ps1 -Uv
+      - name: Fast tests with the Win32 tests
+        run: uv run pytest tests scripts ci -m "not render and not export and not offline and not typst" --basetemp=C:\pytest --junitxml=reports/junit-python-windows.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-tests-windows
+          path: reports/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The Typst tests with the Typst that packaging/versions.env pins. The
+  # install fails unless that release runs, so the typst tests cannot skip.
+  typst:
+    name: Typst tests
+    needs: changes
+    if: needs.changes.outputs.typst == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      UV_NO_GROUP: render
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install the pinned Typst
+        run: |
+          bash ci/install-typst.sh "$RUNNER_TEMP/typst"
+          echo "$RUNNER_TEMP/typst" >> "$GITHUB_PATH"
+      - name: Typst tests
+        run: uv run pytest tests -m typst --junitxml=reports/junit-typst.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: typst-tests
+          path: |
+            reports/
+            out/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The whole of uv.lock: the render stack that the installer ships and the
+  # dev tools. The export includes every group; pip-audit then checks the
+  # pinned, hashed requirements as they are.
+  audit-python:
+    name: Python dependency audit
+    needs: changes
+    if: needs.changes.outputs.audit_python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Export every dependency group
+        run: |
+          mkdir -p reports
+          uv export --all-groups --no-emit-workspace --output-file reports/audit-requirements.txt
+      - name: pip-audit
+        env:
+          UV_NO_GROUP: render
+        run: uv run pip-audit --requirement reports/audit-requirements.txt --disable-pip
+
+  # The runtime packages that the UI bundles.
+  audit-npm:
+    name: npm audit
+    needs: changes
+    if: needs.changes.outputs.audit_npm == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: desktop/.nvmrc
+      - name: npm audit
+        working-directory: desktop
+        run: npm audit --omit=dev
+
+  # Advisories, licences and sources of the shell's crates (ci/deny.toml).
+  audit-rust:
+    name: cargo-deny
+    needs: changes
+    if: needs.changes.outputs.audit_rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Updated by hand: Dependabot does not read it.
+      CARGO_DENY_VERSION: 0.18.3
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        id: cargo-deny
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-${{ env.CARGO_DENY_VERSION }}
+      - name: Install cargo-deny
+        if: steps.cargo-deny.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-deny --version "$CARGO_DENY_VERSION"
+      - name: cargo deny check
+        run: cargo deny --manifest-path desktop/src-tauri/Cargo.toml check --config ci/deny.toml
+
+  # The one check that branch protection needs: it fails when any job failed or
+  # was cancelled, and passes when each job passed or was not needed.
+  result:
+    name: CI result
+    if: always()
+    needs:
+      - changes
+      - python-lint
+      - hygiene
+      - ui
+      - rust-linux
+      - rust-windows
+      - python-tests
+      - python-tests-windows
+      - typst
+      - audit-python
+      - audit-npm
+      - audit-rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed or was not needed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *) exit 1 ;;
+            esac
+          done

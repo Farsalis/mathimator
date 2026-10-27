@@ -3,7 +3,7 @@
 The environment variable table in CONTRIBUTING.md has a row for each
 MATHIMATOR_* variable the code reads or sets and for no other, the npm
 scripts that README.md and CONTRIBUTING.md name exist, and every rule in
-.gitlab/CODEOWNERS matches a file and names an owner.
+.github/CODEOWNERS matches a file and names an owner.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 # The code that reads or sets MATHIMATOR_* variables: the worker, the UI and
 # its Vite config, the shell and its build script, the tests with their C#
-# stand-ins, the scripts, the bundle builds and the CI jobs. This file is left
-# out: it names TEST_PREFIX.
+# stand-ins, the scripts, the bundle builds, and the CI workflows and their
+# scripts. This file is left out: it names TEST_PREFIX.
 SOURCES = [
     "worker/mathimator_worker/**/*.py",
     "desktop/*.ts",
@@ -29,8 +29,7 @@ SOURCES = [
     "scripts/*.py",
     "packaging/*.ps1",
     "packaging/*.sh",
-    ".gitlab-ci.yml",
-    "ci/*.yml",
+    ".github/workflows/*.yml",
     "ci/*.ps1",
     "ci/*.sh",
 ]
@@ -66,13 +65,9 @@ def test_documented_npm_scripts_exist() -> None:
 
 
 def test_codeowners_rules_match_files_and_name_an_owner() -> None:
-    section_owners: list[str] = []
-    for line in _read(".gitlab/CODEOWNERS").splitlines():
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("["):
-            section_owners = line.split("]", 1)[1].split()
-            continue
-        pattern, *owners = line.split()
+    # GitHub's syntax: a pattern and its owners on each line, and no sections.
+    rules = [line.split() for line in _read(".github/CODEOWNERS").splitlines() if line and not line.startswith("#")]
+    assert rules[0] == ["*", "@Farsalis"]
+    for pattern, *owners in rules:
         assert any(REPO.glob(pattern.strip("/"))), f"{pattern} matches no file"
-        assert owners or section_owners, f"{pattern} names no owner"
+        assert owners and all(owner.startswith("@") for owner in owners), f"{pattern} names no owner"

@@ -1,4 +1,4 @@
-"""Fail when the app version or a toolchain pin disagrees with its other copies (D72).
+"""Fail when the app version or a toolchain pin disagrees with its other copies.
 
     check_versions.py [--tag TAG]
 
@@ -17,7 +17,7 @@ Each toolchain pin must match the source it copies:
 - Node in desktop/.nvmrc, the one major that package.json engines.node
   allows (">=24 <25" for 24);
 - .python-version, PYTHON_VERSION in packaging/versions.env, because the dev
-  interpreter is the bundle's (D39);
+  interpreter is the bundle's;
 - [tool.uv] required-version, UV_VERSION in versions.env;
 - MANIM_VERSION in mathimator_worker/document.py, the Manim pin in the root
   pyproject.toml's render group and constraint-dependencies;
@@ -25,8 +25,8 @@ Each toolchain pin must match the source it copies:
   equation.rs requires of `typst --version`: its starts_with("typst X.Y.Z"),
   or the VERSION constant it compares with ("typst X.Y.Z").
 
-With --tag, as the release pipeline passes $CI_COMMIT_TAG, the tag must be v
-followed by the app version.
+With --tag, as the release workflow passes the tag it runs for, the tag must
+be v followed by the app version.
 
 The script needs only the standard library. It exits 0 when everything
 agrees, and 1 with one line per disagreement on stderr.

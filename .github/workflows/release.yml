@@ -1,0 +1,123 @@
+# The release. After the release pull request (.bumpversion.toml) is merged, a
+# maintainer pushes the tag vX.Y.Z on main. This workflow then checks the tag
+# against the app version, runs CI and the slow lanes for the tagged commit
+# (the render, export and offline suites and the installer build), and creates
+# a draft GitHub Release with the installer, SHA256SUMS and
+# THIRD_PARTY_NOTICES.txt, and notes that git-cliff writes from the commits
+# since the previous tag. The maintainer reviews the draft and publishes it by
+# hand.
+#
+# v1 installers are unsigned. Signing is a hook in ci/package-windows.ps1 that
+# stays off until the repository variable WINDOWS_SIGN_COMMAND is set
+# (slow.yml passes it on). The variable is enough for slow.yml to see it, but
+# a secret the signing tool needs is not: the slow job below then needs a
+# secrets: entry for it (or secrets: inherit), as ci/package-windows.ps1
+# describes.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_LOCKED: "1"
+  UV_MANAGED_PYTHON: "1"
+  UV_NO_GROUP: render
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  versions:
+    name: The tag matches the app version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Versions, pins and the tag agree
+        run: uv run python scripts/check_versions.py --tag "$GITHUB_REF_NAME"
+
+  ci:
+    name: CI
+    needs: versions
+    uses: ./.github/workflows/ci.yml
+
+  slow:
+    name: Slow lanes
+    needs: versions
+    uses: ./.github/workflows/slow.yml
+
+  notes:
+    name: Release notes
+    needs: versions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # git-cliff needs the history back to the previous tag.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: git-cliff
+        run: |
+          mkdir -p reports
+          uv run git-cliff --latest --strip header --output reports/release-notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: reports/release-notes.md
+          retention-days: 7
+          if-no-files-found: error
+
+  # The only job that writes to the repository: it creates the draft release.
+  draft:
+    name: Draft the GitHub Release
+    needs: [ci, slow, notes]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: out/package
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: reports
+      - name: Check the downloads against SHA256SUMS
+        working-directory: out/package
+        run: sha256sum --check SHA256SUMS
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "$TAG" out/package/*
+          --draft
+          --verify-tag
+          --title "Mathimator $TAG"
+          --notes-file reports/release-notes.md

@@ -17,7 +17,7 @@ dev = [
   "bump-my-version==1.6.3",
   "git-cliff==2.14.2",
   "pip-audit==2.10.1",
-  # ci/test_pipeline.py reads the GitLab CI files.
+  # ci/test_pipeline.py reads the GitHub workflows.
   "pyyaml==6.0.3",
   # The fast tests count frames with numpy.arange, as Manim does. The
   # constraint-dependencies below hold it at the render stack's release.
@@ -106,10 +106,10 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM"]
 # Ruff's default style: double quotes, space indents, magic trailing commas.
 [tool.ruff.format]
 
-# Coverage of the CI pytest jobs (`pytest --cov`), reported and never enforced
-# (D78). Most supervisor code runs in the worker child that tests/support.py
-# starts, so Python subprocesses are measured too. Relative paths let GitLab
-# match the Cobertura report to the repository's files.
+# Coverage of the CI pytest jobs (`pytest --cov`), reported and never
+# enforced. Most supervisor code runs in the worker child that tests/support.py
+# starts, so Python subprocesses are measured too. Relative paths tie the
+# Cobertura report to the repository's files wherever it was made.
 [tool.coverage.run]
 source = ["mathimator_worker"]
 patch = ["subprocess"]

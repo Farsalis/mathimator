@@ -1,263 +1,216 @@
-"""The GitLab pipeline in .gitlab-ci.yml and ci/*.yml holds together.
+"""The GitHub Actions workflows in .github/workflows hold together.
 
-No GitLab project exists yet to lint the pipeline (D65). These checks catch
-what GitLab reports only when it creates a pipeline, and what it never
-reports: a job defined twice, a pre-commit SKIP or a pytest marker that names
-nothing, a CI pin that disagrees with its source, a download the scripts check
-against no SHA-256, rules that start a job in pipelines the decisions keep it
-out of or leave out a job that another needs, a lane that misses a file its
-tests or linters read, a folder CI writes that git would pick up, and a job
-that README.md's pipeline table leaves out, repeats or puts in the wrong
-stage or on the wrong runner.
+These checks catch what GitHub reports only when it runs a workflow, and what
+it never reports: a script or path that a workflow names and the repository
+lacks, an action that no release pins, a token with more permissions than its
+job needs, a tool pin that disagrees with its source, a download the scripts
+check against no SHA-256, a pre-commit SKIP or a pytest marker that names
+nothing, a lane that misses a file its tests or linters read, a Windows test
+job without the Win32 tests, a folder CI writes that git would pick up, a
+release that publishes itself, triggers other than the chosen ones, and
+Dependabot rules that would move the pins the spec fixes.
 """
 
 from __future__ import annotations
 
+import ast
 import configparser
 import functools
+import json
 import re
 import subprocess
 import sys
 import tomllib
 from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
-from typing import Any, NamedTuple
+from typing import Any
 
+import changed_lanes
 import yaml
 
 REPO = Path(__file__).resolve().parents[1]
-# Top-level keys that configure the pipeline rather than define a job.
-GLOBAL_KEYS = frozenset({"include", "stages", "workflow", "variables", "default"})
-# The predefined variables of each kind of pipeline, on a project whose
-# default branch is main.
-PIPELINES = {
-    "merge request": {"CI_PIPELINE_SOURCE": "merge_request_event"},
-    "default branch": {"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_BRANCH": "main"},
-    "branch": {"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_BRANCH": "topic"},
-    "tag": {"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_TAG": "v1.0.0", "CI_COMMIT_REF_PROTECTED": "true"},
-    "unprotected tag": {"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_TAG": "v1.0.0", "CI_COMMIT_REF_PROTECTED": "false"},
-    "schedule": {"CI_PIPELINE_SOURCE": "schedule", "CI_COMMIT_BRANCH": "main"},
-    "renovate": {"CI_PIPELINE_SOURCE": "schedule", "CI_COMMIT_BRANCH": "main", "SCHEDULE_KIND": "renovate"},
+WORKFLOWS = REPO / ".github" / "workflows"
+# The hosted runner images the jobs run on, pinned rather than -latest.
+RUNNERS = {"ubuntu-24.04", "windows-2025"}
+# The jobs that need more than to read the repository, and what they need.
+WRITERS = {
+    ("codeql.yml", "analyze"): {"contents": "read", "security-events": "write"},
+    ("release.yml", "draft"): {"contents": "write"},
 }
-# The pipelines that compare a change with its base: GitLab takes every
-# changes: in the others to hold.
-COMPARED = ("merge request", "default branch")
-
-# The jobs that a merge request starts by itself when it changes one file (O2):
-# lint:repo always, and the jobs of each lane the file is in. The heavy Windows
-# jobs wait to be started by hand.
-EVERY_CHANGE = {"lint:repo"}
-PYTHON = {"lint:python", "test:python"}
-TYPST = {"test:typst"}
-UI = {"build:ui", "lint:ui", "test:ui"}
-RUST = {"build:ui", "test:rust"}
-WINDOWS = {"test:windows"}
-AUDITS = {"audit:python", "audit:npm", "audit:rust"}
-LANES = {
-    "docs/phase-1-report.md": set(),
+# The jobs of ci.yml that run every time, whatever a pull request changes.
+EVERY_CHANGE = {"changes", "python-lint", "hygiene", "result"}
+# The lane jobs that a pull request starts when it changes one file.
+PYTHON = {"python-tests"}
+TYPST = {"typst"}
+WINDOWS = {"python-tests-windows"}
+UI = {"ui"}
+RUST = {"rust-linux", "rust-windows"}
+RUST_WINDOWS = {"rust-windows"}
+AUDITS = {"audit-python", "audit-npm", "audit-rust"}
+EVERY_LANE = PYTHON | TYPST | WINDOWS | UI | RUST | AUDITS
+STARTED = {
     "CONTRIBUTING.md": set(),
-    "docs/design-spec.md": PYTHON,
-    "packaging/build-bundle.ps1": PYTHON,
-    "packaging/licenses/MIT.txt": PYTHON,
-    "worker/mathimator_worker/session.py": PYTHON | TYPST | WINDOWS,
+    "README.md": set(),
+    ".github/workflows/slow.yml": set(),
+    ".github/dependabot.yml": set(),
+    "docs/design-spec.md": PYTHON | WINDOWS,
+    "packaging/build-bundle.ps1": PYTHON | WINDOWS,
+    "packaging/licenses/MIT.txt": PYTHON | WINDOWS,
+    "worker/mathimator_worker/session.py": PYTHON | TYPST | WINDOWS | RUST_WINDOWS,
+    "worker/pyproject.toml": PYTHON | TYPST | WINDOWS | RUST_WINDOWS | {"audit-python"},
     "tests/test_protocol.py": PYTHON | TYPST | WINDOWS,
     "scenes/reference_60.py": PYTHON | WINDOWS,
     "scripts/check_bundle.py": PYTHON | WINDOWS,
     "pytest.ini": PYTHON | TYPST | WINDOWS,
-    ".python-version": PYTHON | TYPST | WINDOWS,
+    ".python-version": PYTHON | TYPST | WINDOWS | RUST_WINDOWS,
     "packaging/versions.env": PYTHON | TYPST | WINDOWS,
-    "pyproject.toml": PYTHON | TYPST | WINDOWS | {"audit:python"},
-    "uv.lock": PYTHON | TYPST | WINDOWS | {"audit:python"},
+    "pyproject.toml": PYTHON | TYPST | WINDOWS | {"audit-python"},
+    "uv.lock": PYTHON | TYPST | WINDOWS | {"audit-python"},
     "ci/test_pipeline.py": WINDOWS,
     "ci/install-typst.sh": TYPST,
+    "ci/windows-tools.ps1": WINDOWS | RUST_WINDOWS,
+    "ci/deny.toml": {"audit-rust"},
     "desktop/src/App.tsx": UI,
     "desktop/.nvmrc": UI,
-    "desktop/package-lock.json": UI | {"audit:npm"},
-    "worker/mathimator_worker/supervisor.py": PYTHON | TYPST | WINDOWS | UI,
+    "desktop/package-lock.json": UI | {"audit-npm"},
+    "worker/mathimator_worker/supervisor.py": PYTHON | TYPST | WINDOWS | UI | RUST_WINDOWS,
     "tests/fixtures/timing/frame-boundaries.json": PYTHON | TYPST | WINDOWS | UI,
     "tests/fixtures/protocol/commands.json": PYTHON | TYPST | WINDOWS | UI | RUST,
     "tests/fixtures/win32/sleeper.cs": PYTHON | TYPST | WINDOWS | RUST,
     "desktop/src-tauri/src/lib.rs": RUST,
-    "desktop/src-tauri/tauri.conf.json": RUST | {"lint:ui"},
-    "desktop/src-tauri/Cargo.lock": RUST | {"audit:rust"},
-    "ci/deny.toml": {"audit:rust"},
-    "ci/linux.yml": PYTHON | TYPST | UI | RUST | AUDITS,
-    "ci/windows.yml": WINDOWS,
-    "ci/windows-tools.ps1": WINDOWS,
-    "ci/security.yml": AUDITS,
-    ".gitlab-ci.yml": PYTHON | TYPST | UI | RUST | WINDOWS | AUDITS,
+    "desktop/src-tauri/tauri.conf.json": RUST | UI,
+    "desktop/src-tauri/capabilities/default.json": RUST | UI,
+    "desktop/src-tauri/Cargo.lock": RUST | {"audit-rust"},
+    ".github/workflows/ci.yml": EVERY_LANE,
+    "ci/changed_lanes.py": EVERY_LANE,
 }
-# They run on tags and are otherwise started by hand (O2).
-HEAVY = {"test:rust:windows", "test:render:windows", "package:windows"}
+# The folders the jobs write: build output, reports, the bundle and its cache.
+OUTPUTS = (
+    "out/",
+    "reports/",
+    "desktop/dist/",
+    "desktop/reports/",
+    "desktop/coverage/",
+    "packaging/bundle/",
+    "packaging/.cache",
+)
+# A path the workflows name, relative to the repository root.
+PATH = re.compile(r"(?<![\w./$\\-])((?:\.github|ci|desktop|docs|packaging|scenes|scripts|tests|worker)/[\w.*/-]*)")
 # The suffixes of the files Prettier formats.
 PRETTIER = {".cjs", ".css", ".html", ".js", ".json", ".jsx", ".md", ".mjs", ".ts", ".tsx", ".yaml", ".yml"}
 
 
-class Reference(NamedTuple):
-    """GitLab's !reference [job, key, ...] tag."""
-
-    path: tuple[str, ...]
-
-
 class _Loader(yaml.SafeLoader):
-    """Reads !reference tags, and refuses a mapping that repeats a key."""
-
-
-def _reference(loader: _Loader, node: yaml.SequenceNode) -> Reference:
-    return Reference(tuple(loader.construct_sequence(node)))
+    """Reads YAML as GitHub does, and refuses a mapping that repeats a key."""
 
 
 def _mapping(loader: _Loader, node: yaml.MappingNode) -> dict[Any, Any]:
     keys = [loader.construct_object(key) for key, _value in node.value]
-    repeated = sorted({key for key in keys if keys.count(key) > 1})
+    repeated = sorted({str(key) for key in keys if keys.count(key) > 1})
     if repeated:
         raise yaml.constructor.ConstructorError(None, None, f"repeated keys {repeated}", node.start_mark)
     return loader.construct_mapping(node)
 
 
-_Loader.add_constructor("!reference", _reference)
+# YAML 1.1 reads on, off, yes and no as booleans, so `on:` would load as True.
+# GitHub reads only true and false that way.
+_Loader.yaml_implicit_resolvers = {
+    first: [(tag, regexp) for tag, regexp in resolvers if tag != "tag:yaml.org,2002:bool"]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_Loader.add_implicit_resolver("tag:yaml.org,2002:bool", re.compile(r"^(?:true|false)$"), list("tf"))
 _Loader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
 
 
+def _load(path: Path) -> Any:
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=_Loader)
+
+
 @functools.cache
-def _files() -> dict[str, dict[str, Any]]:
-    """.gitlab-ci.yml and every file it includes, by path."""
-    paths = [".gitlab-ci.yml", *sorted(f"ci/{path.name}" for path in (REPO / "ci").glob("*.yml"))]
-    return {path: yaml.load((REPO / path).read_text(encoding="utf-8"), Loader=_Loader) for path in paths}
+def _workflows() -> dict[str, dict[str, Any]]:
+    """Every workflow, by file name."""
+    return {path.name: _load(path) for path in sorted(WORKFLOWS.glob("*.yml"))}
 
 
-def _jobs() -> dict[str, dict[str, Any]]:
-    """Every job and hidden job, as written."""
-    return {name: job for config in _files().values() for name, job in config.items() if name not in GLOBAL_KEYS}
+def _jobs() -> Iterator[tuple[str, str, dict[str, Any]]]:
+    for name, workflow in _workflows().items():
+        for job_id, job in workflow["jobs"].items():
+            yield name, job_id, job
 
 
-def _parents(job: dict[str, Any]) -> list[str]:
-    extends = job.get("extends", [])
-    return [extends] if isinstance(extends, str) else extends
+def _job(workflow: str, job_id: str) -> dict[str, Any]:
+    job: dict[str, Any] = _workflows()[workflow]["jobs"][job_id]
+    return job
 
 
-def _resolve(name: str) -> dict[str, Any]:
-    """A job with its !reference tags and extends resolved, as GitLab resolves them."""
-    merged: dict[str, Any] = {}
-    for parent in _parents(_jobs()[name]):
-        merged = _merge(merged, _resolve(parent))
-    return _merge(merged, _dereference(_jobs()[name]))
+def _env(workflow: str, job_id: str) -> dict[str, Any]:
+    return {**_workflows()[workflow].get("env", {}), **_job(workflow, job_id).get("env", {})}
 
 
-def _dereference(value: Any) -> Any:
-    if isinstance(value, Reference):
-        node: Any = _jobs()
-        for key in value.path:
-            node = node[key]
-        return _dereference(node)
-    if isinstance(value, dict):
-        return {key: _dereference(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_dereference(item) for item in value]
-    return value
+def _steps(job: dict[str, Any]) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = job.get("steps", [])
+    return steps
 
 
-def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
+def _uses(job: dict[str, Any], action: str) -> list[dict[str, Any]]:
+    """The steps of a job that use an action, at any version."""
+    return [step for step in _steps(job) if str(step.get("uses", "")).split("@")[0] == action]
 
 
-def _references(value: Any) -> Iterator[Reference]:
-    if isinstance(value, Reference):
+def _runs(job: dict[str, Any]) -> list[tuple[str, str]]:
+    """Each command line of a job's run steps, with its working directory."""
+    default = job.get("defaults", {}).get("run", {}).get("working-directory", ".")
+    return [
+        (line.strip(), step.get("working-directory", default))
+        for step in _steps(job)
+        if "run" in step
+        for line in step["run"].splitlines()
+        if line.strip()
+    ]
+
+
+def _commands(job: dict[str, Any]) -> list[str]:
+    return [line for line, _directory in _runs(job)]
+
+
+def _index(job: dict[str, Any], prefix: str) -> int:
+    """The position of the first command line that starts with prefix."""
+    indexes = [index for index, line in enumerate(_commands(job)) if line.startswith(prefix)]
+    assert indexes, f"no command starts with {prefix!r}"
+    return indexes[0]
+
+
+def _strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
         for item in value.values():
-            yield from _references(item)
+            yield from _strings(item)
     elif isinstance(value, list):
         for item in value:
-            yield from _references(item)
+            yield from _strings(item)
 
 
-def _flatten(rules: list[Any]) -> Iterator[dict[str, Any]]:
-    """Rules as GitLab reads them: a !reference to a list of rules adds those rules."""
-    for rule in rules:
-        if isinstance(rule, list):
-            yield from _flatten(rule)
-        else:
-            yield rule
+def _needs(job: dict[str, Any]) -> list[str]:
+    needs = job.get("needs", [])
+    return [needs] if isinstance(needs, str) else list(needs)
 
 
-def _rules(job: str) -> list[dict[str, Any]]:
-    return list(_flatten(_resolve(job).get("rules", [{}])))
+def _lane_jobs() -> dict[str, str]:
+    """The lane of each ci.yml job that runs only when its lane does."""
+    lanes = {}
+    for job_id, job in _workflows()["ci.yml"]["jobs"].items():
+        if job_id not in EVERY_CHANGE:
+            match = re.fullmatch(r"needs\.changes\.outputs\.(\w+) == 'true'", job.get("if", ""))
+            assert _needs(job) == ["changes"] and match, f"{job_id} runs on no lane"
+            lanes[job_id] = match[1]
+    return lanes
 
 
-def _commands(job: dict[str, Any]) -> Iterator[str]:
-    for key in ("before_script", "script", "after_script"):
-        yield from (line for line in job.get(key, []) if isinstance(line, str))
-
-
-def _script_lines() -> Iterator[str]:
-    for job in _jobs().values():
-        yield from _commands(job)
-
-
-def _visible_jobs() -> list[str]:
-    return [name for name in _jobs() if not name.startswith(".")]
-
-
-def _first_rule(rules: list[dict[str, Any]], pipeline: str, changed: str | None) -> dict[str, Any] | None:
-    """The rule GitLab applies: the first whose if: and changes: hold.
-
-    changed is the one path a merge request or push changes. Tag and schedule
-    pipelines have nothing to compare, and GitLab takes every changes: in them
-    to hold, as it does here when changed is None.
-    """
-    variables = {"CI_DEFAULT_BRANCH": "main", **PIPELINES[pipeline]}
-    compared = changed if pipeline in COMPARED else None
-    for rule in rules:
-        if "if" in rule and not _holds(rule["if"], variables):
-            continue
-        if compared and "changes" in rule and not any(PurePosixPath(compared).full_match(p) for p in rule["changes"]):
-            continue
-        return rule
-    return None
-
-
-def _holds(condition: str, variables: dict[str, str]) -> bool:
-    """Evaluate an if: in the forms the pipeline uses: variables, == comparisons, && and ||."""
-    python = re.sub(r"\$(\w+)", lambda match: repr(variables.get(match[1], "")), condition)
-    return bool(eval(python.replace("&&", " and ").replace("||", " or "), {"__builtins__": {}}))
-
-
-def _when(job: str, pipeline: str, changed: str | None = None) -> str:
-    """How job starts in a pipeline of that kind: on_success, manual or never."""
-    rule = _first_rule(_rules(job), pipeline, changed)
-    return "never" if rule is None else str(rule.get("when", "on_success"))
-
-
-def _pipeline_runs(pipeline: str) -> bool:
-    rule = _first_rule(_files()[".gitlab-ci.yml"]["workflow"]["rules"], pipeline, None)
-    return rule is not None and rule.get("when") != "never"
-
-
-def _definition(name: str) -> set[str]:
-    """The files that define a job.
-
-    They are .gitlab-ci.yml, which sets the defaults, the files of the job and
-    of each template it extends or references, and the ci/ files its commands
-    name.
-    """
-    owners = {job: path for path, config in _files().items() for job in config.keys() - GLOBAL_KEYS}
-    jobs: set[str] = set()
-    pending = [name]
-    while pending:
-        job = pending.pop()
-        if job not in jobs:
-            jobs.add(job)
-            pending += _parents(_jobs()[job])
-            pending += [reference.path[0] for reference in _references(_jobs()[job])]
-    named = re.findall(r"\bci/[\w.-]+", " ".join(_commands(_resolve(name))))
-    return {".gitlab-ci.yml", *(owners[job] for job in jobs), *named}
+def _started(path: str) -> set[str]:
+    """The lane jobs that a pull request changing path starts."""
+    selected = changed_lanes.lanes([path])
+    return {job_id for job_id, lane in _lane_jobs().items() if selected[lane]}
 
 
 def _tracked(pathspec: str) -> list[str]:
@@ -279,7 +232,7 @@ def _ignored(paths: Iterable[str]) -> set[str]:
 
 
 def _example(pattern: str) -> str:
-    """A path that a changes: pattern matches."""
+    """A path that a glob pattern matches."""
     return pattern.replace("**", "x").replace("*", "x")
 
 
@@ -288,82 +241,236 @@ def _pins() -> dict[str, str]:
     return dict(re.findall(r"^([A-Z0-9_]+)=(.*)$", text, re.MULTILINE))
 
 
-def _image_version(job: str, repository: str) -> str:
-    image = _resolve(job)["image"]
-    name = image["name"] if isinstance(image, dict) else image
-    match = re.fullmatch(rf"{re.escape(repository)}:(\d+\.\d+\.\d+)-[\w.-]+", name)
-    assert match, f"{job} runs {name}, not a versioned {repository} image"
-    return match[1]
+def _project() -> dict[str, Any]:
+    return tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
 
 
-def test_every_ci_file_is_included() -> None:
-    included = [entry["local"] for entry in _files()[".gitlab-ci.yml"]["include"]]
-    assert sorted(included) == sorted(path for path in _files() if path != ".gitlab-ci.yml")
+def _pre_commit() -> dict[str, Any]:
+    config: dict[str, Any] = yaml.safe_load((REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    return config
 
 
-def test_no_job_is_defined_twice() -> None:
-    owner: dict[str, str] = {}
-    for path, config in _files().items():
-        for name in config.keys() - GLOBAL_KEYS:
-            assert name not in owner, f"{name} is defined in {owner[name]} and in {path}"
-            owner[name] = path
+def _exists(path: str) -> bool:
+    path = path.rstrip("/")
+    return any(REPO.glob(path)) if "*" in path else (REPO / path).exists()
 
 
-def test_extends_needs_and_references_name_defined_jobs() -> None:
-    jobs = _jobs()
-    for name, job in jobs.items():
-        for parent in _parents(job):
-            assert parent in jobs, f"{name} extends the undefined {parent}"
-        for need in [*job.get("needs", []), *job.get("dependencies", [])]:
-            target = need if isinstance(need, str) else need["job"]
-            assert target in jobs and not target.startswith("."), f"{name} needs the undefined job {target}"
-    for reference in _references(_files()):
-        node: Any = jobs
-        for key in reference.path:
-            assert isinstance(node, dict) and key in node, f"!reference {list(reference.path)} names nothing"
-            node = node[key]
+def test_the_workflows_are_ci_slow_release_and_codeql() -> None:
+    assert sorted(_workflows()) == ["ci.yml", "codeql.yml", "release.yml", "slow.yml"]
+    for name, workflow in _workflows().items():
+        assert {"name", "on", "permissions", "jobs"} <= workflow.keys(), name
 
 
-def test_jobs_run_in_declared_stages() -> None:
-    stages = {*_files()[".gitlab-ci.yml"]["stages"], ".pre", ".post"}
-    for name in _visible_jobs():
-        assert _resolve(name).get("stage", "test") in stages, f"{name} runs in an undeclared stage"
+def test_every_job_runs_on_a_pinned_runner_with_a_timeout() -> None:
+    for workflow, job_id, job in _jobs():
+        if "uses" in job:
+            assert job["uses"].startswith("./.github/workflows/"), (workflow, job_id)
+            continue
+        assert job["runs-on"] in RUNNERS, (workflow, job_id)
+        assert isinstance(job.get("timeout-minutes"), int), (workflow, job_id)
 
 
-def test_the_readme_lists_each_job_once_in_its_stage_and_on_its_runner() -> None:
-    # The table in README.md's "Continuous integration" section: after the
-    # header and its separator, a row per stage with the jobs of the hosted
-    # Linux runners and those of the hosted Windows runner.
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    section = readme.split("\n## Continuous integration\n", 1)[1].split("\n## ", 1)[0]
-    rows = [[cell.strip() for cell in line.strip("|").split("|")] for line in section.splitlines() if line[:1] == "|"]
-    listed = [
-        (job, stage, runner)
-        for stage, *cells in rows[2:]
-        for runner, cell in zip(("linux", "windows"), cells, strict=True)
-        for job in re.findall(r"`([^`]+)`", cell)
-    ]
-    jobs = [(name, _resolve(name)) for name in _visible_jobs()]
-    expected = [(name, job.get("stage", "test"), "windows" if job.get("tags") else "linux") for name, job in jobs]
-    assert sorted(listed) == sorted(expected)
+def test_actions_are_pinned_to_releases() -> None:
+    # A full commit SHA or a release tag, never a branch. Dependabot moves them.
+    for workflow, job_id, job in _jobs():
+        for uses in [job.get("uses"), *(step.get("uses") for step in _steps(job))]:
+            if uses is None:
+                continue
+            if uses.startswith("./"):
+                assert (REPO / uses).is_file(), (workflow, job_id, uses)
+            else:
+                assert re.fullmatch(r"[\w.-]+/[\w./-]+@(?:[0-9a-f]{40}|v\d+(?:\.\d+){0,2})", uses), (workflow, uses)
+
+
+def test_tokens_have_least_privilege() -> None:
+    for name, workflow in _workflows().items():
+        assert workflow["permissions"] == {"contents": "read"}, name
+    for workflow, job_id, job in _jobs():
+        if (workflow, job_id) in WRITERS:
+            assert job["permissions"] == WRITERS[workflow, job_id], (workflow, job_id)
+        else:
+            assert "permissions" not in job, (workflow, job_id)
+        # No later step can push with the checkout's token.
+        for step in _uses(job, "actions/checkout"):
+            assert step["with"]["persist-credentials"] is False, (workflow, job_id)
+
+
+def test_the_workflows_run_on_the_chosen_triggers() -> None:
+    triggers = {name: workflow["on"] for name, workflow in _workflows().items()}
+    assert triggers["ci.yml"] == {"pull_request": None, "push": {"branches": ["main"]}, "workflow_call": None}
+    assert triggers["codeql.yml"].keys() == {"pull_request", "push", "schedule"}
+    assert triggers["codeql.yml"]["push"] == {"branches": ["main"]}
+    # The slow lanes run every night, by hand, and for every tag through the
+    # release workflow, which calls them.
+    assert triggers["slow.yml"].keys() == {"schedule", "workflow_dispatch", "workflow_call"}
+    (nightly,) = [entry["cron"] for entry in triggers["slow.yml"]["schedule"]]
+    assert nightly.split()[2:] == ["*", "*", "*"], nightly
+    assert triggers["release.yml"] == {"push": {"tags": ["v*"]}}
+    release = _workflows()["release.yml"]["jobs"]
+    called = {job["uses"]: job_id for job_id, job in release.items() if "uses" in job}
+    assert called == {"./.github/workflows/ci.yml": "ci", "./.github/workflows/slow.yml": "slow"}
+    assert set(called.values()) <= set(release["draft"]["needs"])
+
+
+def test_superseded_pull_request_runs_are_cancelled() -> None:
+    # A called workflow evaluates its concurrency group in the caller's
+    # context, so each workflow's group needs a prefix of its own: a shared one
+    # would make the release wait for itself.
+    prefixes = []
+    for name, workflow in _workflows().items():
+        group, cancel = workflow["concurrency"]["group"], workflow["concurrency"]["cancel-in-progress"]
+        prefixes.append(group.split("${{")[0])
+        if "pull_request" in workflow["on"]:
+            assert cancel == "${{ github.event_name == 'pull_request' }}", name
+            assert "github.event.pull_request.number" in group, name
+        else:
+            assert cancel is False, name
+    assert len(set(prefixes)) == len(prefixes) and all(prefixes), prefixes
+
+
+def test_the_files_the_workflows_name_exist() -> None:
+    named: set[str] = set()
+    for _name, workflow in _workflows().items():
+        for text in _strings(workflow["jobs"]):
+            text = re.sub(r"(?<![\w.])\./", "", text)
+            named.update(PATH.findall(text))
+            for argument in re.findall(r"hashFiles\(([^)]*)\)", text):
+                named.update(re.findall(r"'([^']+)'", argument))
+    for _workflow, _job_id, job in _jobs():
+        for step in _steps(job):
+            with_ = step.get("with", {})
+            for key in ("node-version-file", "cache-dependency-path", "cache-dependency-glob", "workspaces"):
+                if key in with_:
+                    named.add(with_[key].split(" -> ")[0])
+            if "working-directory" in step:
+                named.add(step["working-directory"])
+    assert {"ci/install-typst.sh", "ci/windows-tools.ps1", "ci/package-windows.ps1", "ci/deny.toml"} <= named
+    assert {"scripts/check_versions.py", "packaging/build-bundle.ps1", "uv.lock", "desktop/.nvmrc"} <= named
+    assert sorted(path for path in named if not path.startswith(OUTPUTS) and not _exists(path)) == []
+
+
+def test_uv_is_the_release_that_the_project_requires() -> None:
+    required = _project()["tool"]["uv"]["required-version"]
+    assert required == f"=={_pins()['UV_VERSION']}"
+    steps = [step for _workflow, _job_id, job in _jobs() for step in _uses(job, "astral-sh/setup-uv")]
+    assert steps
+    for step in steps:
+        assert step["with"]["version"] == _pins()["UV_VERSION"], step
+
+
+def test_node_is_the_major_that_nvmrc_names() -> None:
+    steps = [step for _workflow, _job_id, job in _jobs() for step in _uses(job, "actions/setup-node")]
+    assert steps
+    for step in steps:
+        assert step["with"]["node-version-file"] == "desktop/.nvmrc", step
+        assert "node-version" not in step["with"], step
+
+
+def test_cargo_runs_the_toolchain_that_rust_toolchain_toml_pins() -> None:
+    # rustup installs the toolchain and components that the file in
+    # desktop/src-tauri names, on Linux directly and on Windows through
+    # ci/windows-tools.ps1 -Rust, before any cargo command of the shell runs.
+    jobs = 0
+    for workflow, job_id, job in _jobs():
+        runs = _runs(job)
+        shell = [
+            index
+            for index, (line, directory) in enumerate(runs)
+            if (line.startswith("cargo ") and directory == "desktop/src-tauri") or "ci/package-windows.ps1" in line
+        ]
+        if not shell:
+            continue
+        jobs += 1
+        installs = [
+            index
+            for index, (line, directory) in enumerate(runs)
+            if (line == "rustup toolchain install" and directory == "desktop/src-tauri")
+            or (line.startswith("./ci/windows-tools.ps1 ") and "-Rust" in line.split())
+        ]
+        assert installs and installs[0] < shell[0], (workflow, job_id)
+        assert not any(re.search(r"\bcargo \+", line) for line, _directory in runs), (workflow, job_id)
+        assert not any(str(step.get("uses", "")).startswith("dtolnay/") for step in _steps(job)), (workflow, job_id)
+    assert jobs == 3
+
+
+def test_the_linux_python_lane_runs_the_bundle_interpreters() -> None:
+    job = _job("ci.yml", "python-tests")
+    assert set(job["strategy"]["matrix"]["python"]) == {_pins()["PYTHON_VERSION"], _pins()["PYTHON_FALLBACK_VERSION"]}
+    assert job["env"]["UV_PYTHON"] == "${{ matrix.python }}"
+
+
+def test_windows_test_jobs_run_the_win32_tests() -> None:
+    windows = []
+    for workflow, job_id, job in _jobs():
+        tests = any(re.search(r"\b(pytest|cargo test)\b", line) for line in _commands(job))
+        if job.get("runs-on", "").startswith("windows-") and tests:
+            windows.append(job_id)
+            assert _env(workflow, job_id).get("MATHIMATOR_WIN32_TESTS") == "1", (workflow, job_id)
+    assert sorted(windows) == ["python-tests-windows", "render", "rust-windows"]
+
+
+def test_the_windows_rust_job_runs_every_ignored_shell_test() -> None:
+    # cargo test --include-ignored runs the shell's ignored tests, and each
+    # returns early unless the variable its reason names is 1, so every reason
+    # names one. Those that start the repository's Python find it in .venv, as
+    # a debug shell does.
+    source = "\n".join(path.read_text(encoding="utf-8") for path in (REPO / "desktop/src-tauri/src").rglob("*.rs"))
+    reasons = re.findall(r'#\[ignore(?: = "([^"]*)")?', source)
+    assert all(re.search(r"\bneeds \w+=1\b", reason) for reason in reasons), reasons
+    gates = {gate for reason in reasons for gate in re.findall(r"\bneeds (\w+)=1\b", reason)}
+    assert "MATHIMATOR_REAL_WORKER_TESTS" in gates
+    env = _env("ci.yml", "rust-windows")
+    assert {gate: env.get(gate) for gate in gates} == dict.fromkeys(gates, "1")
+    job = _job("ci.yml", "rust-windows")
+    tools = _index(job, "./ci/windows-tools.ps1 ")
+    assert "-Uv" in _commands(job)[tools].split()
+    assert tools < _index(job, "uv venv") < _index(job, "cargo test --locked -- --include-ignored")
+
+
+def test_the_windows_fast_lane_runs_pytest_in_a_short_folder() -> None:
+    # The worker refuses a project path longer than 114 characters while
+    # Windows long paths are off, and a test project under the runner
+    # profile's temp folder can pass that. pytest creates --basetemp but not
+    # its parent, so the folder sits at the drive root.
+    job = _job("ci.yml", "python-tests-windows")
+    pytest = _commands(job)[_index(job, "uv run pytest ")]
+    assert re.search(r" --basetemp=[A-Z]:\\\w+ ", pytest)
 
 
 def test_marker_expressions_name_registered_markers() -> None:
     ini = configparser.ConfigParser()
     ini.read(REPO / "pytest.ini", encoding="utf-8")
     markers = {line.split(":")[0].strip() for line in ini["pytest"]["markers"].splitlines() if line.strip()}
-    expressions = [expression for line in _script_lines() for expression in re.findall(r'-m "([^"]+)"', line)]
-    assert expressions
+    lines = [line for _workflow, _job_id, job in _jobs() for line in _commands(job)]
+    expressions = [quoted or bare for line in lines for quoted, bare in re.findall(r'-m (?:"([^"]+)"|(\w+))', line)]
+    assert len(expressions) == 4
     for expression in expressions:
         unknown = set(re.findall(r"\w+", expression)) - {"and", "or", "not"} - markers
         assert not unknown, f"-m {expression!r} names unregistered markers {sorted(unknown)}"
 
 
-def test_pre_commit_skips_name_hooks() -> None:
-    config = yaml.safe_load((REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
-    hooks = {hook["id"] for repo in config["repos"] for hook in repo["hooks"]}
-    skipped = set(_resolve("lint:repo")["variables"]["SKIP"].split(","))
+def test_the_slow_lanes_run_the_render_suites_and_build_the_installer() -> None:
+    render = _job("slow.yml", "render")
+    build = _index(render, "powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/build-bundle.ps1")
+    tests = _index(render, 'uv run pytest tests -m "render or export or offline" ')
+    assert build < tests
+    # An xfail that passes fails the lane.
+    assert " -o xfail_strict=true " in _commands(render)[tests]
+    installer = _job("slow.yml", "installer")
+    assert "./ci/package-windows.ps1" in _commands(installer)
+    (upload,) = [
+        step for step in _uses(installer, "actions/upload-artifact") if step["with"]["name"] == "windows-installer"
+    ]
+    assert upload["with"]["path"] == "out/package/"
+    assert "if" not in upload
+
+
+def test_pre_commit_skips_name_hooks_and_ci_runs_the_rest() -> None:
+    hooks = {hook["id"] for repo in _pre_commit()["repos"] for hook in repo["hooks"]}
+    skipped = set(_job("ci.yml", "hygiene")["env"]["SKIP"].split(","))
     assert skipped <= hooks, f"SKIP names no hook: {sorted(skipped - hooks)}"
+    assert {"check-yaml", "check-github-workflows", "check-dependabot"} <= hooks - skipped
+    assert "uv run pre-commit run --all-files --show-diff-on-failure" in _commands(_job("ci.yml", "hygiene"))
 
 
 def test_the_mypy_hooks_install_what_the_checked_files_import() -> None:
@@ -371,8 +478,7 @@ def test_the_mypy_hooks_install_what_the_checked_files_import() -> None:
     # additional_dependencies alone: mypy, and each package that a file mypy
     # checks imports, at the dev group's pins. CI skips these hooks, so
     # nothing else would notice a missing one.
-    config = yaml.safe_load((REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
-    project = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    project = _project()
     pins = {re.split(r"[^\w-]", pin, maxsplit=1)[0]: pin for pin in project["dependency-groups"]["dev"]}
     checked = [path for folder in project["tool"]["mypy"]["files"] for path in (REPO / folder).rglob("*.py")]
     imported = {
@@ -383,30 +489,23 @@ def test_the_mypy_hooks_install_what_the_checked_files_import() -> None:
     local = {path.stem for path in checked} | {path.parent.name for path in checked}
     packages = {"mypy", *(imported - set(sys.stdlib_module_names) - local)}
     assert "pytest" in packages
-    hooks = [hook for repo in config["repos"] for hook in repo["hooks"] if hook.get("entry") == "mypy"]
+    hooks = [hook for repo in _pre_commit()["repos"] for hook in repo["hooks"] if hook.get("entry") == "mypy"]
     assert [hook["id"] for hook in hooks] == ["mypy", "mypy-linux"]
     for hook in hooks:
         assert sorted(hook["additional_dependencies"]) == sorted(pins[name] for name in packages), hook["id"]
 
 
-def test_toolchain_images_match_their_pins() -> None:
-    toolchain = (REPO / "desktop" / "src-tauri" / "rust-toolchain.toml").read_text(encoding="utf-8")
-    assert _image_version(".uv", "ghcr.io/astral-sh/uv") == _pins()["UV_VERSION"]
-    assert f'channel = "{_image_version(".rust", "rust")}"' in toolchain
-    node = _image_version(".node", "node")
-    assert node == str(_resolve(".windows")["variables"]["NODE_VERSION"])
-    assert node.split(".")[0] == (REPO / "desktop" / ".nvmrc").read_text(encoding="utf-8").strip()
-
-
-def test_python_lane_runs_the_bundle_interpreters() -> None:
-    matrix = _resolve("test:python")["parallel"]["matrix"]
-    versions = {version for entry in matrix for version in entry["UV_PYTHON"]}
-    assert versions == {_pins()["PYTHON_VERSION"], _pins()["PYTHON_FALLBACK_VERSION"]}
+def test_the_ruff_hook_is_the_dev_group_ruff() -> None:
+    (pin,) = [pin for pin in _project()["dependency-groups"]["dev"] if pin.startswith("ruff==")]
+    (repo,) = [
+        repo for repo in _pre_commit()["repos"] if repo["repo"] == "https://github.com/astral-sh/ruff-pre-commit"
+    ]
+    assert repo["rev"] == f"v{pin.removeprefix('ruff==')}"
 
 
 def test_every_download_the_scripts_check_has_a_pinned_sha256() -> None:
     # A script stops at a download whose pin is empty, so an empty pin fails
-    # test:typst and every bundle build, wherever they run.
+    # the typst job and every bundle build, wherever they run.
     scripts = "\n".join(
         path.read_text(encoding="utf-8")
         for pattern in ("ci/*.sh", "ci/*.ps1", "packaging/*.sh", "packaging/*.ps1")
@@ -418,78 +517,53 @@ def test_every_download_the_scripts_check_has_a_pinned_sha256() -> None:
         assert re.fullmatch(r"[0-9a-f]{64}", _pins().get(name, "")), f"packaging/versions.env pins no SHA-256 {name}"
 
 
-def test_pipelines_run_for_merge_requests_the_default_branch_tags_and_renovate() -> None:
-    # A branch gets no pipeline of its own, so an open merge request runs once,
-    # and Renovate's is the one schedule: there is no nightly pipeline (O2).
-    assert [kind for kind in PIPELINES if _pipeline_runs(kind)] == [
-        "merge request",
-        "default branch",
-        "tag",
-        "unprotected tag",
-        "renovate",
-    ]
+def test_the_typst_lane_installs_the_pinned_typst() -> None:
+    job = _job("ci.yml", "typst")
+    install = _index(job, 'bash ci/install-typst.sh "$RUNNER_TEMP/typst"')
+    assert _commands(job)[install + 1] == 'echo "$RUNNER_TEMP/typst" >> "$GITHUB_PATH"'
+    assert install < _index(job, "uv run pytest tests -m typst ")
 
 
-def test_the_renovate_schedule_runs_renovate_alone() -> None:
-    for job in _visible_jobs():
-        assert (_when(job, "renovate") == "never") is (job != "renovate"), job
-    assert [kind for kind in PIPELINES if _when("renovate", kind) != "never"] == ["renovate"]
-    # The SAST and Secret Detection jobs come from GitLab's templates.
-    rule = _first_rule(_files()[".gitlab-ci.yml"]["workflow"]["rules"], "renovate", None)
-    assert rule is not None and rule["variables"] == {"SAST_DISABLED": "true", "SECRET_DETECTION_DISABLED": "true"}
+def test_the_lane_jobs_read_the_lanes_of_the_changes_job() -> None:
+    jobs = _workflows()["ci.yml"]["jobs"]
+    outputs = jobs["changes"]["outputs"]
+    assert outputs == {lane: f"${{{{ steps.lanes.outputs.{lane} }}}}" for lane in changed_lanes.LANES}
+    assert set(_lane_jobs().values()) == set(changed_lanes.LANES)
+    assert set(jobs) == EVERY_CHANGE | set(_lane_jobs())
+    for job_id in EVERY_CHANGE - {"result"}:
+        assert "if" not in jobs[job_id] and not _needs(jobs[job_id]), job_id
+    # The result job waits for every other job, whatever their outcome.
+    assert jobs["result"]["if"] == "always()"
+    assert sorted(_needs(jobs["result"])) == sorted(set(jobs) - {"result"})
 
 
-def test_a_merge_request_starts_lint_repo_and_the_lanes_of_its_file() -> None:
-    for path, lanes in LANES.items():
-        started = {job for job in _visible_jobs() if _when(job, "merge request", path) == "on_success"}
-        assert started == EVERY_CHANGE | lanes, path
+def test_a_pull_request_starts_the_lanes_of_its_file() -> None:
+    for path, started in STARTED.items():
+        assert _started(path) == started, path
 
 
-def test_the_default_branch_runs_no_lane_again() -> None:
-    # A semi-linear merge puts on main the tree that the merge request
-    # pipeline passed (D69).
-    for path in LANES:
-        started = {job for job in _visible_jobs() if _when(job, "default branch", path) == "on_success"}
-        assert started == EVERY_CHANGE, path
+def test_the_lane_patterns_are_globs() -> None:
+    assert changed_lanes.matches("desktop/package.json", ["desktop/*"])
+    assert not changed_lanes.matches("desktop/src/App.tsx", ["desktop/*"])
+    assert changed_lanes.matches("desktop/src-tauri/tauri.conf.json", ["desktop/src-tauri/**/*.json"])
+    assert changed_lanes.matches("worker/a/b.py", ["worker/**"])
+    assert not changed_lanes.matches("ci/sub/x.py", ["ci/*.py"])
+    assert not changed_lanes.matches("uv.lock.bak", ["uv.lock"])
 
 
-def test_a_tag_runs_every_job() -> None:
-    for job in _visible_jobs():
-        assert _when(job, "tag") == ("never" if job == "renovate" else "on_success"), job
-
-
-def test_the_heavy_windows_jobs_run_on_tags_and_otherwise_by_hand() -> None:
-    assert {job for job in _visible_jobs() if _when(job, "merge request") == "manual"} == HEAVY
-    for job in HEAVY:
-        assert {_when(job, kind, path) for kind in COMPARED for path in LANES} == {"manual"}, job
-
-
-def test_manual_jobs_never_block_the_pipeline() -> None:
-    for job in _visible_jobs():
-        for rule in _rules(job):
-            if rule.get("when") == "manual":
-                assert rule.get("allow_failure") is True, job
-
-
-def test_a_change_to_a_job_definition_runs_the_job() -> None:
-    for job in _visible_jobs():
-        if _when(job, "merge request") != "never":
-            for path in _definition(job):
-                assert _when(job, "merge request", path) != "never", f"{job} skips a change to {path}"
-
-
-def test_every_job_a_job_needs_runs_with_it() -> None:
-    # GitLab refuses to create a pipeline in which a job needs one that the
-    # rules leave out, and a job that needs a manual one waits for a click.
-    patterns = {pattern for job in _visible_jobs() for rule in _rules(job) for pattern in rule.get("changes", [])}
-    changes = [None, *LANES, *map(_example, patterns)]
-    for job in _visible_jobs():
-        for need in _resolve(job).get("needs", []):
-            target = need if isinstance(need, str) else need["job"]
-            for kind in PIPELINES:
-                for changed in changes:
-                    if _when(job, kind, changed) != "never":
-                        assert _when(target, kind, changed) == "on_success", f"{job} needs {target} ({kind}, {changed})"
+def test_the_lane_script_speaks_github_output_on_the_runner_python() -> None:
+    script = REPO / "ci" / "changed_lanes.py"
+    # The changes job runs it on the runner image's python3, 3.12 on Ubuntu 24.04.
+    ast.parse(script.read_text(encoding="utf-8"), feature_version=(3, 12))
+    paths = b"desktop/src/App.tsx\0ci/deny.toml\0"
+    output = subprocess.run([sys.executable, str(script)], input=paths, capture_output=True, check=True).stdout
+    expected = {lane: lane in {"ui", "audit_rust"} for lane in changed_lanes.LANES}
+    assert output.decode().splitlines() == [f"{lane}={str(runs).lower()}" for lane, runs in expected.items()]
+    output = subprocess.run([sys.executable, str(script), "--all"], capture_output=True, check=True).stdout
+    assert output.decode().splitlines() == [f"{lane}=true" for lane in changed_lanes.LANES]
+    command = _job("ci.yml", "changes")["steps"][1]["run"]
+    assert "git diff --name-only --no-renames -z HEAD^1 HEAD | python3 ci/changed_lanes.py" in command
+    assert _job("ci.yml", "changes")["steps"][0]["with"]["fetch-depth"] == 2
 
 
 def test_the_lanes_cover_the_files_their_tests_read() -> None:
@@ -498,138 +572,203 @@ def test_the_lanes_cover_the_files_their_tests_read() -> None:
     # stands for a file it matches.
     relative = (
         (
-            "test:ui",
+            "ui",
             "desktop/src",
             {".ts", ".tsx"},
             r"""(?:from|import|import\.meta\.glob(?:<[^>]*>)?)\s*\(?\s*["'](\.{1,2}/[^"'?]+)""",
         ),
-        ("test:rust", "desktop/src-tauri/src", {".rs"}, r'include_(?:str|bytes)!\(\s*"([^"]+)"'),
+        ("rust", "desktop/src-tauri/src", {".rs"}, r'include_(?:str|bytes)!\(\s*"([^"]+)"'),
     )
     reads = {
-        job: {
+        lane: {
             (path.parent / _example(target)).resolve().relative_to(REPO).as_posix()
             for path in (REPO / folder).rglob("*")
             if path.suffix in suffixes
             for target in re.findall(pattern, path.read_text(encoding="utf-8"))
         }
-        for job, folder, suffixes, pattern in relative
+        for lane, folder, suffixes, pattern in relative
     }
-    reads["test:python"] = {
+    reads["python"] = {
         "/".join(re.findall(r'"([^"]+)"', chain))
         for path in [*(REPO / "tests").glob("*.py"), *(REPO / "scripts").glob("test_*.py")]
         for chain in re.findall(r'REPO((?: / "[^"]+")+)', path.read_text(encoding="utf-8"))
     }
-    for job, paths in reads.items():
-        assert any(path.startswith("tests/fixtures/") for path in paths), job
+    for lane, paths in reads.items():
+        assert any(path.startswith("tests/fixtures/") for path in paths), lane
         changes = {f"{path}/x" if (REPO / path).is_dir() else path for path in paths}
         for changed in sorted(changes - _ignored(changes)):
-            assert _when(job, "merge request", changed) == "on_success", f"{job} skips a change to {changed}"
+            assert changed_lanes.lanes([changed])[lane], f"the {lane} lane skips a change to {changed}"
 
 
-def test_ruff_checks_every_python_file_a_merge_request_changes() -> None:
-    commands = {"uv run ruff check", "uv run ruff format --check"}
-    ruff = [job for job in _visible_jobs() if commands <= set(_commands(_resolve(job)))]
-    excluded = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]["extend-exclude"]
+def test_the_checks_that_span_the_lanes_run_every_time() -> None:
+    # Ruff and the ci/ tests read every Python file and the workflows, so they
+    # need no lane.
+    commands = _commands(_job("ci.yml", "python-lint"))
+    for command in (
+        "uv run python scripts/check_versions.py",
+        "uv run ruff check --output-format=github",
+        "uv run ruff format --check",
+        "uv run mypy",
+        "uv run mypy --platform linux",
+        "uv lock --check",
+        "uv run pytest ci --junitxml=reports/junit-ci.xml",
+    ):
+        assert command in commands, command
+    excluded = _project()["tool"]["ruff"]["extend-exclude"]
     checked = [path for path in _tracked("*.py") if not any(PurePosixPath(path).is_relative_to(x) for x in excluded)]
     assert "ci/test_pipeline.py" in checked
-    for path in checked:
-        assert any(_when(job, "merge request", path) == "on_success" for job in ruff), path
 
 
-def test_prettier_checks_every_desktop_file_a_merge_request_changes() -> None:
-    # lint:ui runs `prettier --check .` in desktop/, which reaches the shell's
-    # JSON configuration too.
+def test_prettier_checks_every_desktop_file_a_pull_request_changes() -> None:
+    # The ui job runs `prettier --check .` in desktop/, which reaches the
+    # shell's JSON configuration too.
     formatted = [path for path in _tracked("desktop") if PurePosixPath(path).suffix in PRETTIER]
     assert "desktop/src-tauri/tauri.conf.json" in formatted
     for path in formatted:
-        assert _when("lint:ui", "merge request", path) == "on_success", path
+        assert "ui" in _started(path), path
 
 
-def test_the_windows_fast_lane_runs_pytest_in_a_short_folder() -> None:
-    # The worker refuses a project path longer than 114 characters while
-    # Windows long paths are off, and a test project under the runner
-    # profile's temp folder can pass that. pytest creates --basetemp but not
-    # its parent, so the folder sits at the drive root.
-    (pytest,) = [line for line in _resolve("test:windows")["script"] if line.startswith("uv run pytest ")]
-    assert re.search(r" --basetemp=[A-Z]:\\\w+ ", pytest)
-
-
-def test_the_windows_rust_lane_runs_every_ignored_shell_test() -> None:
-    # cargo test --include-ignored runs the shell's ignored tests, and each
-    # returns early unless the variable its reason names is 1, so every
-    # reason names one. Those that start the repository's Python find it in
-    # .venv, as a debug shell does.
-    source = "\n".join(path.read_text(encoding="utf-8") for path in (REPO / "desktop/src-tauri/src").rglob("*.rs"))
-    reasons = re.findall(r'#\[ignore(?: = "([^"]*)")?', source)
-    assert all(re.search(r"\bneeds \w+=1\b", reason) for reason in reasons), reasons
-    gates = {gate for reason in reasons for gate in re.findall(r"\bneeds (\w+)=1\b", reason)}
-    assert "MATHIMATOR_REAL_WORKER_TESTS" in gates
-    job = _resolve("test:rust:windows")
-    assert {gate: job["variables"].get(gate) for gate in gates} == dict.fromkeys(gates, "1")
-    script = job["script"]
-    (tools,) = [line for line in script if line.startswith("./ci/windows-tools.ps1 ")]
-    assert "-Uv" in tools.split()
-    assert script.index(tools) < script.index("uv venv") < script.index("cargo test --locked -- --include-ignored")
-
-
-def test_the_ui_lane_reports_its_coverage() -> None:
-    job = _resolve("test:ui")
-    (command,) = job["script"]
-    folder = re.search(r'--coverage\.reportsDirectory="\$CI_PROJECT_DIR/([^"]+)"', command)
-    assert command.startswith("npm run test:ci -- ") and folder
-    assert job["artifacts"]["reports"]["coverage_report"] == {
-        "coverage_format": "cobertura",
-        "path": f"{folder[1]}/cobertura-coverage.xml",
-    }
-    # The total line of vitest's text coverage report.
-    total = re.search(job["coverage"].strip("/"), "All files          |   84.31 |    80.12 |   88.88 |   84.31 |")
-    assert total and total[1] == "84.31"
+def test_the_ui_lane_keeps_its_junit_and_coverage_reports() -> None:
+    job = _job("ci.yml", "ui")
+    assert job["defaults"]["run"]["working-directory"] == "desktop"
+    assert "npm run test:ci" in _commands(job)
+    vite = (REPO / "desktop" / "vite.config.ts").read_text(encoding="utf-8")
+    junit = re.search(r'junit: "([^"]+)"', vite)
+    assert junit and re.search(r'reporter: \[[^\]]*"cobertura"', vite)
+    (upload,) = _uses(job, "actions/upload-artifact")
+    assert upload["if"] == "always()"
+    folders = upload["with"]["path"].split()
+    assert f"desktop/{PurePosixPath(junit[1]).parent}/" in folders and "desktop/coverage/" in folders
 
 
 def test_git_ignores_what_the_jobs_leave_in_the_checkout() -> None:
-    # The folders that the CI variables and the Windows tool scripts name and
-    # the cache paths, each with a file in it, and the artifacts and test
-    # reports the jobs write.
-    sources = [*(REPO / path for path in _files()), *(REPO / "ci").glob("*.ps1")]
-    text = "\n".join(path.read_text(encoding="utf-8") for path in sources)
-    folders = {
-        *re.findall(r"\$CI_PROJECT_DIR/([^\s\"'/:;]+)", text),
-        *re.findall(r'Join-Path \$Root "(\.[^"]+)"', text),
-    }
-    outputs: set[str] = set()
-    for job in map(_resolve, _visible_jobs()):
-        cache = job.get("cache", [])
-        for entry in [cache] if isinstance(cache, dict) else cache:
-            folders.update(entry["paths"])
-        artifacts = job.get("artifacts", {})
-        reports = artifacts.get("reports", {})
-        outputs.update(artifacts.get("paths", []))
-        outputs.update(path for path in (reports.get("junit"), reports.get("coverage_report", {}).get("path")) if path)
-    # pytest --cov and `npm run test:ci` write these in any checkout: the
-    # coverage data, with a file per measured process until coverage.py
-    # combines them, vitest's coverage folder, and the JUnit report that
-    # vite.config.ts names.
+    # The folders that ci/windows-tools.ps1 installs into, the cache and
+    # artifact paths in the checkout, and the files that pytest --cov,
+    # `npm run test:ci`, `uv venv` and the worker build write.
+    tools = (REPO / "ci" / "windows-tools.ps1").read_text(encoding="utf-8")
+    kept = {f"{folder}/x" for folder in re.findall(r'Join-Path \$Root "(\.[^"]+)"', tools)}
+    for _workflow, _job_id, job in _jobs():
+        for step in [*_uses(job, "actions/upload-artifact"), *_uses(job, "actions/cache")]:
+            for path in step["with"]["path"].split():
+                if not path.startswith("~"):
+                    kept.add(_example(f"{path}x" if path.endswith("/") else path))
     junit = re.search(r'junit: "([^"]+)"', (REPO / "desktop" / "vite.config.ts").read_text(encoding="utf-8"))
     assert junit
-    outputs |= {".coverage", ".coverage.host.123.456", "desktop/coverage/index.html", f"desktop/{junit[1]}"}
-    kept = {f"{folder.rstrip('/')}/x" for folder in folders} | outputs
-    assert {".tools/x", ".cargo/x", ".uv-cache/x", "reports/junit-repo.xml"} <= kept
+    kept |= {
+        ".coverage",
+        ".coverage.host.123.456",
+        ".venv/x",
+        "desktop/dist/index.html",
+        "desktop/coverage/index.html",
+        f"desktop/{junit[1]}",
+        "out/worker-dist/x",
+        "reports/junit-ci.xml",
+    }
+    assert {".tools/x", ".cargo/x", "packaging/.cache", "out/package/x"} <= kept
     assert sorted(kept - _ignored(kept)) == []
 
 
-def test_release_notes_go_into_a_folder_the_job_creates() -> None:
-    script = _resolve("release:notes")["script"]
-    (cliff,) = [index for index, line in enumerate(script) if "git-cliff" in line]
-    output = re.search(r"--output (\S+)", script[cliff])
-    assert output and f"mkdir -p {PurePosixPath(output[1]).parent}" in script[:cliff]
+def test_the_release_is_a_draft_with_the_installer_and_its_notes() -> None:
+    jobs = _workflows()["release.yml"]["jobs"]
+    assert 'uv run python scripts/check_versions.py --tag "$GITHUB_REF_NAME"' in _commands(jobs["versions"])
+    # git-cliff does not create the folder it writes to.
+    notes = _commands(jobs["notes"])
+    cliff = _index(jobs["notes"], "uv run git-cliff ")
+    output = re.search(r"--output (\S+)", notes[cliff])
+    assert output and f"mkdir -p {PurePosixPath(output[1]).parent}" in notes[:cliff]
+    assert _uses(jobs["notes"], "actions/checkout")[0]["with"]["fetch-depth"] == 0
+    (uploaded,) = _uses(jobs["notes"], "actions/upload-artifact")
+    assert uploaded["with"]["path"] == output[1]
+    # The draft job downloads what the notes job and the slow installer job
+    # upload, checks it, and creates a draft that a maintainer publishes.
+    downloads = {
+        step["with"]["name"]: step["with"]["path"] for step in _uses(jobs["draft"], "actions/download-artifact")
+    }
+    assert downloads == {
+        "windows-installer": "out/package",
+        "release-notes": PurePosixPath(output[1]).parent.as_posix(),
+    }
+    draft = " ".join(_commands(jobs["draft"]))
+    assert "sha256sum --check SHA256SUMS" in draft
+    assert re.search(r'gh release create "\$TAG" out/package/\* --draft ', draft)
+    assert f"--notes-file {output[1]}" in draft
+    package = (REPO / "ci" / "package-windows.ps1").read_text(encoding="utf-8")
+    assert '"out\\package"' in package and '"SHA256SUMS"' in package and '"THIRD_PARTY_NOTICES.txt"' in package
+    # Nothing else makes or publishes a release.
+    for workflow, job_id, job in _jobs():
+        for line in _commands(job):
+            if "gh release" in line or "git push" in line:
+                assert (workflow, job_id) == ("release.yml", "draft"), line
+            assert "--draft=false" not in line
 
 
-def test_the_release_is_created_with_glab() -> None:
-    # release-cli is deprecated in favour of glab.
-    assert _resolve("release:publish")["image"].startswith("registry.gitlab.com/gitlab-org/cli:")
+def test_the_signing_hook_stays_off_until_the_repository_variable_is_set() -> None:
+    assert _env("slow.yml", "installer")["WINDOWS_SIGN_COMMAND"] == "${{ vars.WINDOWS_SIGN_COMMAND }}"
+    assert "$env:WINDOWS_SIGN_COMMAND" in (REPO / "ci" / "package-windows.ps1").read_text(encoding="utf-8")
+    tauri = json.loads((REPO / "desktop" / "src-tauri" / "tauri.windows.conf.json").read_text(encoding="utf-8"))
+    assert tauri["bundle"]["windows"]["signCommand"] is None
+    for workflow, job_id, _job in _jobs():
+        if (workflow, job_id) != ("slow.yml", "installer"):
+            assert "WINDOWS_SIGN_COMMAND" not in _env(workflow, job_id), (workflow, job_id)
 
 
-def test_releases_come_from_protected_tags_alone() -> None:
-    for job in _visible_jobs():
-        if job.startswith("release:"):
-            assert [kind for kind in PIPELINES if _when(job, kind) != "never"] == ["tag"], job
+def test_the_audits_check_every_lockfile() -> None:
+    python = _commands(_job("ci.yml", "audit-python"))
+    export = python.index("uv export --all-groups --no-emit-workspace --output-file reports/audit-requirements.txt")
+    assert export < python.index("uv run pip-audit --requirement reports/audit-requirements.txt --disable-pip")
+    assert ("npm audit --omit=dev", "desktop") in _runs(_job("ci.yml", "audit-npm"))
+    rust = _commands(_job("ci.yml", "audit-rust"))
+    assert "cargo deny --manifest-path desktop/src-tauri/Cargo.toml check --config ci/deny.toml" in rust
+
+
+def test_codeql_analyses_every_language() -> None:
+    job = _job("codeql.yml", "analyze")
+    assert set(job["strategy"]["matrix"]["language"]) == {"actions", "javascript-typescript", "python", "rust"}
+    (init,) = _uses(job, "github/codeql-action/init")
+    assert init["with"]["build-mode"] == "none"
+    assert len(_uses(job, "github/codeql-action/analyze")) == 1
+
+
+def test_dependabot_keeps_the_spec_pins() -> None:
+    config = _load(REPO / ".github" / "dependabot.yml")
+    updates = {update["package-ecosystem"]: update for update in config["updates"]}
+    assert {ecosystem: update["directory"] for ecosystem, update in updates.items()} == {
+        "uv": "/",
+        "npm": "/desktop",
+        "cargo": "/desktop/src-tauri",
+        "github-actions": "/",
+    }
+    for ecosystem, update in updates.items():
+        assert update["schedule"]["interval"] == "weekly", ecosystem
+        assert update["groups"], ecosystem
+
+    def ignored(ecosystem: str) -> dict[str, set[str]]:
+        """The update types that each ignore rule names, or all of them."""
+        rules = updates[ecosystem]["ignore"]
+        kinds = {rule["dependency-name"]: rule.get("update-types", ["version-update:all"]) for rule in rules}
+        return {name: {kind.removeprefix("version-update:") for kind in types} for name, types in kinds.items()}
+
+    # Python: the dev tools alone, so the render stack that constraint-
+    # dependencies holds and the spec's Manim and Typst move by hand.
+    dev = [pin for pin in _project()["dependency-groups"]["dev"] if "==" in pin]
+    allowed = sorted(rule["dependency-name"] for rule in updates["uv"]["allow"])
+    assert allowed == sorted(pin.split("==")[0] for pin in dev)
+    assert ignored("uv") == {"manim": {"all"}, "typst": {"all"}}
+    major, minor = "semver-major", "semver-minor"
+    npm = ignored("npm")
+    assert npm.pop("@tauri-apps/*") == {major, minor}
+    assert npm == dict.fromkeys(
+        [
+            "@types/node",
+            "react",
+            "react-dom",
+            "@types/react",
+            "@types/react-dom",
+            "vite",
+            "@vitejs/plugin-react",
+            "vitest",
+            "@vitest/coverage-v8",
+        ],
+        {major},
+    )
+    assert ignored("cargo") == dict.fromkeys(["tauri", "tauri-build", "tauri-plugin-*"], {major, minor})

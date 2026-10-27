@@ -1,0 +1,129 @@
+# Dependabot opens one grouped pull request per ecosystem and week.
+#
+# The pins that the spec fixes change only by hand, together with every copy
+# and, where the spec names them, a spec revision: Manim 0.22.0, Typst 0.15.0,
+# CPython 3.14.9 (3.13.17 as the fallback), uv 0.13.5, Rust 1.93.0, Node 24,
+# Tauri 2.12.x, React 19 and Vite 8. The rules below keep Dependabot off them.
+# TinyTeX, Typst and the bundle's CPython and uv are pinned with their SHA-256s
+# in packaging/versions.env, Rust in desktop/src-tauri/rust-toolchain.toml, Node
+# in desktop/.nvmrc and uv in [tool.uv] required-version; Dependabot reads none
+# of those. The pre-commit hook revisions move with `pre-commit autoupdate`.
+
+version: 2
+
+updates:
+  # The dev tools of the dev dependency group, and nothing else. The render
+  # stack is the audited bundle's: [tool.uv] constraint-dependencies holds it
+  # at the versions the bundle was tested with, and an update changes every
+  # installer, so it moves by hand after a run of the Slow workflow. A ruff,
+  # mypy or pytest update also changes .pre-commit-config.yaml (the ruff rev
+  # and the mypy hooks' additional_dependencies) in the same pull request;
+  # ci/test_pipeline.py fails until it does.
+  #
+  # Dependabot rewrites uv.lock with the uv release it bundles, not the one
+  # that [tool.uv] required-version demands, and has no setting to choose it.
+  # When its uv is not 0.13.5, it may refuse to run because of
+  # required-version (the error shows in the repository's Dependabot logs, and
+  # no pull request opens), or it may open one whose lock the uv 0.13.5 of CI
+  # rejects in `uv lock --check`. In the second case, run `uv lock` with uv
+  # 0.13.5 on the Dependabot branch and push the result. In the first, update
+  # the dev tools by hand with `uv lock --upgrade-package NAME`, or drop this
+  # entry. The first weekly run shows which case applies.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: pytest
+      - dependency-name: pytest-cov
+      - dependency-name: ruff
+      - dependency-name: mypy
+      - dependency-name: pre-commit
+      - dependency-name: bump-my-version
+      - dependency-name: git-cliff
+      - dependency-name: pip-audit
+      - dependency-name: pyyaml
+    ignore:
+      # A Manim update also bumps the generator version; the shell checks the
+      # Typst version.
+      - dependency-name: manim
+      - dependency-name: typst
+    groups:
+      python-dev-tools:
+        patterns: ["*"]
+    commit-message:
+      prefix: build
+      include: scope
+
+  - package-ecosystem: npm
+    directory: /desktop
+    schedule:
+      interval: weekly
+    ignore:
+      # Tauri stays on 2.12.x: its npm packages and the shell's crates take
+      # patch releases together.
+      - dependency-name: "@tauri-apps/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # Node 24 LTS: @types/node keeps the major that desktop/.nvmrc names.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # React 19 and Vite 8, with the plugin and Vitest majors that follow
+      # Vite's.
+      - dependency-name: react
+        update-types: ["version-update:semver-major"]
+      - dependency-name: react-dom
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: vite
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@vitejs/plugin-react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: vitest
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@vitest/coverage-v8"
+        update-types: ["version-update:semver-major"]
+    groups:
+      tauri:
+        patterns: ["@tauri-apps/*"]
+      npm:
+        patterns: ["*"]
+        exclude-patterns: ["@tauri-apps/*"]
+    commit-message:
+      prefix: build
+      include: scope
+
+  - package-ecosystem: cargo
+    directory: /desktop/src-tauri
+    schedule:
+      interval: weekly
+    ignore:
+      # Tauri stays on 2.12.x, as in desktop/package.json.
+      - dependency-name: tauri
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: tauri-build
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "tauri-plugin-*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    groups:
+      tauri:
+        patterns: ["tauri", "tauri-build", "tauri-plugin-*"]
+      cargo:
+        patterns: ["*"]
+        exclude-patterns: ["tauri", "tauri-build", "tauri-plugin-*"]
+    commit-message:
+      prefix: build
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+      include: scope

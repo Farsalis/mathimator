@@ -1,5 +1,5 @@
-# The app version, for bump-my-version (D72). `bump-my-version bump minor`
-# (or major or patch) rewrites it in every file that records it, and
+# The app version, for bump-my-version. `bump-my-version bump minor` (or
+# major or patch) rewrites it in every file that records it, and
 # scripts/check_versions.py fails CI when any of them disagrees. The root
 # pyproject.toml is not the app: its 0.0.0 only satisfies uv.
 #
@@ -10,7 +10,8 @@
 #   git cliff --tag v<new version> --output CHANGELOG.md
 #   git commit -am "chore(release): v<new version>"
 #
-# The tag is pushed on main after the release merge request is merged (D73).
+# The tag is pushed on main after the release pull request is merged, and
+# .github/workflows/release.yml takes it from there.
 [tool.bumpversion]
 current_version = "0.1.0"
 commit = false

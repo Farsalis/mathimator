@@ -15,9 +15,6 @@ repos:
         args: [--markdown-linebreak-ext=md]
       - id: end-of-file-fixer
       - id: check-yaml
-        # A syntax check, because the GitLab CI files use the !reference tag.
-        # ci/test_pipeline.py loads them in full.
-        args: [--unsafe]
       - id: check-toml
       - id: check-json
       - id: check-merge-conflict
@@ -58,6 +55,14 @@ repos:
         additional_dependencies: [mypy==2.4.0, pytest==9.1.1]
         files: ^(worker/|scripts/|pyproject\.toml$)
         pass_filenames: false
+
+  # The GitHub workflows and the Dependabot configuration against their
+  # schemas.
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0.39.0
+    hooks:
+      - id: check-github-workflows
+      - id: check-dependabot
 
   # Scans the staged changes for secrets at commit time.
   - repo: https://github.com/gitleaks/gitleaks

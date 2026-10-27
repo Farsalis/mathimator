@@ -22,7 +22,7 @@
 *.7z binary
 *.pdf binary
 
-# Lockfiles are generated; collapse them in GitLab merge request diffs.
-desktop/package-lock.json gitlab-generated
-desktop/src-tauri/Cargo.lock gitlab-generated
-uv.lock gitlab-generated
+# Lockfiles are generated; GitHub collapses them in pull request diffs.
+desktop/package-lock.json linguist-generated
+desktop/src-tauri/Cargo.lock linguist-generated
+uv.lock linguist-generated
