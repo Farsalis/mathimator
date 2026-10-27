@@ -8,18 +8,18 @@ changes nothing. On Windows, `tauri build` runs it right after
 scripts/generate_notices.py, before it makes the installer
 (beforeBundleCommand in tauri.windows.conf.json). It fails unless:
 
-- runtime.json is a JSON object (contract C9.6) whose platform is this
-  machine's, such as windows-x86_64. Its python, worker, sample, typst and
-  tinytexBin are relative paths to files and folders inside the bundle, and
-  python is a real interpreter rather than a venv launcher (D30, D33).
-- lockSha256 is the SHA-256 of uv.lock (D34), and pythonVersion, typstVersion,
-  tinytexRelease and tlnetRepository match packaging/versions.env (D35), so the
+- runtime.json is a JSON object whose platform is this machine's, such as
+  windows-x86_64. Its python, worker, sample, typst and tinytexBin are
+  relative paths to files and folders inside the bundle, and python is a real
+  interpreter rather than a venv launcher.
+- lockSha256 is the SHA-256 of uv.lock, and pythonVersion, typstVersion,
+  tinytexRelease and tlnetRepository match packaging/versions.env, so the
   bundle was built from this checkout's pins.
 - The worker folder holds exactly worker/mathimator_worker, and the sample is
   tests/fixtures/reference-60/project.json, byte for byte.
 - THIRD_PARTY_NOTICES.txt names the SHA-256 of this checkout's uv.lock,
   Cargo.lock and package-lock.json, so scripts/generate_notices.py wrote it for
-  these dependencies (D75).
+  these dependencies.
 - The bundle holds nothing outside its layout, and its __pycache__ folders
   hold nothing but the bytecode that the build scripts compile: checked-hash
   bytecode of a source beside the folder, for the interpreter running this
@@ -29,7 +29,7 @@ scripts/generate_notices.py, before it makes the installer
 
 is what packaging/build-bundle.ps1 and build-bundle.sh run before they write
 runtime.json. It removes top-level entries outside the layout, such as a crash
-dump or the venv of an older build (D64), and everything else in a __pycache__
+dump or the venv of an older build, and everything else in a __pycache__
 folder, such as what Python writes on import, another Python version's
 bytecode, or bytecode whose source is gone. It never enters a linked folder:
 a link is removed itself, never what it points at. It skips the checks that
@@ -37,14 +37,14 @@ need runtime.json and the notices.
 
 Both forms fail when a link leaves the bundle, or when a file, bytecode
 included, names the checkout or a path inside the builder's home folder, which
-names the account. The Windows installer puts the runtime under Program Files
-(D62), where Python run by a standard user cannot save the bytecode it
-compiles, so the build scripts compile the bundled Python and the worker
-beforehand and record each source as runtime/... rather than by its build
-path. Checked-hash bytecode holds a hash of its source, which Python checks on
-import, so a stale file never runs in place of its source. Run this script
-with the bundled interpreter, whose bytecode it keeps, and pass -I -B so that
-the check reads no PYTHON* variable and writes no bytecode itself.
+names the account. The Windows installer puts the runtime under Program Files,
+where Python run by a standard user cannot save the bytecode it compiles, so
+the build scripts compile the bundled Python and the worker beforehand and
+record each source as runtime/... rather than by its build path. Checked-hash
+bytecode holds a hash of its source, which Python checks on import, so a stale
+file never runs in place of its source. Run this script with the bundled
+interpreter, whose bytecode it keeps, and pass -I -B so that the check reads
+no PYTHON* variable and writes no bytecode itself.
 
 BUNDLE defaults to packaging/bundle. The exit status is 0 when the bundle
 passes and 1, with one line per problem on stderr, when it does not.
@@ -71,7 +71,7 @@ NOTICES = "THIRD_PARTY_NOTICES.txt"
 # compiles before the first bundle build.
 LAYOUT = frozenset({"python", "tinytex", "typst", "worker", "samples", "runtime.json", NOTICES, ".gitkeep"})
 # The runtime.json paths the installer needs, and whether each names a folder.
-# The shell treats typst and tinytexBin as optional (C9.6), but the bundle
+# The shell treats typst and tinytexBin as optional, but the bundle
 # scripts always ship both, so a bundle without them is broken.
 PATHS = {"python": False, "worker": True, "sample": False, "typst": False, "tinytexBin": True}
 # Every runtime.json field the check reads. The bundle scripts write them all;
@@ -185,7 +185,7 @@ def _runtime_problems(runtime: dict[str, object], bundle: Path, repo: Path, expe
         else:
             paths[name] = path
     if "python" in paths and any((folder / "pyvenv.cfg").exists() for folder in paths["python"].parents[:2]):
-        problems.append(f"{fields['python']} is a venv launcher, not the real interpreter (D33)")
+        problems.append(f"{fields['python']} is a venv launcher, not the real interpreter")
     if "worker" in paths:
         sources = {f"mathimator_worker/{name}": data for name, data in _files(repo / "worker" / "mathimator_worker")}
         stale = _differences(sources, dict(_files(paths["worker"])))

@@ -13,7 +13,7 @@ version: 2
 
 updates:
   # The dev tools of the dev dependency group, and nothing else. The render
-  # stack is the audited bundle's: [tool.uv] constraint-dependencies holds it
+  # stack is the reference bundle's: [tool.uv] constraint-dependencies holds it
   # at the versions the bundle was tested with, and an update changes every
   # installer, so it moves by hand after a run of the Slow workflow. A ruff,
   # mypy or pytest update also changes .pre-commit-config.yaml (the ruff rev

@@ -211,7 +211,7 @@ def test_a_venv_launcher_is_not_the_real_interpreter(tmp_path: Path) -> None:
 
     write_runtime(bundle, sha256(repo / "uv.lock"), python="python/Scripts/python.exe")
     assert check_bundle.verify(bundle, repo, PLATFORM) == [
-        "python/Scripts/python.exe is a venv launcher, not the real interpreter (D33)"
+        "python/Scripts/python.exe is a venv launcher, not the real interpreter"
     ]
 
 
@@ -307,7 +307,7 @@ def test_both_build_scripts_compile_the_bundle_this_way() -> None:
 
 
 def test_the_installer_build_writes_the_notices_then_checks_the_bundle_it_ships() -> None:
-    """`tauri build` runs both scripts with the bundled interpreter before it makes the installer (F061)."""
+    """`tauri build` runs both scripts with the bundled interpreter before it makes the installer."""
     repo = check_bundle.REPO
     shell = repo / "desktop" / "src-tauri"
     config = json.loads((shell / "tauri.windows.conf.json").read_text(encoding="utf-8"))

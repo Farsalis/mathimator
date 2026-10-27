@@ -34,7 +34,7 @@ required-version = "==0.13.5"
 # render tests run Manim from .venv. Jobs that only lint or type-check can use
 # `uv sync --locked --no-default-groups --group dev`.
 default-groups = ["dev", "render"]
-# The render stack of the audited 2026-10-22 bundle, read from its .dist-info
+# The render stack of the 2026-10-22 reference bundle, read from its .dist-info
 # folders, so the lock resolves to the versions the bundle was tested with.
 # The bundle scripts install the render group from this lock, with its hashes.
 constraint-dependencies = [

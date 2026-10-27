@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the phase 5 offline runtime under packaging/bundle/.
+# Build the offline runtime under packaging/bundle/.
 #
 # The product installer is the Windows NSIS bundle in
 # desktop/src-tauri/tauri.windows.conf.json, so on Windows (Git Bash, MSYS2 or
@@ -301,7 +301,7 @@ PY
 read -r PY_FULL MANIM_FULL <<<"$(tail -n 1 <<<"$probe")"
 echo "bundled python $PY_FULL manim $MANIM_FULL"
 
-# The Windows installer puts the runtime under Program Files (D62), where
+# The Windows installer puts the runtime under Program Files, where
 # Python run by a standard user cannot save the bytecode it compiles, so
 # build-bundle.ps1 compiles the standard library, the render stack and the
 # worker that every start of the supervisor and of Manim would compile again.

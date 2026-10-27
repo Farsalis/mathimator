@@ -1,4 +1,4 @@
-"""scripts/check_versions.py: the app version and the toolchain pins agree everywhere (D72)."""
+"""scripts/check_versions.py: the app version and the toolchain pins agree everywhere."""
 
 from __future__ import annotations
 
