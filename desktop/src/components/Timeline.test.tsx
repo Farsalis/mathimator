@@ -1,23 +1,25 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_TOTAL_SECONDS, MIN_BEAT_SECONDS } from "../format";
-import type { Beat } from "../types";
+import type { Beat, SceneObject } from "../types";
 import { Timeline } from "./Timeline";
 
 const BEAT: Beat = { id: "beat_1", duration: 2, action: "create", targets: ["plot_1"] };
+const PLOT: SceneObject = { id: "plot_1", name: "Sine", type: "function_plot", params: {} };
 
 let onDraft = vi.fn<(beatId: string, duration: number) => void>();
 let onCommit = vi.fn<(beatId: string, duration: number) => void>();
+let onAddBeat = vi.fn<() => void>();
 
-beforeEach(() => {
-  // jsdom has no pointer capture.
-  HTMLElement.prototype.setPointerCapture = vi.fn();
-  onDraft = vi.fn();
-  onCommit = vi.fn();
+/** Renders the timeline of one beat, with `props` in place of the defaults. */
+function renderTimeline(props: Partial<ComponentProps<typeof Timeline>> = {}): void {
+  cleanup();
   render(
     <Timeline
       beats={[BEAT]}
+      objects={[PLOT]}
       durations={[2]}
       starts={[0]}
       dirty={[false]}
@@ -28,8 +30,19 @@ beforeEach(() => {
       onSelect={vi.fn()}
       onDraft={onDraft}
       onCommit={onCommit}
+      onAddBeat={onAddBeat}
+      {...props}
     />,
   );
+}
+
+beforeEach(() => {
+  // jsdom has no pointer capture.
+  HTMLElement.prototype.setPointerCapture = vi.fn();
+  onDraft = vi.fn();
+  onCommit = vi.fn();
+  onAddBeat = vi.fn();
+  renderTimeline();
 });
 
 afterEach(cleanup);
@@ -37,6 +50,34 @@ afterEach(cleanup);
 function handle(): HTMLElement {
   return screen.getByLabelText("Duration of beat_1");
 }
+
+describe("Timeline labels", () => {
+  it("shows each beat's start, kind and target names, and marks its family", () => {
+    const cell = screen.getByTestId("beat-beat_1");
+    expect(within(cell).getByRole("button", { name: /Create · Sine/ }).textContent).toBe("0.0sCreate · Sine");
+    expect(cell.dataset.family).toBe("entrance");
+  });
+});
+
+describe("Timeline + Beat (design §10.3)", () => {
+  it("asks for a beat from the toolbar", () => {
+    const button = screen.getByRole("button", { name: "+ Beat" });
+    expect(button).toBe(screen.getByTestId("add-beat"));
+    fireEvent.click(button);
+    expect(onAddBeat).toHaveBeenCalledOnce();
+  });
+
+  it("is disabled while the worker is not ready (C9.5)", () => {
+    renderTimeline({ disabled: true });
+    expect(screen.getByTestId<HTMLButtonElement>("add-beat").disabled).toBe(true);
+  });
+
+  it("points an empty timeline at Add and + Beat", () => {
+    renderTimeline({ beats: [], durations: [], starts: [], dirty: [], total: 0 });
+    expect(screen.getByText("No beats yet. Add an object, or use + Beat.")).toBeTruthy();
+    expect(screen.getByTestId<HTMLButtonElement>("add-beat").disabled).toBe(false);
+  });
+});
 
 describe("Timeline duration drag (D48, F110)", () => {
   it.each(["mouse", "touch", "pen"])("resizes the beat with a %s, 48 px per second", (pointerType) => {

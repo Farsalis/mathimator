@@ -15,6 +15,8 @@ interface TopBarProps {
   onNew: () => void;
   onOpen: () => void;
   onSaveAs: () => void;
+  /** The document holds 2D axes, so Add can put a point on them. */
+  canAddPoint: boolean;
   onAdd: (kind: AddKind) => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -36,6 +38,7 @@ export function TopBar({
   onNew,
   onOpen,
   onSaveAs,
+  canAddPoint,
   onAdd,
   onUndo,
   onRedo,
@@ -87,7 +90,7 @@ export function TopBar({
         <button type="button" data-testid="save-as-button" onClick={onSaveAs} disabled={!ready || exporting}>
           Save As…
         </button>
-        <AddMenu disabled={!ready} onAdd={onAdd} />
+        <AddMenu disabled={!ready} canAddPoint={canAddPoint} onAdd={onAdd} />
         <button type="button" data-testid="undo-button" onClick={onUndo} disabled={!ready || !canUndo}>
           Undo
         </button>

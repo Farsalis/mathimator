@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { ParseError } from "./parse";
+import { BEAT_ACTIONS, EASING_NAMES, SHAPE_TYPES } from "./beatKinds";
+import { asRecord, fieldsOf, listOf, ParseError } from "./parse";
 import { parseAppStatus, parseEditorState, parseWorkerEvent } from "./types";
+
+/**
+ * The documents of tests/fixtures/render-smoke, which the worker accepts and renders, by path. Like the sources of
+ * edits.test.ts, the glob takes no type argument, so that vitest's module cache leaves this test out and sees a new
+ * document.
+ */
+const RENDER_SMOKE = import.meta.glob("../../tests/fixtures/render-smoke/*/project.json", {
+  eager: true,
+  import: "default",
+});
 
 function stateReply() {
   return {
@@ -13,13 +24,27 @@ function stateReply() {
       scene: {
         id: "scene_1",
         kind: "scene",
-        objects: [{ id: "plot_1", name: "Plot", type: "function_plot", params: { expression: "sin(x)" } }],
-        beats: [{ id: "beat_1", duration: 2, action: "create", targets: ["plot_1"] }],
+        objects: [
+          { id: "plot_1", name: "Plot", type: "function_plot", params: { expression: "sin(x)" } },
+          { id: "dot_1", name: "Dot", type: "dot", params: { center: [0, 0], radius: 0.08, color: "#E07A5F" } },
+        ],
+        beats: [
+          { id: "beat_1", duration: 2, action: "create", targets: ["plot_1"] },
+          { id: "beat_2", duration: 1, action: "grow", targets: ["dot_1"], easing: "rush_into" },
+          { id: "beat_3", duration: 1, action: "scale", targets: ["plot_1", "dot_1"], params: { factor: 2 } },
+        ],
         templateInstances: [],
       },
       exportProfile: { format: "mp4", width: 1920, height: 1080, fps: 30, transparent: false },
     },
-    derived: { starts: [0], total: 2, dirty: [true], canUndo: true, canRedo: false },
+    derived: {
+      starts: [0, 2, 3],
+      total: 4,
+      dirty: [true, true, true],
+      canUndo: true,
+      canRedo: false,
+      onScreen: [[], ["plot_1"], ["plot_1", "dot_1"], ["plot_1", "dot_1"]],
+    },
     index: {
       output: null,
       beats: [{ id: "beat_1", index: 0, derivedStart: 0, duration: 2, partial: null, lastGood: null, fresh: false }],
@@ -81,14 +106,93 @@ describe("parseEditorState", () => {
     expect(state.document.scene.templateInstances).toEqual([]);
   });
 
+  it("reads the easing, the settings and the several targets of beats, and what is on screen around them", () => {
+    const state = parseEditorState(stateReply());
+    const [create, grow, scale] = state.document.scene.beats;
+    expect(create).toMatchObject({ action: "create", params: undefined, easing: undefined });
+    expect(grow).toMatchObject({ action: "grow", easing: "rush_into" });
+    expect(scale).toMatchObject({ action: "scale", targets: ["plot_1", "dot_1"], params: { factor: 2 } });
+    expect(state.derived.onScreen).toEqual([[], ["plot_1"], ["plot_1", "dot_1"], ["plot_1", "dot_1"]]);
+  });
+
+  it("reads a shape's settings by the catalog and keeps every other object's as they are", () => {
+    const reply = stateReply();
+    const point = {
+      id: "point_1",
+      name: "Point",
+      type: "axes_point",
+      params: { axesId: "axes_1", x: 1.5, y: -2, radius: 0.08, color: "#E07A5F", extra: true },
+    };
+    const scene = { ...reply.document.scene, objects: [...reply.document.scene.objects, point] };
+    const objects = parseEditorState({ ...reply, document: { ...reply.document, scene } }).document.scene.objects;
+    expect(objects.map((item) => item.params)).toEqual([
+      { expression: "sin(x)" },
+      { center: [0, 0], radius: 0.08, color: "#E07A5F" },
+      { axesId: "axes_1", x: 1.5, y: -2, radius: 0.08, color: "#E07A5F" },
+    ]);
+  });
+
+  it("reads a camera move with its settings and easing", () => {
+    const reply = stateReply();
+    const camera = { phi: 60, theta: -45, zoom: 1 };
+    const beat = {
+      id: "beat_1",
+      duration: 2,
+      action: "move_camera",
+      targets: [],
+      params: { phi: 75, theta: 45, zoom: 0.8 },
+      easing: "there_and_back",
+    };
+    const scene = { kind: "three_d_scene", camera, objects: [], beats: [beat] };
+    const state = parseEditorState({ ...reply, document: { ...reply.document, scene } });
+    expect(state.document.scene.beats).toEqual([beat]);
+    const missing = { ...beat, params: { phi: 75, theta: 45 } };
+    const broken = { ...reply, document: { ...reply.document, scene: { ...scene, beats: [missing] } } };
+    expect(failingField(() => parseEditorState(broken))).toBe("state.document.scene.beats[0].params.zoom");
+  });
+
+  it("reads the objects and beats of every render-smoke document whole, every kind, easing and shape among them", () => {
+    const actions = new Set<string>();
+    const easings = new Set<string>();
+    const types = new Set<string>();
+    for (const [path, document] of Object.entries(RENDER_SMOKE)) {
+      const scene = fieldsOf(fieldsOf(document, path)("scene", asRecord), `${path}.scene`);
+      const parsed = parseEditorState({ ...stateReply(), document }).document.scene;
+      expect(parsed.objects, path).toEqual(scene("objects", listOf(asRecord)));
+      expect(parsed.beats, path).toEqual(scene("beats", listOf(asRecord)));
+      for (const beat of parsed.beats) {
+        actions.add(beat.action);
+        if (beat.easing !== undefined) {
+          easings.add(beat.easing);
+        }
+      }
+      for (const object of parsed.objects) {
+        types.add(object.type);
+      }
+    }
+    expect([...actions].sort()).toEqual([...BEAT_ACTIONS].sort());
+    expect([...easings].sort()).toEqual([...EASING_NAMES].sort());
+    expect(SHAPE_TYPES.filter((type) => !types.has(type))).toEqual([]);
+  });
+
   it.each([
     ["state.event", "code"],
     ["state.projectPath", undefined],
     ["state.source", undefined],
     ["state.document.scene.objects[0].type", "cube"],
+    ["state.document.scene.objects[1].params.center", [0, 0, 0]],
+    ["state.document.scene.objects[1].params.center[1]", "0"],
+    ["state.document.scene.objects[1].params.radius", undefined],
+    ["state.document.scene.objects[1].params.color", 0xe07a5f],
     ["state.document.scene.beats[0].targets[0]", 7],
+    ["state.document.scene.beats[1].action", "bounce"],
+    ["state.document.scene.beats[1].easing", "bounce"],
+    ["state.document.scene.beats[2].params", undefined],
+    ["state.document.scene.beats[2].params.factor", "2"],
     ["state.document.exportProfile.fps", 29.97],
     ["state.derived.starts[0]", "0"],
+    ["state.derived.onScreen", undefined],
+    ["state.derived.onScreen[2][1]", 7],
     ["state.index.beats[0].fresh", undefined],
     ["state.index.beats[0].partial", 3],
   ])("names %s when it does not match", (field, value) => {

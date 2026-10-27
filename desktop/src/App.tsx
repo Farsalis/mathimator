@@ -1,3 +1,4 @@
+import { insertionIndex, plusBeat, pointAxesId } from "./beatRules";
 import type { AddKind } from "./components/AddMenu";
 import { CodeView } from "./components/CodeView";
 import { ErrorBanner } from "./components/ErrorBanner";
@@ -9,6 +10,16 @@ import { ProjectChangedPrompt } from "./components/ProjectChangedPrompt";
 import { Timeline } from "./components/Timeline";
 import { TopBar } from "./components/TopBar";
 import { WorkerUnavailable } from "./components/WorkerUnavailable";
+import {
+  addAxesFunction,
+  addBeat,
+  addFormula,
+  addFormulaTransform,
+  addShape,
+  addText,
+  addThreeDAxes,
+  setProjectName,
+} from "./edits";
 import type { Edit } from "./types";
 import { useEditor } from "./useEditor";
 
@@ -18,35 +29,52 @@ export function App() {
   const beats = doc?.scene.beats ?? [];
   const objects = doc?.scene.objects ?? [];
   const dirty = editor.state?.derived.dirty ?? [];
-  const selectedBeatId = editor.selection.kind === "beat" ? editor.selection.id : null;
-  const selectedObjectId = editor.selection.kind === "object" ? editor.selection.id : null;
+  const onScreen = editor.state?.derived.onScreen ?? [];
+  const { beatId: selectedBeatId, objectId: selectedObjectId } = editor.selection;
   const canSaveAs = editor.ready && !editor.exporting;
+  /** What is on screen where Add and "+ Beat" insert: after the selected beat, or at the end. */
+  const onScreenThere = onScreen[insertionIndex(beats, selectedBeatId)] ?? [];
 
   function onAdd(kind: AddKind): void {
+    void editor.commit(addEdit(kind), true);
+  }
+
+  function addEdit(kind: AddKind): Edit {
     const afterBeatId = selectedBeatId;
-    let edit: Edit;
     switch (kind) {
       case "axes_function":
-        edit = { op: "add_axes_function", afterBeatId };
-        break;
+        return addAxesFunction(afterBeatId);
       case "formula":
-        edit = { op: "add_formula", afterBeatId };
-        break;
+        return addFormula(afterBeatId);
       case "text":
-        edit = { op: "add_text", afterBeatId };
-        break;
+        return addText(afterBeatId);
       case "formula_transform":
-        edit = { op: "add_formula_transform", afterBeatId };
-        break;
+        return addFormulaTransform(afterBeatId);
       case "three_d_axes":
-        edit = { op: "add_three_d_axes", afterBeatId };
-        break;
+        return addThreeDAxes(afterBeatId);
+      case "dot":
+      case "line":
+      case "arrow":
+      case "circle":
+      case "rectangle":
+        return addShape(kind, afterBeatId);
+      case "axes_point":
+        // Without axes the worker refuses the point, and the banner says so.
+        return addShape(kind, afterBeatId, pointAxesId(objects, onScreenThere, selectedObjectId) ?? undefined);
       default: {
         const unexpected: never = kind;
         throw new Error(`Unhandled add ${String(unexpected)}`);
       }
     }
-    void editor.commit(edit, true);
+  }
+
+  /** "+ Beat": the worker fills in the settings, and its focus selects the new beat (design §10.3). */
+  function onAddBeat(): void {
+    if (!doc) {
+      return;
+    }
+    const { action, targets } = plusBeat(doc.scene.kind, objects, onScreenThere, selectedObjectId);
+    void editor.commit(addBeat(selectedBeatId, action, targets), true);
   }
 
   function onEdit(edit: Edit): Promise<void> {
@@ -64,10 +92,11 @@ export function App() {
           canUndo={editor.state?.derived.canUndo === true}
           canRedo={editor.state?.derived.canRedo === true}
           exporting={editor.exporting}
-          onRename={(name) => editor.commit({ op: "set_project_name", name }, false)}
+          onRename={(name) => editor.commit(setProjectName(name), false)}
           onNew={() => void editor.onNew()}
           onOpen={() => void editor.onOpen()}
           onSaveAs={() => void editor.onSaveAs()}
+          canAddPoint={objects.some((item) => item.type === "axes")}
           onAdd={onAdd}
           onUndo={() => void editor.undo()}
           onRedo={() => void editor.redo()}
@@ -142,17 +171,19 @@ export function App() {
             scene={doc?.scene ?? null}
             objects={objects}
             beats={beats}
+            onScreen={onScreen}
             selectedBeatId={selectedBeatId}
             selectedObjectId={selectedObjectId}
             fieldError={editor.fieldError}
             texBlocked={editor.texWarning !== null}
             disabled={!editor.ready}
-            onSelectObject={(objectId) => editor.select({ kind: "object", id: objectId })}
+            onSelectObject={editor.selectObject}
             onEdit={onEdit}
           />
         )}
         <Timeline
           beats={beats}
+          objects={objects}
           durations={editor.durations}
           starts={editor.starts}
           dirty={dirty}
@@ -160,9 +191,10 @@ export function App() {
           playhead={editor.playhead}
           total={editor.total}
           disabled={!editor.ready}
-          onSelect={(beatId) => editor.select({ kind: "beat", id: beatId })}
+          onSelect={editor.selectBeat}
           onDraft={editor.onDraftDuration}
           onCommit={editor.onCommitDuration}
+          onAddBeat={onAddBeat}
         />
         {editor.exportPath ? <p className="export-path">Export: {editor.exportPath}</p> : null}
         {editor.presetOpen && doc?.exportProfile ? (

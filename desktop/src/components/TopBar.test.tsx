@@ -24,6 +24,7 @@ function renderTopBar(
       onNew={handlers.onNew ?? ignore}
       onOpen={ignore}
       onSaveAs={handlers.onSaveAs ?? ignore}
+      canAddPoint={false}
       onAdd={ignore}
       onUndo={ignore}
       onRedo={ignore}

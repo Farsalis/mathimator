@@ -1,14 +1,37 @@
-import { useEffect, useEffectEvent, useRef } from "react";
-import { parseDecimal } from "../format";
-import type { Anchor, Beat, BeatAction, Camera, Edit, ProjectDocument, SceneObject, ThreeDMode } from "../types";
-import { useCommitDraft, type CommitDraft } from "../useCommitDraft";
+import { Fragment } from "react";
+import { SHAPES, type Shape } from "../beatKinds";
+import {
+  deleteObject,
+  setAnchor,
+  setAxesRange,
+  setCamera,
+  setCurveComponent,
+  setDomain,
+  setExpression,
+  setLatex,
+  setLength,
+  setObjectColor,
+  setObjectName,
+  setObjectShift,
+  setResolution,
+  setShapeParam,
+  setShowLabels,
+  setText,
+  setThreeDMode,
+} from "../edits";
+import type { Anchor, Beat, Camera, Edit, ParamValue, ProjectDocument, SceneObject, ThreeDMode } from "../types";
+import { useCommitDraft } from "../useCommitDraft";
 import type { FieldError } from "../useEditor";
+import { BeatEditor } from "./BeatEditor";
+import { ColorField, CommitNumber, CommitText, DraftText, ParamField } from "./fields";
 import { FormulaPreview } from "./FormulaPreview";
 
 interface InspectorProps {
   scene: ProjectDocument["scene"] | null;
   objects: SceneObject[];
   beats: Beat[];
+  /** The object ids on screen before each beat, then after the last (`derived.onScreen`). */
+  onScreen: string[][];
   selectedBeatId: string | null;
   selectedObjectId: string | null;
   fieldError: FieldError | null;
@@ -23,6 +46,8 @@ interface InspectorProps {
 
 /** What the object fields need besides their object. */
 interface FieldContext {
+  /** The scene's objects, among which a point on axes picks its axes. */
+  objects: readonly SceneObject[];
   fieldError: FieldError | null;
   texBlocked: boolean;
   onEdit: (edit: Edit) => Promise<void>;
@@ -32,6 +57,7 @@ export function Inspector({
   scene,
   objects,
   beats,
+  onScreen,
   selectedBeatId,
   selectedObjectId,
   fieldError,
@@ -40,12 +66,12 @@ export function Inspector({
   onSelectObject,
   onEdit,
 }: InspectorProps) {
-  const beat = beats.find((item) => item.id === selectedBeatId) ?? null;
-  const selectedFromBeat =
-    beat && beat.targets.length === 1 ? objects.find((item) => item.id === beat.targets[0]) : null;
-  const selectedObject = objects.find((item) => item.id === selectedObjectId) ?? selectedFromBeat ?? null;
-  const targets = beat ? objects.filter((item) => beat.targets.includes(item.id)) : [];
-  const context: FieldContext = { fieldError, texBlocked, onEdit };
+  const index = beats.findIndex((item) => item.id === selectedBeatId);
+  const beat = beats[index] ?? null;
+  const selectedObject = objects.find((item) => item.id === selectedObjectId) ?? null;
+  // A formula transform shows the fields of both its formulas below the editor (design §10.4).
+  const formulas = beat?.action === "transform_formula" ? objects.filter((item) => beat.targets.includes(item.id)) : [];
+  const context: FieldContext = { objects, fieldError, texBlocked, onEdit };
 
   return (
     <aside className="inspector" aria-label="Inspector" data-testid="inspector">
@@ -56,7 +82,7 @@ export function Inspector({
           <button
             type="button"
             data-testid="delete-object"
-            onClick={() => void onEdit({ op: "delete_object", objectId: selectedObject.id })}
+            onClick={() => void onEdit(deleteObject(selectedObject.id))}
           >
             Delete object
           </button>
@@ -78,65 +104,30 @@ export function Inspector({
         {scene?.kind === "three_d_scene" && scene.camera ? (
           <ThreeDPanel scene={scene} camera={scene.camera} objects={objects} context={context} />
         ) : null}
-        {beat ? <BeatFields beat={beat} onEdit={onEdit} /> : null}
-        {beat && beat.action === "transform_formula"
-          ? targets.map((item) => <ObjectFields key={item.id} object={item} context={context} />)
-          : null}
-        {selectedObject && beat?.action !== "transform_formula" ? (
+        {beat ? (
+          <BeatEditor
+            key={beat.id}
+            beat={beat}
+            index={index}
+            count={beats.length}
+            sceneKind={scene?.kind ?? "scene"}
+            objects={objects}
+            onScreen={onScreen[index] ?? []}
+            templateId={scene?.templateInstances.find((item) => item.beatIds.includes(beat.id))?.templateId ?? null}
+            selectedObjectId={selectedObject?.id ?? null}
+            fieldError={fieldError}
+            onEdit={onEdit}
+          />
+        ) : null}
+        {formulas.map((item) => (
+          <ObjectFields key={item.id} object={item} context={context} />
+        ))}
+        {selectedObject && !formulas.includes(selectedObject) ? (
           <ObjectFields key={selectedObject.id} object={selectedObject} context={context} />
         ) : null}
       </fieldset>
     </aside>
   );
-}
-
-function BeatFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => Promise<void> }) {
-  return (
-    <section className="fields">
-      <h2>Beat</h2>
-      <p className="hint">
-        {beat.action} · {beat.id}
-      </p>
-      <CommitNumber
-        label="Duration"
-        value={beat.duration}
-        testId="beat-duration"
-        onCommit={(duration) => onEdit({ op: "set_beat_duration", beatId: beat.id, duration })}
-      />
-      <ActionFields beat={beat} onEdit={onEdit} />
-    </section>
-  );
-}
-
-function ActionFields({ beat, onEdit }: { beat: Beat; onEdit: (edit: Edit) => Promise<void> }) {
-  const action: BeatAction = beat.action;
-  switch (action) {
-    case "set_color":
-      return (
-        <ColorField
-          label="Beat color"
-          value={stringParam(beat.params?.color, "#FFFFFF")}
-          onCommit={(color) => onEdit({ op: "set_beat_color", beatId: beat.id, color })}
-        />
-      );
-    case "move":
-      return (
-        <ShiftFields
-          value={pairParam(beat.params?.shift)}
-          onCommit={(shift) => onEdit({ op: "set_beat_shift", beatId: beat.id, shift })}
-        />
-      );
-    case "create":
-    case "fade_in":
-    case "write":
-    case "wait":
-    case "transform_formula":
-      return null;
-    default: {
-      const unexpected: never = action;
-      return unexpected;
-    }
-  }
 }
 
 function ObjectFields({ object, context }: { object: SceneObject; context: FieldContext }) {
@@ -147,7 +138,7 @@ function ObjectFields({ object, context }: { object: SceneObject; context: Field
         label="Name"
         value={object.name}
         testId={`object-name-${object.id}`}
-        onCommit={(name) => context.onEdit({ op: "set_object_name", objectId: object.id, name })}
+        onCommit={(name) => context.onEdit(setObjectName(object.id, name))}
       />
       <FieldMessage error={context.fieldError} objectId={object.id} field="name" />
       <TypedFields object={object} context={context} />
@@ -165,6 +156,13 @@ function TypedFields({ object, context }: { object: SceneObject; context: FieldC
       return <FormulaFields object={object} context={context} />;
     case "text":
       return <TextFields object={object} context={context} />;
+    case "dot":
+    case "line":
+    case "arrow":
+    case "circle":
+    case "rectangle":
+    case "axes_point":
+      return <ShapeFields object={object} shape={SHAPES[object.type]} context={context} />;
     case "three_d_axes":
     case "surface":
     case "parametric_curve":
@@ -198,14 +196,15 @@ function ThreeDPanel({
     <section className="fields" data-testid="three-d-panel">
       <h2>3D template</h2>
       <p className="hint" data-testid="cairo-limits">
-        Cairo limits: software rendering, flat-shaded faces, a static camera, and a resolution cap of 24×24.
+        Cairo limits: software rendering, flat-shaded faces, a camera that turns only in Move camera beats, with no
+        orbit drag, and a resolution cap of 24×24.
       </p>
       <label>
         Mode
         <select
           data-testid="three-d-mode"
           value={mode}
-          onChange={(event) => void onEdit({ op: "set_three_d_mode", mode: modeFromSelect(event.target.value) })}
+          onChange={(event) => void onEdit(setThreeDMode(modeFromSelect(event.target.value)))}
         >
           <option value="surface">Surface</option>
           <option value="curve">Curve</option>
@@ -224,13 +223,13 @@ function ThreeDPanel({
             label="Resolution u"
             value={resolution[0]}
             testId="resolution-u"
-            onCommit={(u) => onEdit({ op: "set_resolution", objectId: surface.id, value: [u, resolution[1]] })}
+            onCommit={(u) => onEdit(setResolution(surface.id, [u, resolution[1]]))}
           />
           <CommitNumber
             label="Resolution v"
             value={resolution[1]}
             testId="resolution-v"
-            onCommit={(v) => onEdit({ op: "set_resolution", objectId: surface.id, value: [resolution[0], v] })}
+            onCommit={(v) => onEdit(setResolution(surface.id, [resolution[0], v]))}
           />
           <FieldMessage error={fieldError} objectId={surface.id} field="value" />
         </>
@@ -241,19 +240,19 @@ function ThreeDPanel({
             label="x(t)"
             value={components[0]}
             testId="curve-x"
-            onCommit={(expression) => onEdit({ op: "set_curve_component", objectId: curve.id, index: 0, expression })}
+            onCommit={(expression) => onEdit(setCurveComponent(curve.id, 0, expression))}
           />
           <CommitText
             label="y(t)"
             value={components[1]}
             testId="curve-y"
-            onCommit={(expression) => onEdit({ op: "set_curve_component", objectId: curve.id, index: 1, expression })}
+            onCommit={(expression) => onEdit(setCurveComponent(curve.id, 1, expression))}
           />
           <CommitText
             label="z(t)"
             value={components[2]}
             testId="curve-z"
-            onCommit={(expression) => onEdit({ op: "set_curve_component", objectId: curve.id, index: 2, expression })}
+            onCommit={(expression) => onEdit(setCurveComponent(curve.id, 2, expression))}
           />
           <FieldMessage error={fieldError} objectId={curve.id} field="expression" />
           <p className="hint">Natural log is log. Variable: t.</p>
@@ -263,19 +262,19 @@ function ThreeDPanel({
         label="Phi"
         value={camera.phi}
         testId="camera-phi"
-        onCommit={(value) => onEdit({ op: "set_camera", key: "phi", value })}
+        onCommit={(value) => onEdit(setCamera("phi", value))}
       />
       <CommitNumber
         label="Theta"
         value={camera.theta}
         testId="camera-theta"
-        onCommit={(value) => onEdit({ op: "set_camera", key: "theta", value })}
+        onCommit={(value) => onEdit(setCamera("theta", value))}
       />
       <CommitNumber
         label="Zoom"
         value={camera.zoom}
         testId="camera-zoom"
-        onCommit={(value) => onEdit({ op: "set_camera", key: "zoom", value })}
+        onCommit={(value) => onEdit(setCamera("zoom", value))}
       />
     </section>
   );
@@ -301,37 +300,29 @@ function AxesFields({ object, context }: { object: SceneObject; context: FieldCo
       <ColorField
         label="Color"
         value={stringParam(object.params.color, "#FFFFFF")}
-        onCommit={(color) => onEdit({ op: "set_object_color", objectId: object.id, color })}
+        onCommit={(color) => onEdit(setObjectColor(object.id, color))}
       />
-      <RangeFields
-        label="X range"
-        value={xRange}
-        onCommit={(value) => onEdit({ op: "set_axes_range", objectId: object.id, axis: "x", value })}
-      />
+      <RangeFields label="X range" value={xRange} onCommit={(value) => onEdit(setAxesRange(object.id, "x", value))} />
       <FieldMessage error={fieldError} objectId={object.id} field="value" op="set_axes_range" axis="x" />
-      <RangeFields
-        label="Y range"
-        value={yRange}
-        onCommit={(value) => onEdit({ op: "set_axes_range", objectId: object.id, axis: "y", value })}
-      />
+      <RangeFields label="Y range" value={yRange} onCommit={(value) => onEdit(setAxesRange(object.id, "y", value))} />
       <FieldMessage error={fieldError} objectId={object.id} field="value" op="set_axes_range" axis="y" />
       <CommitNumber
         label="X length"
         value={numberParam(object.params.xLength, 10)}
-        onCommit={(value) => onEdit({ op: "set_length", objectId: object.id, axis: "x", value })}
+        onCommit={(value) => onEdit(setLength(object.id, "x", value))}
       />
       <FieldMessage error={fieldError} objectId={object.id} field="value" op="set_length" axis="x" />
       <CommitNumber
         label="Y length"
         value={numberParam(object.params.yLength, 4)}
-        onCommit={(value) => onEdit({ op: "set_length", objectId: object.id, axis: "y", value })}
+        onCommit={(value) => onEdit(setLength(object.id, "y", value))}
       />
       <FieldMessage error={fieldError} objectId={object.id} field="value" op="set_length" axis="y" />
       <label className="check">
         <input
           type="checkbox"
           checked={object.params.showLabels === true}
-          onChange={(event) => void onEdit({ op: "set_show_labels", objectId: object.id, value: event.target.checked })}
+          onChange={(event) => void onEdit(setShowLabels(object.id, event.target.checked))}
         />
         Show labels
       </label>
@@ -352,32 +343,18 @@ function PlotFields({ object, context }: { object: SceneObject; context: FieldCo
       <ColorField
         label="Color"
         value={stringParam(object.params.color, "#58C4DD")}
-        onCommit={(color) => onEdit({ op: "set_object_color", objectId: object.id, color })}
+        onCommit={(color) => onEdit(setObjectColor(object.id, color))}
       />
       <CommitNumber
         label="x min"
         value={numberParam(object.params.xMin, -6.28)}
-        onCommit={(xMin) =>
-          onEdit({
-            op: "set_domain",
-            objectId: object.id,
-            xMin,
-            xMax: numberParam(object.params.xMax, 6.28),
-          })
-        }
+        onCommit={(xMin) => onEdit(setDomain(object.id, xMin, numberParam(object.params.xMax, 6.28)))}
       />
       <FieldMessage error={context.fieldError} objectId={object.id} field="xMin" />
       <CommitNumber
         label="x max"
         value={numberParam(object.params.xMax, 6.28)}
-        onCommit={(xMax) =>
-          onEdit({
-            op: "set_domain",
-            objectId: object.id,
-            xMin: numberParam(object.params.xMin, -6.28),
-            xMax,
-          })
-        }
+        onCommit={(xMax) => onEdit(setDomain(object.id, numberParam(object.params.xMin, -6.28), xMax))}
       />
       <FieldMessage error={context.fieldError} objectId={object.id} field="xMax" />
     </>
@@ -395,7 +372,7 @@ function FormulaFields({ object, context }: { object: SceneObject; context: Fiel
         value={latex}
         testId="formula-latex"
         draft={draft}
-        onCommit={(next) => onEdit({ op: "set_latex", objectId: object.id, latex: next })}
+        onCommit={(next) => onEdit(setLatex(object.id, next))}
       />
       <FieldMessage error={context.fieldError} objectId={object.id} field="latex" />
       {context.texBlocked ? (
@@ -417,7 +394,7 @@ function TextFields({ object, context }: { object: SceneObject; context: FieldCo
         label="Text"
         value={stringParam(object.params.text, "Text")}
         testId="text-value"
-        onCommit={(text) => onEdit({ op: "set_text", objectId: object.id, text })}
+        onCommit={(text) => onEdit(setText(object.id, text))}
       />
       <FieldMessage error={context.fieldError} objectId={object.id} field="text" />
       <PlacementFields object={object} onEdit={onEdit} />
@@ -431,17 +408,93 @@ function PlacementFields({ object, onEdit }: { object: SceneObject; onEdit: (edi
     <>
       <AnchorField
         value={anchorParam(object.params.anchor)}
-        onCommit={(anchor) => onEdit({ op: "set_anchor", objectId: object.id, anchor })}
+        onCommit={(anchor) => onEdit(setAnchor(object.id, anchor))}
       />
       <ColorField
         label="Color"
         value={stringParam(object.params.color, "#FFFFFF")}
-        onCommit={(color) => onEdit({ op: "set_object_color", objectId: object.id, color })}
+        onCommit={(color) => onEdit(setObjectColor(object.id, color))}
       />
       <ShiftFields
         value={pairParam(object.params.shift)}
-        onCommit={(shift) => onEdit({ op: "set_object_shift", objectId: object.id, shift })}
+        onCommit={(shift) => onEdit(setObjectShift(object.id, shift))}
       />
+    </>
+  );
+}
+
+/**
+ * A shape's settings, one control per setting of its type in the catalog with the colour last (design §10.6). Each
+ * sends `set_shape_param`, and a refused value shows under its own control. A point on axes picks its axes.
+ */
+function ShapeFields({ object, shape, context }: { object: SceneObject; shape: Shape; context: FieldContext }) {
+  const { fieldError, onEdit } = context;
+  const specs = [
+    ...shape.params.filter((spec) => spec.type !== "color"),
+    ...shape.params.filter((spec) => spec.type === "color"),
+  ];
+  return (
+    <>
+      {specs.map((spec) => {
+        const commit = (value: ParamValue) => onEdit(setShapeParam(object.id, spec.name, value));
+        return (
+          <Fragment key={spec.name}>
+            {spec.type === "id" ? (
+              <AxesField
+                label={spec.label}
+                value={stringParam(object.params[spec.name], "")}
+                objects={context.objects}
+                onCommit={commit}
+              />
+            ) : (
+              <ParamField
+                spec={spec}
+                value={object.params[spec.name]}
+                testId={`shape-param-${spec.name}`}
+                onCommit={commit}
+              />
+            )}
+            <FieldMessage
+              error={fieldError}
+              objectId={object.id}
+              field="value"
+              op="set_shape_param"
+              paramKey={spec.name}
+            />
+          </Fragment>
+        );
+      })}
+    </>
+  );
+}
+
+/** The 2D axes a point sits on, by name. Its x and y are coordinates on those axes. */
+function AxesField({
+  label,
+  value,
+  objects,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  objects: readonly SceneObject[];
+  onCommit: (axesId: string) => Promise<void>;
+}) {
+  return (
+    <>
+      <label>
+        {label}
+        <select data-testid="shape-param-axesId" value={value} onChange={(event) => void onCommit(event.target.value)}>
+          {objects
+            .filter((item) => item.type === "axes")
+            .map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+        </select>
+      </label>
+      <p className="hint">x and y are coordinates on these axes.</p>
     </>
   );
 }
@@ -466,7 +519,7 @@ function ExpressionField({
         label="Expression"
         value={stringParam(object.params.expression, fallback)}
         testId={testId}
-        onCommit={(expression) => context.onEdit({ op: "set_expression", objectId: object.id, expression })}
+        onCommit={(expression) => context.onEdit(setExpression(object.id, expression))}
       />
       <FieldMessage error={context.fieldError} objectId={object.id} field="expression" />
       <p className="hint">{`Natural log is log. Variables: ${variables}.`}</p>
@@ -475,8 +528,9 @@ function ExpressionField({
 }
 
 /**
- * The refusal of an edit to `field` on `objectId`, shown under that field only (C9.3, F112). `op` and `axis` pick one
- * input out of those whose edits name the same field, such as the axes ranges and lengths.
+ * The refusal of an edit to `field` on `objectId`, shown under that field only (C9.3, F112). `op`, `axis` and
+ * `paramKey` pick one input out of those whose edits name the same field, such as the axes ranges and lengths, or the
+ * settings of a shape.
  */
 function FieldMessage({
   error,
@@ -484,18 +538,21 @@ function FieldMessage({
   field,
   op,
   axis,
+  paramKey,
 }: {
   error: FieldError | null;
   objectId: string;
   field: string;
   op?: Edit["op"];
   axis?: string;
+  paramKey?: string;
 }) {
   if (
     error?.objectId !== objectId ||
     error.field !== field ||
     (op !== undefined && error.op !== op) ||
-    (axis !== undefined && error.axis !== axis)
+    (axis !== undefined && error.axis !== axis) ||
+    (paramKey !== undefined && error.key !== paramKey)
   ) {
     return null;
   }
@@ -517,64 +574,6 @@ function AnchorField({ value, onCommit }: { value: Anchor; onCommit: (anchor: An
         <option value="edge_right">Right edge</option>
         <option value="origin">Center</option>
       </select>
-    </label>
-  );
-}
-
-/**
- * A colour picker beside a hex field. While the picker is open it moves only the draft; it commits once, on the
- * native `change` event when it closes, so one use of it is one edit and one undo step (D08, F009). React's onChange
- * on a colour input follows every `input` event, hence the listener. The hex field commits on blur. Both compare
- * case-insensitively.
- */
-function ColorField({
-  label,
-  value,
-  onCommit,
-}: {
-  label: string;
-  value: string;
-  onCommit: (color: string) => Promise<void>;
-}) {
-  const draft = useCommitDraft(value);
-  const picker = useRef<HTMLInputElement>(null);
-
-  function commitColor(color: string): void {
-    if (color.toUpperCase() === value.toUpperCase()) {
-      draft.revert();
-    } else {
-      draft.commit(onCommit(color));
-    }
-  }
-
-  const onPickerClosed = useEffectEvent((color: string) => commitColor(color.toUpperCase()));
-
-  useEffect(() => {
-    const element = picker.current;
-    if (!element) {
-      return;
-    }
-    const listener = (): void => onPickerClosed(element.value);
-    element.addEventListener("change", listener);
-    return () => element.removeEventListener("change", listener);
-  }, []);
-
-  return (
-    <label>
-      {label}
-      <span className="color-row">
-        <input
-          ref={picker}
-          type="color"
-          value={toColorInput(draft.text)}
-          onChange={(event) => draft.change(event.target.value.toUpperCase())}
-        />
-        <input
-          value={draft.text}
-          onChange={(event) => draft.change(event.target.value)}
-          onBlur={() => commitColor(draft.text)}
-        />
-      </span>
     </label>
   );
 }
@@ -611,82 +610,6 @@ function ShiftFields({
       <CommitNumber label="dx" value={value[0]} onCommit={(dx) => onCommit([dx, value[1]])} />
       <CommitNumber label="dy" value={value[1]} onCommit={(dy) => onCommit([value[0], dy])} />
     </fieldset>
-  );
-}
-
-interface TextFieldProps {
-  label: string;
-  value: string;
-  testId?: string;
-  onCommit: (value: string) => Promise<void>;
-}
-
-/** A text field that commits on blur or Enter. */
-function CommitText(props: TextFieldProps) {
-  const draft = useCommitDraft(props.value);
-  return <DraftText {...props} draft={draft} />;
-}
-
-/** CommitText over a draft its parent holds, for a parent that shows the draft too, as the formula preview does. */
-function DraftText({ label, value, testId, draft, onCommit }: TextFieldProps & { draft: CommitDraft }) {
-  return (
-    <label>
-      {label}
-      <input
-        data-testid={testId}
-        value={draft.text}
-        onChange={(event) => draft.change(event.target.value)}
-        onBlur={() => {
-          if (draft.text !== value) {
-            draft.commit(onCommit(draft.text));
-          }
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.currentTarget.blur();
-          }
-        }}
-      />
-    </label>
-  );
-}
-
-/** A number field that commits on blur or Enter. A cleared field, or text that is not a decimal, shows the value again. */
-function CommitNumber({
-  label,
-  value,
-  testId,
-  onCommit,
-}: {
-  label: string;
-  value: number;
-  testId?: string;
-  onCommit: (value: number) => Promise<void>;
-}) {
-  const draft = useCommitDraft(String(value));
-  return (
-    <label>
-      {label}
-      <input
-        data-testid={testId}
-        inputMode="decimal"
-        value={draft.text}
-        onChange={(event) => draft.change(event.target.value)}
-        onBlur={() => {
-          const next = parseDecimal(draft.text);
-          if (next === null || next === value) {
-            draft.revert();
-          } else {
-            draft.commit(onCommit(next));
-          }
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.currentTarget.blur();
-          }
-        }}
-      />
-    </label>
   );
 }
 
@@ -740,8 +663,4 @@ function anchorParam(value: unknown): Anchor {
     default:
       return "edge_up";
   }
-}
-
-function toColorInput(value: string): string {
-  return /^#[0-9A-Fa-f]{6}$/.test(value) ? value.toLowerCase() : "#ffffff";
 }

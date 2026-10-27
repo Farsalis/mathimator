@@ -1,6 +1,6 @@
 # Mathimator v1 design spec
 
-Status: for approval. Document date: 21 October 2026. Revised 24 October 2026 for the audit decisions D01–D80, the owner's answers of 24 October 2026 and protocol 2.
+Status: for approval. Document date: 21 October 2026. Revised 24 October 2026 for the audit decisions D01–D80, the owner's answers of 24 October 2026, protocol 2, and the beat catalog, shapes, re-entry and easing the owner decided that day.
 
 Section 6 is the single source of the protocol between the shell and the worker, and `tests/fixtures/protocol/commands.json` is its machine-readable list of commands. README.md and CONTRIBUTING.md hold the build, test and release commands that section 8 summarizes.
 
@@ -59,11 +59,11 @@ Section 9 is the full out-of-scope list. These boundaries define v1:
 - Top bar: project name, project folder path, New, Open, Save As…, Add, Undo, Redo, Export, View code, Notices, Sample, Clear cache. New, Open, Save As… and Sample are disabled from the Export click until the export ends (D22).
 - Under it: the status line, with Cancel export while an export runs; a TeX warning while formulas cannot render; and a message area that holds the error banner, the "Worker unavailable" panel with its reason and Retry, the shell's notices, each with Dismiss, and the export note.
 - Center: the preview, a play control, and the playhead.
-- Right: the inspector for the selected object, template, or beat, or in its place View code or the Notices.
-- Bottom: the beats in order, with derived start times and durations, and the path of the last export.
+- Right: the inspector, with the editor of the selected beat and the fields of the selected object or template, or in its place View code or the Notices.
+- Bottom: the beats in order, with derived start times, durations and labels, a + Beat button, and the path of the last export.
 - Export opens a panel with the preset, resolution, frame rate and transparency, and Export and Re-export (D56).
 
-Add has five entries in the finished app: Axes and function, Formula transform, 3D axes, Formula, and Text. Phases in section 8 add them in order.
+Add has five entries in the finished app: Axes and function, Formula transform, 3D axes, Formula, and Text. Phases in section 8 add them in order. A Shapes group follows them: Dot, Line, Arrow, Circle, Rectangle and Point on axes (section 4).
 
 ## 2. UX timing budgets
 
@@ -182,11 +182,11 @@ Steps:
 4. Play the preview in the canvas.
 5. Export a transparent WebM, or a transparent PNG sequence.
 
-The user sees number fields for a fixed camera. There is no orbit drag and no second window. The surface uses resolution 8×8 unless the user changes it. The preview is the Cairo movie inside the Mathimator window. For WebM and PNG sequence, the transparency control is enabled. The surface fill stays opaque; transparency is the background.
+The user sees number fields for the opening camera; Move camera beats turn it. There is no orbit drag and no second window. The surface uses resolution 8×8 unless the user changes it. The preview is the Cairo movie inside the Mathimator window. For WebM and PNG sequence, the transparency control is enabled. The surface fill stays opaque; transparency is the background.
 
-Underneath, the app sets the scene kind to `three_d_scene`, generates the Cairo `ThreeDScene` in section 5, and passes `--renderer cairo`. Camera orientation is a single `set_camera_orientation` call before the beats. The app does not call `begin_ambient_camera_rotation` and does not pass `--live-preview` or `--renderer opengl`. Transparent WebM uses `--format webm --transparent`. Transparent PNG sequence uses `--format png-sequence --transparent`. `--format png` is the wrong flag: in Manim 0.22 it writes the last frame only.
+Underneath, the app sets the scene kind to `three_d_scene`, generates the Cairo `ThreeDScene` in section 5, and passes `--renderer cairo`. The opening orientation is a single `set_camera_orientation` call before the beats, and each Move camera beat is one `self.move_camera` call. The app does not call `begin_ambient_camera_rotation` and does not pass `--live-preview` or `--renderer opengl`. Transparent WebM uses `--format webm --transparent`. Transparent PNG sequence uses `--format png-sequence --transparent`. `--format png` is the wrong flag: in Manim 0.22 it writes the last frame only.
 
-Cairo limits, stated in the inspector for this template: software rendering, flat-shaded faces, a static camera, and a resolution cap of 24×24. The 8 second budget does not apply. The 20 second budget does. A 3D template is refused unless the project has no objects and no beats ("A 3D template needs an empty project."). A 2D template is refused in a 3D project ("This template is for a 2D scene."). A formula or text object is refused there too ("A 3D scene only holds the 3D template."). A 3D project contains the template's axes and one surface or curve.
+Cairo limits, stated in the inspector for this template: software rendering, flat-shaded faces, a camera that turns only in Move camera beats, with no orbit drag, and a resolution cap of 24×24. The 8 second budget does not apply. The 20 second budget does. A 3D template is refused unless the project has no objects and no beats ("A 3D template needs an empty project."). A 2D template is refused in a 3D project ("This template is for a 2D scene."). A formula, a text or a shape is refused there too ("A 3D scene only holds the 3D template."). A 3D project contains the template's axes and one surface or curve.
 
 Failure: any window other than Mathimator opens; the command line contains `opengl` or `--live-preview`; the export is 854×480; transparency is offered for MP4; or the axes and surface are not both visible within 20 seconds. A 20 second miss over 30 seconds revises this spec before the next phase.
 
@@ -241,7 +241,7 @@ On save, `project.json` is pretty-printed with two-space indentation, a trailing
 | `previewProfile` | Fixed: width 854, height 480, fps 15, `transparent` false. |
 | `exportProfile` | `format` (`mp4`, `gif`, `webm`, or `png_sequence`), `width`, `height`, `fps`, `transparent`. |
 
-There is no scene list. There is no `start` field anywhere. A file that contains `start`, an unknown key, or an unknown object type is refused.
+There is no scene list. Beat start times are never stored: there is no `start` field anywhere but the start point of a line or an arrow. A file that contains any other `start`, an unknown key, or an unknown object type is refused.
 
 Strings may hold tab, line feed and carriage return, so CRLF text from Windows tools opens. A string with NUL, another C0 control character or a lone UTF-16 surrogate is refused on open and in an edit, naming the field. A number too large for a float, `NaN` and `Infinity` make the file invalid JSON. Codegen writes numbers with three decimal places, so a document number is checked at that precision: a step, length or zoom that rounds to 0, or a range or domain whose maximum rounds to its minimum, is refused. The file keeps the number as written. A number inside an expression is not a document number: codegen uses it exactly as typed (section 5).
 
@@ -257,7 +257,7 @@ Strings may hold tab, line feed and carriage return, so CRLF text from Windows t
 | `scene.beats` | Timeline order. Position in this array is the beat index and the Manim animation index. |
 | `scene.templateInstances` | Array of `{id, templateId, params, objectIds, beatIds}`. |
 
-Object fields: `id`, `name`, `type`, `params`. Beat fields: `id`, `duration`, `action`, `targets`, and `params` when the action needs them. Ids are unique across the scene, objects, beats, and template instances. An object id is a variable in the generated code, so it is not a Python keyword, `np`, `self`, or `config`, and it does not collide with a name codegen makes: `<axes>_labels` and `<axes>_group` for any 2D axes, whatever `showLabels` says, `u` and `v` for the axes of a surface, and `t` for the axes of a curve. A file with such an id is refused, naming the id. The playhead, selection, dirty flags, and undo stack are not stored. Undo history holds at least 50 document edits per session and is discarded on exit.
+Object fields: `id`, `name`, `type`, `params`. Beat fields, written in this order: `id`, `duration`, `action`, `targets`, `params` when the kind has settings, and `easing` when the beat names one. Ids are unique across the scene, objects, beats, and template instances. An object id is a variable in the generated code, so it is not a Python keyword, `np`, `self`, `config`, or the name of an easing (a beat's `rate_func`, whether or not a beat uses it), and it does not collide with a name codegen makes: `<axes>_labels` and `<axes>_group` for any 2D axes, whatever `showLabels` says, `u` and `v` for the axes of a surface, and `t` for the axes of a curve. A file with such an id is refused, naming the id. The playhead, selection, dirty flags, and undo stack are not stored. Undo history holds at least 50 document edits per session and is discarded on exit.
 
 Derived start of beat `i` is the sum of durations of beats `0 .. i-1`. The timeline displays it and does not accept an edit to it. Total duration is the sum of beat durations. Minimum beat duration is 0.1 seconds. Maximum total is 120 seconds. A committing edit that breaks either limit is refused, and the document is unchanged.
 
@@ -272,6 +272,12 @@ Derived start of beat `i` is the sum of durations of beats `0 .. i-1`. The timel
 | `three_d_axes` | 3D | `xRange`, `yRange`, `zRange` as `[min, max, step]`, lengths optional and defaulted by the template |
 | `surface` | 3D | `axesId`, `expression` in `x` and `y`, `uRange`, `vRange`, `resolution` as `[u, v]`, `color` |
 | `parametric_curve` | 3D | `axesId`, `components` as three expressions in `t`, `tRange` as `[min, max]`, `color` |
+| `dot` | 2D | `center` as `[x, y]`, `radius`, `color` |
+| `line` | 2D | `start`, `end` as `[x, y]`, `color`, `strokeWidth` |
+| `arrow` | 2D | `start`, `end` as `[x, y]`, `color`, `strokeWidth` |
+| `circle` | 2D | `center`, `radius`, `color`, `strokeWidth`, `fillOpacity` |
+| `rectangle` | 2D | `center`, `width`, `height`, `color`, `strokeWidth`, `fillOpacity` |
+| `axes_point` | 2D | `axesId` of a 2D `axes`, `x`, `y` in the coordinates of those axes, `radius`, `color` |
 
 `anchor` is `origin`, `edge_up`, `edge_down`, `edge_left`, or `edge_right`. `shift` is `[dx, dy]` in Manim units, y up. Omitted `shift` means `[0, 0]`.
 
@@ -279,25 +285,123 @@ A project may come from someone else, and TeX reads files when a formula asks it
 
 An axis draws at most 500 ticks: `(max - min) / step` must be below 500, for 2D and 3D axes and for the ranges in template params. Manim samples a function plot ten times per x step of its axes, so `xMax - xMin` must also be below 500 x steps. Manim samples a parametric curve every 0.01 of t, so its `tRange` must span less than 50, which is 5000 samples like a plot's. These two are the plot-sampling bounds of D04. These refusals name the limit, as the 24×24 resolution cap does.
 
-v1 has no arrow and no dot. The journeys do not need them, and there is no general mobject factory.
+The last six types are the shapes. Every param of a shape is required, and they are written in the order above. Bounds are inclusive and judged at three decimals: each coordinate of `center`, `start` and `end` from −100 to 100, `radius` from 0.001 to 50, `strokeWidth` from 0 to 50, `fillOpacity` from 0 to 1, `width` and `height` from 0.001 to 100, and `x` and `y` from −1000000 to 1000000. A line or an arrow whose end equals its start at three decimals is refused ("scene.objects[4].params.end must differ from start"). One `color` is the stroke and the fill colour, and `fillOpacity` 0 is an outline. A point on axes is drawn on its axes, like a function plot, and names them as a plot does. A new shape gets these values:
+
+| Type | New object |
+| --- | --- |
+| `dot` | centre `[0, 0]`, radius 0.08, `#E07A5F` |
+| `line` | from `[-2, 0]` to `[2, 0]`, `#FFFFFF`, stroke width 4 |
+| `arrow` | from `[-2, -1]` to `[2, 1]`, `#FFFFFF`, stroke width 6 |
+| `circle` | centre `[0, 0]`, radius 1, `#58C4DD`, stroke width 4, fill opacity 0 |
+| `rectangle` | centre `[0, 0]`, 4 by 2, `#58C4DD`, stroke width 4, fill opacity 0 |
+| `axes_point` | the middle of its axes' x and y ranges, radius 0.08, `#E07A5F` |
+
+Shapes are 2D only: a 3D scene holds only its template's objects. There is no general mobject factory.
 
 Expressions use a fixed grammar. `expr` is terms joined by `+` or `-`. A term is factors joined by `*` or `/`. A factor is a unary minus followed by a factor, or a power. A power is a primary, optionally followed by `^` and an exponent, which is one primary after any number of unary minuses. A primary is a number, the variable, `pi`, a call of `sin`, `cos`, `tan`, `exp`, `log`, or `sqrt` with one argument, or parentheses. A number is digits with at most one decimal point, such as `2`, `0.5`, `.5`, or `1.`, and has no exponent part. The 2D variable is `x`. A surface uses `x` and `y`. A curve uses `t`. `log` is the natural log, and the inspector says so. As in usual math and in Python, `^` binds tighter than a unary minus, which binds tighter than `*` and `/`, which bind tighter than `+` and `-`. So `-x^2` means `-(x^2)`, `exp(-x^2)` is a bell curve, and `2^-x` means `2^(-x)`. `x^2^2` is refused; write `(x^2)^2` or `x^(2^2)`.
 
 Rejected examples, with no render started: `np.sin(x)`, `sin(x, 1)`, `y` in a 2D plot, `__import__("os")`, `x^2^2`, `1e3`. The field shows "This expression is not supported." The same text refuses an expression longer than 1000 characters, one nested deeper than 64 levels (each parenthesis, call and unary minus is a level), and a number literal too large for a float.
 
-### Actions
+### Beats
 
-| Action | Targets | Role |
-| --- | --- | --- |
-| `create` | one | Entrance for axes, function plots, 3D axes, surfaces, curves. |
-| `fade_in` | one | Entrance allowed for every object type. |
-| `write` | one | Entrance for `math_formula` and `text` only. |
-| `wait` | none | Hold. |
-| `transform_formula` | source, destination | One `play`. Destination must be a `math_formula` whose entrance is this beat. Source is a `math_formula` on screen; the transform takes it off screen. |
-| `set_color` | one on screen | `params.color`. Axes with labels change colour; their labels keep theirs. |
-| `move` | one on screen | `params.shift` as `[dx, dy]`. Axes with labels move with their labels. Plots and other objects drawn on the axes stay where they are; their own beats move them. |
+A beat is one kind of animation from a fixed catalog, played on its targets for its duration. It compiles to exactly one `play` or `wait` (section 5). The kinds, their settings, the easings and the shapes are one table, `worker/mathimator_worker/beats.py`; `tests/fixtures/protocol/beat-kinds.json` is the UI's copy of it.
 
-Every object has exactly one entrance beat. A beat may mention an object only at its entrance or after it. A function plot, surface or curve mentions its axes, so it enters after them. `transform_formula` is the destination's entrance, so a transformed formula has no separate `create`. A transform source is off screen from then on: a later `set_color`, `move`, or second `transform_formula` on it would bring the old formula back in the video, so the file is refused, naming the beat, for example "scene.beats[5] changes eq_1, but eq_1 left the screen when it was transformed into eq_2". Deleting the destination also deletes the transform beat, which puts the source back on screen for the beats after it.
+Each kind belongs to a family, which says what a beat does to the on-screen state of each target:
+
+| Family | UI group | Targets | Before → after, per target |
+| --- | --- | --- | --- |
+| `hold` | Wait | none | nothing changes |
+| `entrance` | Entrances | one or more | off → on |
+| `exit` | Exits | one or more | on → off |
+| `change` | Changes | one or more; `move_along` exactly two | on → on |
+| `emphasis` | Emphasis | one or more | on → on, and the object is as it was when the beat ends |
+| `morph` | Morphs | exactly two: source, destination | source on → off, destination off → on |
+| `camera` | Camera | none | nothing changes on screen; the camera moves |
+
+Type groups: *2D* is `axes`, `function_plot`, `math_formula`, `text` and the six shapes; *all* is the 2D and the 3D types; *drawn* is every type but `math_formula` and `text`, which are *written*; *filled* is `math_formula`, `text`, `dot`, `axes_point`, `circle` and `rectangle`; *paths* are `function_plot`, `line`, `arrow`, `circle` and `rectangle`; *movers* are `dot` and `axes_point`; *scalable* is *all* without `arrow`, and *scalable 2D* is *2D* without `arrow`. Easing sets: *arrive* is the seven easings that end at 1, *return* the two that end at 0, *every* all nine, and *mirrored* `smooth`, `linear`, `rush_into`, `rush_from` and `double_smooth`.
+
+| Action | Family | Label | Targets | Types | Settings | Easings | Default easing | Scenes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `wait` | hold | Wait | none | | | none | | 2D, 3D |
+| `create` | entrance | Create | one or more | drawn | | arrive | smooth | 2D, 3D |
+| `fade_in` | entrance | Fade in | one or more | all | | arrive | smooth | 2D, 3D |
+| `write` | entrance | Write | one or more | written | | arrive | linear | 2D |
+| `grow` | entrance | Grow from center | one or more | scalable | | arrive | smooth | 2D, 3D |
+| `grow_arrow` | entrance | Grow arrow | one or more | `arrow` | | arrive | smooth | 2D |
+| `draw_border_then_fill` | entrance | Draw border, then fill | one or more | filled | | arrive | smooth | 2D |
+| `spin_in` | entrance | Spin in | one or more | scalable 2D | | arrive | smooth | 2D |
+| `fade_out` | exit | Fade out | one or more | all | | arrive | smooth | 2D, 3D |
+| `uncreate` | exit | Uncreate | one or more | drawn | | mirrored | smooth | 2D, 3D |
+| `unwrite` | exit | Unwrite | one or more | written | | mirrored | smooth | 2D |
+| `shrink` | exit | Shrink away | one or more | scalable | | arrive | smooth | 2D, 3D |
+| `move` | change | Move by | one or more | all | `shift` | every | smooth | 2D, 3D |
+| `move_to` | change | Move to | one or more | all | `point` | every | smooth | 2D, 3D |
+| `scale` | change | Scale | one or more | all | `factor` | every | smooth | 2D, 3D |
+| `rotate` | change | Rotate | one or more | all | `angle` | every | smooth | 2D, 3D |
+| `set_opacity` | change | Set opacity | one or more | all | `opacity` | every | smooth | 2D, 3D |
+| `set_color` | change | Recolor | one or more | all | `color` | every | smooth | 2D, 3D |
+| `move_along` | change | Move along a path | an object (movers), then a path (paths) | | | every | smooth | 2D |
+| `indicate` | emphasis | Indicate | one or more | all | | return | there_and_back | 2D, 3D |
+| `circumscribe` | emphasis | Circumscribe | one or more | 2D | | arrive | smooth | 2D |
+| `flash` | emphasis | Flash | one or more | 2D | | every | smooth | 2D |
+| `wiggle` | emphasis | Wiggle | one or more | all | | every | smooth | 2D, 3D |
+| `focus` | emphasis | Focus | one or more | 2D | | every | smooth | 2D |
+| `wave` | emphasis | Wave | one or more | 2D | | every | smooth | 2D |
+| `transform` | morph | Transform | a source, then a destination, both 2D | | | arrive | smooth | 2D |
+| `transform_formula` | morph | Transform formula (match symbols) | a source, then a destination, both `math_formula` | | | arrive | linear | 2D |
+| `move_camera` | camera | Move camera | none | | `phi`, `theta`, `zoom` | every | smooth | 3D |
+
+Why the limits:
+
+- `write` and `unwrite` are for formulas and text only, and `create` and `uncreate` are not their entrance and exit.
+- Manim keeps an arrow's tip at full size when it scales the arrow to nothing, so an arrow neither grows, spins in nor shrinks from a point; `grow_arrow` grows an arrow with its tip and takes nothing else.
+- `circumscribe`, `flash`, `focus`, `wave`, `spin_in`, `draw_border_then_fill`, the morphs and `move_along` draw in the scene plane, which a tilted camera distorts, so they are 2D only; so are `write` and `unwrite`. A 3D scene offers the kinds whose scenes include 3D.
+- An entrance, an exit or a morph takes only easings that arrive: one that returns would leave an entering object invisible or pop a leaving one. `indicate` takes only easings that return, since Manim scales and recolours the object itself and only those bring it back. `circumscribe` takes none that return, because its flash never runs backwards and the frames would depend on the frame rate. `uncreate` and `unwrite` run their easing backwards, so they take only easings whose mirror image Manim exports, and codegen emits that mirror image.
+- The default easing is smooth wherever it is allowed, except `write` and `transform_formula`, which every scene written before easings existed rendered linearly.
+
+Axes with labels act together with their labels, except under `set_color`, which recolours the axes and leaves the labels' colour. Plots and points drawn on axes do not follow them: a beat on the axes alone leaves what is drawn on them where it is, and a beat that names them as targets as well acts on them too.
+
+| Action | Setting | Value | Range | New beat |
+| --- | --- | --- | --- | --- |
+| `move` | `shift` | `[dx, dy]` | any finite numbers | `[1, 0]` |
+| `move_to` | `point` | `[x, y]` | each from −100 to 100 | `[0, 0]` |
+| `scale` | `factor` | number | 0.01 to 100 | 1.5 |
+| `rotate` | `angle` | degrees, counter-clockwise | −3600 to 3600 | 90 |
+| `set_opacity` | `opacity` | number | 0 to 1 | 0.5 |
+| `set_color` | `color` | `#RRGGBB` | | `#E07A5F` |
+| `move_camera` | `phi`, `theta` | degrees | any finite number, as in `scene.camera` | the camera in effect before the beat, with `theta` turned 90 further |
+| `move_camera` | `zoom` | number | greater than 0 at three decimals, as in `scene.camera` | the camera in effect before the beat |
+
+A kind with settings needs every one of them in `params` and no other key; they are written in the order above. A kind without settings refuses `params` ("scene.beats[3].params is not allowed for fade_in"). Bounds are inclusive and judged at three decimals ("scene.beats[1].params.factor must be from 0.01 to 100"). The camera settings follow the rules of `scene.camera`, so the camera in effect is always a valid setting. A `move_camera` beat does not change `scene.camera`, which stays the opening orientation. The camera in effect before the first beat is `scene.camera`; after a camera move it is that beat's settings, unless its easing returns, which leaves the camera where it was.
+
+| `easing` | Label | Ends at | Mirror image |
+| --- | --- | --- | --- |
+| `smooth` | Smooth | 1 | `smooth` |
+| `linear` | Linear | 1 | `linear` |
+| `rush_into` | Rush in | 1 | `rush_from` |
+| `rush_from` | Rush out | 1 | `rush_into` |
+| `slow_into` | Slow into | 1 | none |
+| `double_smooth` | Double smooth | 1 | `double_smooth` |
+| `lingering` | Lingering (arrives early, holds) | 1 | none |
+| `there_and_back` | There and back | 0 | none |
+| `there_and_back_with_pause` | There and back, with a pause | 0 | none |
+
+These are Manim rate functions that `from manim import *` exports. A beat's `easing` is optional, and an absent one means the kind's default easing; a wait takes none. A file may name the default easing, and it is kept as written. The refusals are `scene.beats[2].easing is not allowed for wait`, `scene.beats[2].easing "bounce" is not an easing` and `scene.beats[2].easing "smooth" is not an easing for indicate`.
+
+**On screen.** Validation plays the beats out in order, with nothing on screen at the start, and refuses the first beat that breaks a rule. The field is `scene.beats[i].targets`, or `scene.beats[i].action` for the first rule. For each beat, in this order:
+
+1. The scene offers the kind: "scene.beats[4].action flash is not available in a 3D scene", "scene.beats[1].action move_camera is only for a 3D scene".
+2. The count of targets: "scene.beats[3].targets must be empty for wait", "scene.beats[3].targets must name at least one object for fade_out", "scene.beats[6].targets must be a source and a destination" for either morph, "scene.beats[6].targets must be an object and a path" for `move_along`.
+3. Each target names an object: "scene.beats[3].targets names eq_9, which is not an object".
+4. No object twice: "scene.beats[3].targets names text_1 twice", which also keeps a morph from turning an object into itself.
+5. The types: "scene.beats[0] creates text_1, but create is not its entrance", "scene.beats[0] writes circle_1, but only formulas and text are written", "scene.beats[6] transforms something other than a formula", and otherwise "scene.beats[2] grows arrow_1, but grow does not apply to arrow", or for a target of a pair "scene.beats[2] moves circle_1, but the object of move_along cannot be circle".
+6. The state of each target. An entrance and a morph's destination need the object off screen: "scene.beats[4] brings text_1 on screen while it is already on screen". Every other target needs it on: "scene.beats[0] fades out text_1 before it is on screen" when it has never entered, "scene.beats[5] changes eq_1, but eq_1 left the screen when it was transformed into eq_2" when a morph took it off (Manim would bring the old object back), and "scene.beats[5] indicates text_1, but text_1 left the screen at scene.beats[3]" otherwise. A change says "changes" for `move`, `set_color` and `set_opacity`; a morph says "transforms" for its source and "brings" for its destination; `move_along` says "moves" and "moves along".
+7. Each target takes its state after the beat.
+8. A function plot, a point on axes, a surface or a curve is on screen only while its axes are. For the first such object, in document order, whose axes are off after the beat: "scene.beats[3] transforms axes_1 into plot_1, but plot_1 is drawn on axes_1" when a morph of the axes brought it on; "scene.beats[3] takes axes_1 off screen while plot_1, which is drawn on it, is still on screen" when the axes left in this beat; and otherwise "scene.beats[0] brings plot_1 on screen before its axes axes_1". Such an object may enter or leave in the same beat as its axes, whatever the order of `targets`.
+
+After the last beat, every object has entered at least once: "scene.objects[3] dot_1 has no entrance beat".
+
+So an object may leave and come back any number of times. Every entrance builds it afresh from its fields (section 5), so nothing an earlier beat did to it carries over. A morph leaves its source unchanged and off screen, and the source may enter again later. Deleting a morph's destination also deletes the morph beat, which leaves the source on screen for the beats after it. The `state` reply lists what is on screen before each beat (section 6).
 
 ### Templates
 
@@ -309,11 +413,13 @@ A template instance is a recorded insertion, not a plugin. Its fields are `id`, 
 | `formula_transform` | two formulas, a `write` beat, a `transform_formula` beat | `y = \sin(x)` to `y = \cos(x)`, anchor `edge_up`, durations 2 s and 2 s |
 | `three_d_axes` | `three_d_axes`, one `surface` or `parametric_curve`, two `create` beats, camera | Axes ranges `[-3, 3, 1]`, `[-3, 3, 1]`, `[-2, 2, 1]`. Surface `sin(x)*cos(y)`, `u`/`v` range `[-2.5, 2.5]`, resolution `[8, 8]` with a maximum of `[24, 24]`, phi 65, theta −45, zoom 1, durations 2 s and 2 s. Curve mode uses components `cos(t)`, `sin(t)`, `t / 3` and `tRange` `[0, 12.56]`. |
 
-New beats and template insertions are placed after the selected beat, or appended when nothing is selected. Deleting an object also deletes every beat that targets it, as one undo step, and dirties from the first removed index.
+New beats and template insertions are placed after the selected beat, or appended when nothing is selected. A beat that a template lists in `beatIds` keeps the kind and the targets its template checks: an edit may change its duration, its easing and its place in the timeline, and the timeline rules decide whether the place works.
+
+Deleting an object also deletes the objects drawn on it and, in a 3D scene, the template's other object, as one undo step that dirties from the first beat it changes. They leave the targets of every beat. A beat left with too few targets is deleted (a morph or a move along a path needs both of its two), and so is a template that lost an object or a beat. Then, while a beat breaks an on-screen rule, the object at fault leaves that beat: the target whose state is wrong; axes that would leave while something drawn on them stays; or an object that would come on while its axes are off. An object that no beat brings on screen any more is deleted too, with what is drawn on it. Each step only removes, so the repair is deterministic and ends. A 3D scene that loses its template becomes a 2D scene, and its camera moves are deleted.
 
 ### Cache identity
 
-A beat's cache key is the SHA-256 of Manim version `0.22.0`, `generatorVersion`, the active profile (preview or export), the beat index, the beat's canonical JSON, the canonical JSON of the objects that beat mentions (a function plot includes its axes; a surface or curve includes its axes), and the seed.
+A beat's cache key is the SHA-256 of Manim version `0.22.0`, `generatorVersion`, the active profile (preview or export), the beat index, the beat's canonical JSON, the canonical JSON of the objects that beat mentions (every target; a function plot or a point on axes includes its axes; a surface or curve includes its axes; a wait and a camera move mention none), and the seed. The beat's canonical JSON holds its `easing` only when it names one, so the key of a beat on its default easing is the key it had before easings existed.
 
 `sceneHash` is the hash of `schemaVersion`, `generatorVersion`, `seed`, and `scene`. `exportKey` is `sceneHash` plus the export profile plus the Manim version. The finished export folder is named with the first 16 hex characters of `exportKey`. A manifest beside the file stores the full hash, and a mismatch is not the current export. The Manim media directory is not named with these hashes. Putting the scene hash in the media path would discard partial-movie reuse. Encoder settings stay at Manim's defaults; v1 does not pass `--video-codec` or `--encoder-option`. Changing those defaults in a future Manim pin requires a new `generatorVersion`.
 
@@ -448,6 +554,7 @@ Manim runs isolated from the PC's own settings:
 - The worker ships `manim.cfg` with `max_files_cached = 2400`. Manim deletes its least recently used cached clips above that count, and a document has at most 120 s / 0.1 s = 1200 beats, so the clips of the render that just finished are never deleted.
 - `--silent` stops the check for a newer Manim on PyPI that Manim otherwise makes after every render. Manim never uses the network.
 - `-P` keeps the folder off `sys.path`, and `--check-hash-based-pycs always` makes Python check bytecode against its source, so nothing planted beside the scene runs in its place.
+- `PYTHONHASHSEED=0`, whatever the user set, so Manim's own cache keys do not depend on Python's per-process string hashing. Manim's key for a play lists the global names of the functions an animation holds in the order of that hashing, so the key of a rotate or a wave play, whose path and wave are such functions, would otherwise differ in every process and miss Manim's cache.
 - LaTeX runs with `shell_escape=f`, `openin_any=p`, and `openout_any=p` in its environment, which kpathsea reads before `texmf.cnf`. Every inherited variable whose name starts with one of those is dropped, such as `shell_escape_latex`, which kpathsea would read first, so LaTeX runs no shell command whatever the user set.
 - Before each render the worker empties Manim's TeX folder, `.mathimator/cache/media/Tex`, of everything but the SVG files Manim reuses, and removes a link there without following it. TeX reads its inputs from that folder before its own, and Manim compiles any TeX source or DVI file it finds there, so a file planted in a shared project could otherwise read local files past the formula allowlist of section 4. A file that cannot be removed fails the render with `render_failed`.
 
@@ -506,19 +613,56 @@ class MainScene(Scene):
 
 `config.seed` is set at import. The worker also passes `--seed 1`. Those two values are the project's seed. Codegen emits no `random` calls and no updaters, because an unseeded random value or an updater busts Manim's hashes.
 
-Each object is constructed immediately before its entrance `play`. Labels belong to the axes entrance, so they are inside that one `play`, not a second beat. `duration` in the table is the beat's length under the frame rule below: the duration itself for a beat between whole seconds. Document numbers that are whole are emitted as integers; other document numbers use up to three decimal places with trailing zeros removed. Numbers in an expression are used exactly as typed: whole numbers print as integers and others as Python's shortest exact form, so `0.0004*x^3` keeps its `0.0004`.
+Each object is constructed immediately before each of its entrance plays: an object that leaves and comes back is built again from its fields, so nothing an earlier beat did to it carries over. Labels belong to the axes entrance, so they are inside that one `play`, not a second beat. `duration` in the table is the beat's length under the frame rule below: the duration itself for a beat between whole seconds. Document numbers that are whole are emitted as integers; other document numbers use up to three decimal places with trailing zeros removed. A point or a vector `[x, y]` is `np.array([x, y, 0.0])`, each component with at least one decimal (`1.0`, `-0.4`). Numbers in an expression are used exactly as typed: whole numbers print as integers and others as Python's shortest exact form, so `0.0004*x^3` keeps its `0.0004`.
 
-| Action | Emitted call |
-| --- | --- |
-| `create` | `self.play(Create(target), run_time=duration)` |
-| `fade_in` | `self.play(FadeIn(target), run_time=duration)` |
-| `write` | `self.play(Write(target), run_time=duration)` |
-| `wait` | `self.wait(duration)` |
-| `transform_formula` | `self.play(TransformMatchingTex(source, dest), run_time=duration)` |
-| `set_color` | `self.play(target.animate.set_color("#RRGGBB"), run_time=duration)`. For axes with labels, `target` is still the axes alone, so the labels keep their colour. |
-| `move` | `self.play(target.animate.shift(np.array([dx, dy, 0.0])), run_time=duration)`. For axes with labels, `target` is `<id>_group`, the `VGroup` of the axes and their labels, so the labels move with them. |
+A beat's block is, in this order: the construction lines of each object the beat brings on screen (an entrance's targets, a morph's destination), axes before what is drawn on them whatever the order of `targets`; the lines that prepare the play; the one `self.play(<animations>, run_time=duration)`; and the lines that settle what the play left. Only the play draws frames, so a beat is still one `play` or `wait`. The play holds one animation per target, in the order of `targets`, and never a group: Manim draws a played group above everything else for the rest of the scene.
+
+In the table, `v` is a target's variable: `<id>_group` for axes with labels, so the labels act with their axes, and otherwise the id. `set_color` and `transform_formula` take the object itself, so `set_color` recolours axes and leaves their labels' colour.
+
+| Action | Before the play | Animation of each target | After the play |
+| --- | --- | --- | --- |
+| `wait` | | `self.wait(duration)` instead of a play | |
+| `create`, `fade_in`, `write` | | `Create(v)`, `FadeIn(v)`, `Write(v)` | |
+| `grow`, `grow_arrow` | | `GrowFromCenter(v)`, `GrowArrow(v)` | |
+| `draw_border_then_fill`, `spin_in` | | `DrawBorderThenFill(v)`, `SpinInFromNothing(v)` | |
+| `fade_out`, `uncreate`, `unwrite` | | `FadeOut(v)`, `Uncreate(v)`, `Unwrite(v)` | |
+| `shrink` | | `ShrinkToCenter(v, remover=True)` | |
+| `move` | | `v.animate.shift(np.array([dx, dy, 0.0]))` | |
+| `move_to` | with two or more targets, `_center = VGroup(v1, v2, …).get_center()` | `v.animate.move_to(np.array([x, y, 0.0]))`; with two or more, `v.animate.shift(np.array([x, y, 0.0]) - _center)` | |
+| `scale` | the same | `v.animate.scale(factor)`; with two or more, `v.animate.scale(factor, about_point=_center)` | |
+| `rotate` | the same | `Rotate(v, angle=angle * DEGREES)`; with two or more, `Rotate(v, angle=angle * DEGREES, about_point=_center)` | |
+| `set_opacity` | | `v.animate.set_stroke(opacity=o)` for a function plot, a curve or a line; `v.animate.set_stroke(opacity=o).set_fill(opacity=f)` for a circle or a rectangle, `f` being `o × fillOpacity`; `v.animate.set_opacity(o)` for every other type | |
+| `set_color` | | `id.animate.set_color("#RRGGBB")` | |
+| `move_along` | `mover.save_state()` | `MoveAlongPath(mover, path)` | `mover.restore()`, then `mover.move_to(path.point_from_proportion(1))`, or `(0)` with an easing that returns |
+| `indicate` | `_center_<axes> = v.get_center()` for each axes that is a target together with something drawn on it | `Indicate(v)`; for those axes and what is drawn on them, `Transform(v, v.copy().scale(1.2, about_point=_center_<axes>).set_color(PURE_YELLOW), rate_func=there_and_back)` | |
+| `circumscribe`, `focus`, `wave` | | `Circumscribe(v)`, `FocusOn(v)`, `ApplyWave(v)` | |
+| `flash` | | `Flash(v, flash_radius=np.hypot(v.width, v.height) / 2 + SMALL_BUFF)` | |
+| `wiggle` | the centres of `indicate`, then `v.save_state()` for each target | `Wiggle(v)`; for those axes and what is drawn on them, `Wiggle(v, scale_about_point=_center_<axes>, rotate_about_point=_center_<axes>)` | `v.restore()` for each target |
+| `transform` | `self.remove(source)` | `ReplacementTransform(source.copy(), destination)` | |
+| `transform_formula` | | `TransformMatchingTex(source, destination)` | |
+| `move_camera` | | `self.move_camera(phi=phi * DEGREES, theta=theta * DEGREES, zoom=zoom, run_time=duration)` instead of a play; Manim plays the camera's three trackers in one `play` | `self.camera.reset_rotation_matrix()` |
+
+- **Easing.** `, rate_func=<easing>` follows `run_time` when the beat names an easing, or when its kind's default easing is not the animation's own: `unwrite`, `circumscribe`, `flash` and `draw_border_then_fill` write `rate_func=smooth`. Otherwise nothing is written, so a beat on its default easing compiles to the code it had before easings existed. `uncreate` and `unwrite` run their rate function backwards, so they are written the mirror image of their easing, which draws what its label says: a stored `rush_into` is `rate_func=rush_from`. A `wait` has no easing.
+- **Centres.** Moving to a point, scaling and rotating two or more targets act about the centre of all of them, measured before the play, so axes and what is drawn on them stay together; the measured group is never played. `indicate` and `wiggle` act about the centre of axes that are targets together with something drawn on them, for the axes and those objects, and about its own centre for every other target, so two separate formulas each pulse in place. `_center` and `_center_<axes>` start with an underscore, so no object id can be one.
+- **Morphs.** A `transform` never changes its source: the source leaves the screen before the play and a copy of it morphs into the destination, which is then drawn above everything on screen, as every entering object is. `TransformMatchingTex` puts its source back as it was and removes it. Either source can enter again later.
+- **Exact end states.** Where `MoveAlongPath` and `Wiggle` leave an object depends on the frames drawn, and Manim's cache key for a play holds every object on screen, so `move_along` and `wiggle` put their objects back exactly after the play: a re-render with no edit then reuses every later clip. The camera keeps the rotation of the last frame it drew, which the key holds too, and a move Manim reuses from its cache draws no frame, so after `move_camera` the camera's rotation is reset to where the move ends. That changes no frame, because the camera resets it before each frame it draws.
+
+Every Manim name in the generated code starts with a capital letter, so no object id can hide it; the lower-case names are `np`, `self`, `config` and the easings, which no object id may be (section 4).
 
 Anchors: `origin` is `move_to(ORIGIN)`; `edge_up`, `edge_down`, `edge_left`, and `edge_right` are `to_edge` of `UP`, `DOWN`, `LEFT`, and `RIGHT`. A non-zero shift is a `shift(np.array([dx, dy, 0.0]))` after the anchor.
+
+Shapes are built at their fields, one colour being the stroke and the fill. A circle and a rectangle are always moved to their centre, which is a field, not an offset; an arrow has `buff=0`, so it spans its start to its end:
+
+```python
+dot_1 = Dot(np.array([cx, cy, 0.0]), radius=radius, color="#RRGGBB")
+point_1 = Dot(axes_1.c2p(x, y), radius=radius, color="#RRGGBB")
+line_1 = Line(np.array([x1, y1, 0.0]), np.array([x2, y2, 0.0]), color="#RRGGBB", stroke_width=strokeWidth)
+arrow_1 = Arrow(np.array([x1, y1, 0.0]), np.array([x2, y2, 0.0]), buff=0, color="#RRGGBB", stroke_width=strokeWidth)
+circle_1 = Circle(radius=radius, color="#RRGGBB", stroke_width=strokeWidth, fill_opacity=fillOpacity)
+circle_1.move_to(np.array([cx, cy, 0.0]))
+rectangle_1 = Rectangle(width=width, height=height, color="#RRGGBB", stroke_width=strokeWidth, fill_opacity=fillOpacity)
+rectangle_1.move_to(np.array([cx, cy, 0.0]))
+```
 
 Expression examples the generator must emit:
 
@@ -542,6 +686,95 @@ self.play(title_1.animate.shift(np.array([0.0, -0.4, 0.0])), run_time=8)
 self.wait(8)
 self.play(title_1.animate.set_color("#F2CC8F"), run_time=8)
 ```
+
+### Beats, normative output
+
+<!-- fmt: off -->
+
+A dot and a circle added from Add, two seconds each, then five beats of one second: both scaled by 1.5 with Rush in, the circle turned a quarter, both indicated, and the dot faded out and in again. These are the scene's beat blocks:
+
+```python
+        dot_1 = Dot(np.array([0.0, 0.0, 0.0]), radius=0.08, color="#E07A5F")
+        self.play(GrowFromCenter(dot_1), run_time=2)
+
+        circle_1 = Circle(radius=1, color="#58C4DD", stroke_width=4, fill_opacity=0)
+        circle_1.move_to(np.array([0.0, 0.0, 0.0]))
+        self.play(Create(circle_1), run_time=2)
+
+        _center = VGroup(dot_1, circle_1).get_center()
+        self.play(dot_1.animate.scale(1.5, about_point=_center), circle_1.animate.scale(1.5, about_point=_center), run_time=1, rate_func=rush_into)
+
+        self.play(Rotate(circle_1, angle=90 * DEGREES), run_time=1)
+
+        self.play(Indicate(dot_1), Indicate(circle_1), run_time=1)
+
+        self.play(FadeOut(dot_1), run_time=1)
+
+        dot_1 = Dot(np.array([0.0, 0.0, 0.0]), radius=0.08, color="#E07A5F")
+        self.play(FadeIn(dot_1), run_time=1)
+```
+
+The circle morphs, over two seconds, into a rectangle whose entrance is that beat:
+
+```python
+        rectangle_1 = Rectangle(width=4, height=2, color="#58C4DD", stroke_width=4, fill_opacity=0)
+        rectangle_1.move_to(np.array([0.0, 0.0, 0.0]))
+        self.remove(circle_1)
+        self.play(ReplacementTransform(circle_1.copy(), rectangle_1), run_time=2)
+```
+
+A point on axes moves along a plot for two seconds linearly, then for two seconds there and back:
+
+```python
+        point_1.save_state()
+        self.play(MoveAlongPath(point_1, plot_1), run_time=2, rate_func=linear)
+        point_1.restore()
+        point_1.move_to(plot_1.point_from_proportion(1))
+
+        point_1.save_state()
+        self.play(MoveAlongPath(point_1, plot_1), run_time=2, rate_func=there_and_back)
+        point_1.restore()
+        point_1.move_to(plot_1.point_from_proportion(0))
+```
+
+A two-second camera move in a 3D scene:
+
+```python
+        self.move_camera(phi=75 * DEGREES, theta=45 * DEGREES, zoom=0.8, run_time=2)
+        self.camera.reset_rotation_matrix()
+```
+
+Opacity 0.5 on an outline circle and on a rectangle whose `fillOpacity` is 0.3, then on a plot and a text; a flash of the text; the circle uncreated with Rush in, written as its mirror image; and the text unwritten on its default easing:
+
+```python
+        self.play(circle_1.animate.set_stroke(opacity=0.5).set_fill(opacity=0), rectangle_1.animate.set_stroke(opacity=0.5).set_fill(opacity=0.15), run_time=1)
+
+        self.play(plot_1.animate.set_stroke(opacity=0.5), title_1.animate.set_opacity(0.5), run_time=1)
+
+        self.play(Flash(title_1, flash_radius=np.hypot(title_1.width, title_1.height) / 2 + SMALL_BUFF), run_time=1, rate_func=smooth)
+
+        self.play(Uncreate(circle_1), run_time=1, rate_func=rush_from)
+
+        self.play(Unwrite(title_1), run_time=1, rate_func=smooth)
+```
+
+Indicate, then wiggle, on labelled axes together with their plot, and on a separate text:
+
+```python
+        _center_axes_1 = axes_1_group.get_center()
+        self.play(Transform(axes_1_group, axes_1_group.copy().scale(1.2, about_point=_center_axes_1).set_color(PURE_YELLOW), rate_func=there_and_back), Transform(plot_1, plot_1.copy().scale(1.2, about_point=_center_axes_1).set_color(PURE_YELLOW), rate_func=there_and_back), Indicate(title_1), run_time=1)
+
+        _center_axes_1 = axes_1_group.get_center()
+        axes_1_group.save_state()
+        plot_1.save_state()
+        title_1.save_state()
+        self.play(Wiggle(axes_1_group, scale_about_point=_center_axes_1, rotate_about_point=_center_axes_1), Wiggle(plot_1, scale_about_point=_center_axes_1, rotate_about_point=_center_axes_1), Wiggle(title_1), run_time=1)
+        axes_1_group.restore()
+        plot_1.restore()
+        title_1.restore()
+```
+
+<!-- fmt: on -->
 
 ### Beat timing and frames
 
@@ -609,7 +842,7 @@ curve_1 = ParametricFunction(
 self.play(Create(curve_1), run_time=2)
 ```
 
-The header, seed, and imports match Journey A. Degrees in the document are converted with `DEGREES`. The camera call is not a beat. There is no `begin_ambient_camera_rotation`.
+The header, seed, and imports match Journey A. Degrees in the document are converted with `DEGREES`. The camera call is not a beat: it sets the opening orientation, and a later turn of the camera is a `move_camera` beat (above). There is no `begin_ambient_camera_rotation`.
 
 ## 6. Preview and re-render strategy
 
@@ -700,8 +933,8 @@ A malformed request gets `error bad_request` with a message for developers: inva
 | `set_show_labels` | `objectId`, `value` as a boolean |
 | `set_domain` | `objectId`, `xMin`, `xMax` |
 | `set_beat_duration` | `beatId`, `duration` |
-| `set_beat_color` | `beatId`, `color` |
-| `set_beat_shift` | `beatId`, `shift` as `[dx, dy]` |
+| `set_beat_color` | `beatId`, `color`: `set_beat_param` of `color`, for a `set_color` beat |
+| `set_beat_shift` | `beatId`, `shift` as `[dx, dy]`: `set_beat_param` of `shift`, for a `move` beat |
 | `add_axes_function`, `add_formula_transform`, `add_three_d_axes` | `afterBeatId`: a beat id or null |
 | `add_formula` | `afterBeatId`, `latex` (optional) |
 | `add_text` | `afterBeatId`, `text` (optional) |
@@ -711,6 +944,26 @@ A malformed request gets `error bad_request` with a message for developers: inva
 | `set_resolution` | `objectId`, `value` as `[u, v]` integers |
 | `set_curve_component` | `objectId`, `index` (0, 1 or 2), `expression` |
 | `set_export_profile` | `format`, `width`, `height`, `fps`, `transparent` |
+| `add_beat` | `afterBeatId`, `action`, `targets` as object ids, `params` (optional): settings of the kind |
+| `set_beat_action` | `beatId`, `action`, `targets` (optional) |
+| `set_beat_targets` | `beatId`, `targets` |
+| `set_beat_param` | `beatId`, `key`: a setting of the beat's kind, `value` |
+| `set_beat_easing` | `beatId`, `easing`: an easing, or null for the kind's default |
+| `delete_beat` | `beatId` |
+| `move_beat` | `beatId`, `toIndex`: the beat's index afterwards |
+| `add_shape` | `kind`: a shape type, `afterBeatId`, `axesId` (a point on axes only) |
+| `set_shape_param` | `objectId`, `key`: a setting of the shape, `value` |
+
+Every edit is checked whole after it is applied, so one that breaks a rule of section 4 is refused with that rule's message and no field, such as "scene.beats[1] indicates title_1 before it is on screen". The beat and shape edits work as follows.
+
+- `add_beat` inserts a beat of one second, on its kind's default easing. The settings `params` leaves out take the values of section 4; a camera move starts from the camera in effect before it. The focus is the new beat and its first target. It refuses "unknown beat beat_9" (`afterBeatId`), "Unknown beat kind bounce." (`action`), a kind the scene does not offer with the message of section 4 for the new beat's path, such as "scene.beats[8].action move_camera is only for a 3D scene" (`action`), "targets must be a list of object ids" and "unknown object ghost_1" (`targets`), and "params must be an object", "params.size is not a setting of scale" and a setting outside its rule, such as "params.factor must be from 0.01 to 100" (`params`).
+- `set_beat_action` gives a new kind its default settings, and keeps the easing when the new kind allows it and does not take it by default. It keeps the targets unless the edit names them, and a kind without targets has none. `set_beat_targets` replaces the targets.
+- Beat edits store the targets of a kind that takes one or more in canonical order: document order, then each axes moved to just before the first object drawn on it among the targets. The same objects in another order are no change. A morph and a move along a path keep the order of their roles. `tests/fixtures/beats/canonical-order.json` pins the rule for the worker and the UI.
+- `set_beat_param` and `set_shape_param` judge `value` by the setting's rule and store numbers at three decimals and colors in upper case: "move has no setting point" and "circle has no setting width" (`key`), "only a shape has radius" (`objectId`), and "value must be from 0.001 to 50" (`value`).
+- `set_beat_easing` with null, or with the kind's default easing, leaves `easing` out. It refuses "wait has no easing", "bounce is not an easing" and "smooth is not an easing for indicate" (`easing`).
+- `delete_beat` focuses the beat now in its place, else the one before it. `move_beat` refuses "toIndex must be from 0 to 7" (`toIndex`), and moving a beat to its own index changes nothing.
+- `set_beat_action`, `set_beat_targets` and `delete_beat` refuse a beat a template lists: "beat_1 belongs to the axes_function template, so its kind and targets are set by the template." and "beat_1 belongs to the axes_function template, so it cannot be deleted. Delete one of its objects instead." (`beatId`). `set_beat_duration`, `set_beat_easing` and `move_beat` take such a beat.
+- `add_shape` inserts the shape with the values of section 4 and its entrance beat of two seconds, `grow` for a dot or a point on axes, `grow_arrow` for an arrow and `create` for the others, and focuses both. It refuses "Unknown shape star." (`kind`), "A 3D scene only holds the 3D template.", and "axesId must name an axes object", "only a point on axes has axesId" or, when the middle of a range of the axes is beyond the bounds of a point, "the middle of the x range of axes_1 must be from -1000000 to 1000000 for a point on axes" (`axesId`). `set_object_color` and `set_object_name` work on shapes too.
 
 **Events.**
 
@@ -735,7 +988,8 @@ The `state` reply holds the whole document and what is derived from it:
   "projectPath": string,              // the bound project folder
   "document": object,                 // project.json as a JSON object
   "derived": { "starts": number[], "total": number, "dirty": boolean[],
-               "canUndo": boolean, "canRedo": boolean },
+               "canUndo": boolean, "canRedo": boolean,
+               "onScreen": string[][] },   // the ids on screen before each beat, then after the last
   "index": null | {
     "output": string | null,          // the full preview MP4
     "beats": [ { "id": string, "index": integer, "derivedStart": number,
@@ -750,7 +1004,7 @@ The `state` reply holds the whole document and what is derived from it:
 }
 ```
 
-`dirty` is for the preview profile. Every absolute path the supervisor sends, `projectPath` and the `index`, `beat_ready` and `done` paths, is the bound folder's long path as `projectPath` spells it, joined with a path inside that folder. The supervisor never sends a path taken from Manim's log or segment list, or an 8.3 alias, because the webview can read only files under a `projectPath` the shell has seen. The name `code` is kept for status codes: `rejected.code`, `error.code`, `warning.code` and `queued.code`.
+`dirty` is for the preview profile. `onScreen` has one list more than there are beats: the ids on screen before each beat and after the last, in document order (section 4). Every absolute path the supervisor sends, `projectPath` and the `index`, `beat_ready` and `done` paths, is the bound folder's long path as `projectPath` spells it, joined with a path inside that folder. The supervisor never sends a path taken from Manim's log or segment list, or an 8.3 alias, because the webview can read only files under a `projectPath` the shell has seen. The name `code` is kept for status codes: `rejected.code`, `error.code`, `warning.code` and `queued.code`.
 
 **Refusal codes.** A message in quotes is fixed text. The other messages name the field, beat, file or id they are about. `field` is the JSON path from the document root for open and reload, such as `scene.objects[2].params.latex`, and the edit's field name for an edit, such as `expression`.
 
@@ -826,7 +1080,7 @@ Then it writes `scene.py`, builds the command line, starts Manim and sends `star
 
 ### Progress and the preview index
 
-Before a job, the supervisor copies the newest file of each beat that is not fresh into `cache/last-good/`, and records the size and modification time of every file in this job's quality folder and in its partials folder, `partial_movie_files/MainScene`. Manim finishes one beat before the next, and reuses any partial that already exists. A partial that is new or changed since that record was written by this run; it counts as finished once one with a later modification time exists, and it belongs to the next beat that is not fresh. Partials that share a modification time have no known order, so their beats wait for the segment list. When Manim exits, the segment list it wrote (`partial_movie_file_list.txt` in that folder) gives the partial of every beat in order, including the ones it reused, and settles the index. `beat_ready` goes out in increasing beat order, so a finished beat waits until every beat before it is known. Progress never comes from Manim's log text, which Rich wraps to its own width. The supervisor writes a preview index: beat id, derived start, duration, partial path, and whether that beat is fresh. A file counts as fresh only for the document it was rendered from: the index stores, with each file, a key of the beat and every beat before it, so an undo brings back the beat's earlier file as fresh when that file still exists, and a file from another document never shows without the badge. The keys stay on disk and are not sent to the UI. On disk the index names its files relative to the project folder, so a copied or moved project finds its own media, and a stored path outside the project's media and last-good folders is ignored. Phase 1 checks that a full render yields 8 partials in beat order, and that changing the last beat leaves the first 7 hashes unchanged.
+Before a job, the supervisor copies the newest file of each beat that is not fresh into `cache/last-good/`, and records the size and modification time of every file in this job's quality folder and in its partials folder, `partial_movie_files/MainScene`. Manim finishes one beat before the next, and reuses any partial that already exists. A partial that is new or changed since that record was written by this run; it counts as finished once one with a later modification time exists, and it belongs to the next beat that is not fresh. After the first camera move, beats that are not fresh wait for the segment list: Manim's key for a play holds the camera, so a camera state that a move left depending on the frames drawn would make Manim render a later beat again although the index counts it as fresh, and its new partial would be taken for the next beat that is not fresh. The generated code resets the one such state known, the camera's rotation (section 5), and the wait guards against any other. Partials that share a modification time have no known order, so their beats wait for the segment list. When Manim exits, the segment list it wrote (`partial_movie_file_list.txt` in that folder) gives the partial of every beat in order, including the ones it reused, and settles the index. `beat_ready` goes out in increasing beat order, so a finished beat waits until every beat before it is known. Progress never comes from Manim's log text, which Rich wraps to its own width. The supervisor writes a preview index: beat id, derived start, duration, partial path, and whether that beat is fresh. A file counts as fresh only for the document it was rendered from: the index stores, with each file, a key of the beat and every beat before it, so an undo brings back the beat's earlier file as fresh when that file still exists, and a file from another document never shows without the badge. The keys stay on disk and are not sent to the UI. On disk the index names its files relative to the project folder, so a copied or moved project finds its own media, and a stored path outside the project's media and last-good folders is ignored. Phase 1 checks that a full render yields 8 partials in beat order, and that changing the last beat leaves the first 7 hashes unchanged.
 
 Manim reuses any partial movie that exists, so a cut-off partial would break every later render of its beat. The supervisor records a partial in the preview index, or marks its beat fresh, only when its container is complete. An MP4 or MOV is complete when its top-level boxes add up to exactly the file length, none has size 0 (the placeholder FFmpeg fills in when it closes a file), and one of them is `moov`. A WebM is complete when an EBML header is followed by top-level elements of known size that add up to exactly the file length, one of them a Segment. The check uses the standard library only. Before each render the supervisor deletes the incomplete partials in this job's quality folder, so those beats render again. A render that exits 0 after using an incomplete partial is an error: that partial is deleted, nothing is published, and the next render redoes its beat. A PNG-sequence export writes no partials, so it reads no segment list.
 
@@ -953,7 +1207,7 @@ Every command that needs the supervisor is asynchronous, so the window keeps rep
 | `third_party_notices` | | the text of the shipped `THIRD_PARTY_NOTICES.txt` | none; reads the file only |
 | `open_project_path` | `path` | `state` or `rejected` | `open_project`, 30 s; only in debug builds and builds with the `test-hooks` feature, for the journey tests |
 
-`tests/fixtures/protocol/commands.json` lists every supervisor request with the type of each field, and every Tauri command with its arguments, the supervisor request it sends, and whether only debug and `test-hooks` builds have it. The worker's, the shell's and the UI's tests all check against it. Beside it, `requests.json` holds one request line per supervisor command, in the shell's id order, with the replies each one expects: the worker's tests replay it in process and on the shell's spawn line, and the shell's tests build every line from the shell's `Request` type. `replies.json` records the lines a worker wrote for it, which the UI's parsers read; `uv run pytest tests/test_shell_fixture.py --update-golden` rewrites it. `export-choices.json` gives the export formats, sizes and frame rates, the messages of the opaque formats, and the beat and timeline limits, for the worker's and the UI's tests.
+`tests/fixtures/protocol/commands.json` lists every supervisor request with the type of each field, and every Tauri command with its arguments, the supervisor request it sends, and whether only debug and `test-hooks` builds have it. The worker's, the shell's and the UI's tests all check against it. Beside it, `requests.json` holds one request line per supervisor command, in the shell's id order, with the replies each one expects: the worker's tests replay it in process and on the shell's spawn line, and the shell's tests build every line from the shell's `Request` type. `replies.json` records the lines a worker wrote for it, which the UI's parsers read; `uv run pytest tests/test_shell_fixture.py --update-golden` rewrites it. `export-choices.json` gives the export formats, sizes and frame rates, the messages of the opaque formats, and the beat and timeline limits, for the worker's and the UI's tests. `edit-ops.json` lists every edit op with the type of each field, the enums those types name, and examples, each accepted on a start document it names. The worker applies every example as one undo step, both to a session and as an `edit` request to a supervisor, whose reply, `get_state`, undo and redo and a `reload` from disk read the edit back. The UI's edit builders must produce the examples, and its components build every edit they send with those builders. `beat-kinds.json` is the catalog of section 4, which `uv run pytest tests/test_beats.py --update-golden` rewrites from `beats.py`. `tests/fixtures/beats/canonical-order.json` gives the order beat edits store targets in, for the worker's rule and the UI's copy of it.
 
 **Dialogs.** One dialog command runs at a time across New, Sample, Open, Save As and Export code; one that arrives while another runs returns `{cancelled: true}`. `{cancelled: true}` also means that no folder or file was picked, or that the user chose Cancel in the leave warning. When Save As in the leave warning moved the project and the command then opened no other project, New, Sample and Open return `{savedAs: state}`, the Save As reply, and the UI follows it as it follows Save As. If that open was refused or failed, rather than cancelled at the picker, the notice "The project was saved, but the next project could not be opened: <reason>." says why. A Save As in the leave warning that is refused returns its refusal. A window close request while a dialog command runs leaves the window open and adds the notice "The window stays open while a dialog or a Save As is still running. Close the window again once that is done." A notice is not added again while one with the same text is open, so repeated close requests show one. A close request while the quit warning runs is ignored without a notice.
 
@@ -977,13 +1231,29 @@ Every command that needs the supervisor is asynchronous, so the window keeps rep
 | `project_changed` | One prompt at a time, with the message and Reload (which discards undo history), Overwrite and Cancel. The rest of the window is inert while it is open, and Escape is Cancel. The queue waits while it is open, and a further `project_changed` joins it. Reload drops the joined requests and previews afterwards. Overwrite retries each joined request once, in order, a job with a new id and an export with its profile and Re-export flag. Cancel drops them |
 | `project_unavailable` | A banner with the message and a Save As… button |
 | `read_failed`, `lock_failed`, `linked_folder`, `path_unsupported` | A banner with the message |
-| `invalid_edit`, `invalid_text`, `unsupported_expression`, `limit_exceeded`, `untrusted_latex` from an edit | A banner, and an error on the edited object's field |
+| `invalid_edit`, `invalid_text`, `unsupported_expression`, `limit_exceeded`, `untrusted_latex` from an edit | A banner, and an error on the edited object's field, or for an edit of a beat under the beat editor's control that sent it. `add_beat`, `add_shape` and the template inserts show the banner only |
 | `tex_unavailable` | A banner; the TeX warning under the status line stays |
 | Any other code | A banner with the message |
 
 A banner for an `error` line shows `message` as one line, with Show details for `details` and Dismiss, which clears it for good. After a preview's `render_failed` "manim used an incomplete clip <file>; it was removed, so render again", the banner also offers Render again, which clears it and queues a preview at once.
 
-**Fields, selection and the timeline.** Number fields take plain decimals with a dot or a comma as the decimal point (D24). An empty field, or text that is not a decimal, shows the stored value again and makes no edit, and so does a refused edit. A field error appears under the field the refusal is about, matched on the edit's object id and the refusal's `field`, and for the axes range and length edits, which all name `value`, also on the op and the axis. It goes when the selection changes, and on undo, redo and Open. The selection never names a beat or an object the document no longer holds. A duration drag clamps the duration, to the millisecond, between 0.1 s and 120 s less the other beats. It writes nothing until pointer-up, and the beat keeps its new duration while the edit is applied. A drag interrupted without a release, by a pointer cancel or a lost capture, returns to the duration before the drag and makes no edit (D48). Touch and pen on the handle resize the beat instead of scrolling the timeline. While TeX is blocked, a formula's field says "LaTeX is not working on this PC, so this formula cannot render. Reinstall Mathimator.", and axes that show labels say the same of the axis labels.
+**Fields, selection and the timeline.** Number fields take plain decimals with a dot or a comma as the decimal point (D24). An empty field, or text that is not a decimal, shows the stored value again and makes no edit, and so does a refused edit. A field error appears under the field the refusal is about, matched on the edit's object id and the refusal's `field`; for the axes range and length edits, which all name `value`, also on the op and the axis, and for a shape's settings, which name `value` too, on the setting's key. A refused edit of a beat shows under the beat editor's control that sent it, whatever the refusal's field, because a refusal by a document rule names none: a setting's refusal under that setting, a move or a delete under the order buttons. An error goes when the selection changes, and on undo, redo and Open. The selection never names a beat or an object the document no longer holds. A duration drag clamps the duration, to the millisecond, between 0.1 s and 120 s less the other beats. It writes nothing until pointer-up, and the beat keeps its new duration while the edit is applied. A drag interrupted without a release, by a pointer cancel or a lost capture, returns to the duration before the drag and makes no edit (D48). Touch and pen on the handle resize the beat instead of scrolling the timeline. While TeX is blocked, a formula's field says "LaTeX is not working on this PC, so this formula cannot render. Reinstall Mathimator.", and axes that show labels say the same of the axis labels.
+
+**Selection.** The selection is a beat and an object at once, and either may be none. Clicking a beat selects it and its first target, and keeps the selected object when the beat has no targets; clicking an object keeps the selected beat. An edit's `focus` selects what it names and keeps the part it leaves null. Open, Sample and New clear both. Add and + Beat insert after the selected beat, or at the end when none is. The Inspector shows the beat editor of the selected beat, then the fields of the selected object; for a formula transform's beat, the fields of both formulas.
+
+**+ Beat.** A button above the timeline, disabled while the worker is not ready, sends `add_beat` after the selected beat with a kind and targets chosen from what `derived.onScreen` says is on screen at that point, and lets the worker fill in the settings. With no object selected it adds a `wait`, or a `move_camera` in a 3D scene. With an object off screen there, it adds the object's natural entrance: `write` for a formula or a text, `grow` for a dot or a point on axes, `grow_arrow` for an arrow and `create` for the others. With an object on screen there, it adds `indicate`, which for axes also takes the on-screen objects drawn on them, so a graph is emphasised as one. The worker's focus selects the new beat, and a refusal shows in the banner. A timeline cell shows the beat's start, its kind's label and the names of its targets, such as "Fade out · Axes, Sine", "Transform · Circle → Rectangle" or "Move along a path · Dot along Sine". An empty timeline says "No beats yet. Add an object, or use + Beat."
+
+**Beat editor.** The UI's copy of the catalog, `desktop/src/beatKinds.ts`, and its rules in `desktop/src/beatRules.ts` generate it. It shows the kind's label, the beat id and its path, such as `scene.beats[5]`, so a refusal can be matched to the beat, and for a beat a template lists "Set by the Axes and function template.", naming the template as Add does. Each control sends one edit:
+
+- Kind: the kinds the scene offers, grouped by family in catalog order, with each kind that no object could take at that point disabled. Choosing one sends `set_beat_action` with targets the UI picks: the current targets the new kind can take there, an exit also taking the on-screen objects drawn on axes among them; else the selected object, if the kind can take it; else the first object in document order that it can, and when that object is axes and the kind takes what is drawn on them along, also the on-screen objects drawn on them that the kind takes, as checking the axes' box does. A morph keeps a destination that enters in this beat, and a role on screen, a morph's source or either role of a move along a path, starts from the selected object.
+- Targets: for a kind of one or more objects, a box for each object the kind can take there and for each current target, in canonical order; a target that no longer fits says "Not available at this point". Checking axes for a kind that takes what is drawn on them along (the exits, `move`, `move_to`, `scale`, `rotate`, `indicate`, `wiggle` and `wave`) also checks those of them that are on screen and of a type the kind takes, and in an exit their boxes follow the axes ("Leaves with its axes"). Unchecking axes unchecks only the axes, and the last checked box cannot be unchecked. A pair has one select per role: From and To, or Object and Path. Each change sends `set_beat_targets`.
+- Duration and settings: the duration field, then for each setting of the kind a number field, x and y fields for a point or a shift, or a colour field, with its range as a hint ("From 0.01 to 100.") and angles in degrees. A setting sends `set_beat_param`. A move along a path says "The object jumps to the start of the path when the beat begins.", and with an easing that returns, that it ends back at the start.
+- Easing: "Default (Smooth)", naming the kind's default and sending null, then the kind's other easings, sent with `set_beat_easing`. A wait has none.
+- Move earlier and Move later (`move_beat`), disabled at the ends, and Delete beat (`delete_beat`).
+
+The kind, the targets and Delete beat are disabled for a beat a template lists, with "To remove a template's beat, delete one of its objects."
+
+**Shapes.** Each item of Add's Shapes group sends `add_shape` after the selected beat. Point on axes is disabled, with the title "Add axes first", while the document has no 2D axes. Its `axesId` is the selected object if that is axes, else the axes of the selected plot or point, else the first axes on screen at the insertion point, else the first axes in the document. In a 3D scene the other shapes stay enabled and the worker's refusal shows in the banner, as for Formula and Text. A shape's fields are one control for each of its settings, the colour last, and each sends `set_shape_param`; a point on axes picks its axes from a select of the 2D axes, and its x and y are coordinates on those axes.
 
 **Status line.**
 
@@ -1139,11 +1409,25 @@ Pass when all of these hold:
 
 The phase 5 report records Python runtime size, TinyTeX size, Typst size, WebView2 size, and installer size. There is no pass/fail size in this spec. The expected toolchain range before tuning is several hundred MB to about 1 GB, plus about 127 MB for the embedded WebView2 offline installer.
 
+### Beats and shapes
+
+The beat catalog, the shapes, re-entry and easing are specified in sections 4 and 5. Pass when all of these hold:
+
+- Every beat kind renders in a preview, with one partial movie per beat, and so does every shape on its Add entrance. Every easing renders on a play and on a camera move.
+- A document that uses no easing, no new kind and no shape keeps the `project.json` bytes, the `scene.py`, the beat and chain keys, the `sceneHash` and the `exportKey` it had before the catalog, so no preview or export is thrown away.
+- An object can leave the screen and enter again, by every exit and every entrance, and it enters as its fields define it. A morph's source can enter again, unchanged.
+- A beat on several objects plays one animation for each and leaves the order the objects are drawn in as it was: no `self.play` holds a `VGroup`.
+- A refusal of a beat names the beat and its object, in the words of section 4, and changes nothing.
+- A preview rendered again with no edit writes no new partial movie, camera moves included.
+- + Beat adds the kind and targets of section 6, and the beat editor changes a beat's kind, targets, settings and easing, moves it and deletes it, each change one undo step.
+
 ### Tests by phase
 
 Automated tests are pytest for the worker, the document, codegen, the scripts and the CI files; vitest for the UI, its rule modules, hooks and components in jsdom; and cargo test for the shell. Scripted UI checks on the reference machine cover the latency budgets. The worker, the shell and the UI check one set of shared fixtures, so a change one side makes and another does not follow fails a test:
 
-- `tests/fixtures/protocol/`: `commands.json`, `requests.json`, `replies.json` and `export-choices.json`, as section 6 describes them.
+- `tests/fixtures/protocol/`: `commands.json`, `requests.json`, `replies.json`, `export-choices.json`, `edit-ops.json` and `beat-kinds.json`, as section 6 describes them.
+- `tests/fixtures/beats/canonical-order.json`: the stored order of a beat's targets, for the worker's rule and the UI's.
+- `tests/fixtures/render-smoke/`: a project for each beat kind and each shape and the other render-smoke scenes, which the worker previews in the render tier and the UI's state parser reads whole.
 - `tests/fixtures/timing/frame-boundaries.json`: beat boundaries and the frames they fall on, for codegen's `_beat_time` and the UI's scrub (section 5).
 - `tests/fixtures/equation/translate-cases.json`: the Typst math of each test formula, for the shell's translator and the worker's reference.
 
@@ -1156,6 +1440,7 @@ pytest markers sort out the slow tiers: `render` and `export` run real Manim, `o
 | 3 | Translator cases in `tests/fixtures/equation/translate-cases.json` for every supported command, for `\int`, and for groups nested past the 100-level bound. Equation budget on `y = \sin(x)`. Generated source uses `MathTex` only. An unsupported formula still renders in the scene. |
 | 4 | All three templates insert the specified objects and beats. 3D source and argv match section 5 for surface and curve. Refusal rules for mixed 2D/3D projects. 20 second insert measurement. |
 | 5 | Export matrix in section 7, including alpha checks and the ban on upscaling. `typst --version` is 0.15.0. With the network disconnected, the bundled interpreter imports `manim`, and `latex` and `dvisvgm` run. The clean-machine install test. `runtime.json` names the bundled worker, the SHA-256 of this checkout's `uv.lock` and the Python the build chose, and Typst's `LICENSE` and `NOTICE` ship beside it. The generated notices name CPython and its native libraries, every bundled Python distribution, PyAV's FFmpeg libraries with x264, x265 and LAME and the written source offer, pycairo, Typst, TinyTeX and its TeX Live packages, the Rust crates, the npm runtime packages and WebView2, and the bundle check refuses notices written for other lockfiles. The Notices panel shows them. |
+| Beats and shapes | The catalog equals `beat-kinds.json`, and a setting, an easing or a shape param that breaks its rule is refused on load. The on-screen rules with their messages, re-entry after every exit, a morph's source entering again, the axes rule, the camera in effect and `derived.onScreen`, and the canonical order of `canonical-order.json`. A codegen golden for every kind, for several targets with their centres, opacity on every type, every easing and the mirrored ones, re-entry, morphs, every shape and camera moves, and the examples of section 5 against the spec itself. The legacy goldens, `tests/fixtures/beats/legacy-goldens.json`, for the fixtures and the template inserts. Every example of `edit-ops.json` accepted as one undo step, also as an `edit` request that reads back from `get_state` and from disk, and each beat and shape op's refusals with their fields, its focus, the no-op rule, template-owned beats and the repair of `delete_object`. Manim runs with `PYTHONHASHSEED=0` whatever the user set, and a preview's beats after the first camera move wait for the segment list. The render tier, `tests/test_beats_render.py`, previews each project in `tests/fixtures/render-smoke`, a scene for each kind and each shape and scenes for arrows, opacity, several targets, easings, re-entry and 3D, with one `beat_ready` per beat and a movie within one frame of the total, and previews the re-entry, several-targets, stable-cache and two 3D scenes three times with no edit, with no new partial movie after the first render. In the UI: the catalog copy, the edit builders and that no other source writes an edit, every render-smoke document parsed whole, the beat rules, + Beat and the timeline labels, the beat editor, the shape fields and the two-part selection. |
 
 ## 8. Phased build plan
 
@@ -1269,7 +1554,15 @@ These are out of v1. They are not part of the phases above.
 - Intra-beat rerender, and any cache finer than one `play` or `wait`.
 - Scenes longer than about 2 minutes. v1 refuses a total over 120 seconds rather than trying to make long scenes comfortable.
 - Code signing. v1 installers are unsigned, and a SmartScreen warning on first launch is a distribution consequence, not a feature. The release pipeline's signing hook is off (section 8).
-- Arrow and dot objects, beat reorder as a drag gesture, a user-editable preview profile, 4K, and a seed field in the inspector.
+- Beat reorder as a drag gesture (Move earlier and Move later are buttons), a user-editable preview profile, 4K, and a seed field in the inspector.
+- Shapes in a 3D scene, which would have to be fixed in the frame with a call of their own (`add_fixed_in_frame_mobjects`).
+- Options of a kind, such as Indicate's colour and scale, Fade in's direction, Circumscribe's shape and Flash's size.
+- A wave that runs across several objects as one: Manim's `ApplyWave` takes its extent from each object.
+- Arrows that grow, spin in and shrink with their tips.
+- Easings outside Manim's star import, such as its `ease_*` functions, and custom easing curves.
+- Morphs between 3D objects, a text morph that keeps matching letters (`TransformMatchingShapes`), and moving along a 3D curve.
+- Several changes in one beat, such as a move and a recolour together.
+- Copying and pasting beats, and selecting several objects in the timeline.
 
 ## 10. Risks
 
@@ -1289,6 +1582,7 @@ These are out of v1. They are not part of the phases above.
 | Session-wide asset scope | The webview can read every project folder bound since the app started, not only the open one (D27). | Until the per-project scope in section 9. |
 | Open project folders are held | On Windows an open project's folder cannot be renamed, moved or deleted in Explorer (section 4, D57 as amended). Users may take that for a bug. | Any phase, whenever a project is open. |
 | Interim `beat_ready` | While Manim runs, a `beat_ready` can name the wrong clip when Manim reuses the partial of a beat the index does not count as fresh. The segment list corrects the index when Manim exits, and the UI's `get_state` after `done` shows it. | Previews that reuse older partials. |
+| Manim's cache after a camera move | Manim's key for a play holds every object on screen and the camera, so a state that depends on the frames drawn changes the key of every later play, and Manim renders those plays again although nothing changed. Move along a path and wiggle put their objects back exactly, a camera move resets the camera's rotation to where it ends (section 5), and Manim runs with `PYTHONHASHSEED=0`, so a rotate or a wave play has the same key in every process. A state the code does not reset would make a preview with no edit render again, and while Manim runs its new clip would be taken for the wrong beat. So after the first camera move the supervisor takes no new clip while Manim runs, and the beats after it that are not fresh get their clips from the segment list when Manim exits instead of one by one. | 3D previews with camera moves, whose beats after the first get no clip one by one. |
 | A flush on every save | Every save flushes `project.json` to disk before it replaces the old file. On a slow disk that can push undo past 50 ms; dropping the flush would trade safety for speed. | Phase 2 budget measurements. |
 
 If phase 1 cannot host the sidecar in Tauri, stop. Electron 45 is the fallback named in section 1, and adopting it revises this spec. If a preset cannot be encoded with PyAV, stop and record the failing format. Adding a separate FFmpeg program revises this spec; v1 does not ship one.

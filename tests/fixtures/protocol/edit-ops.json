@@ -1,0 +1,302 @@
+{
+  "enums": {
+    "anchor": ["origin", "edge_up", "edge_down", "edge_left", "edge_right"],
+    "axis": ["x", "y", "z"],
+    "length_axis": ["x", "y"],
+    "three_d_mode": ["surface", "curve"],
+    "camera_key": ["phi", "theta", "zoom"],
+    "format": ["mp4", "gif", "webm", "png_sequence"],
+    "action": [
+      "wait",
+      "create",
+      "fade_in",
+      "write",
+      "grow",
+      "grow_arrow",
+      "draw_border_then_fill",
+      "spin_in",
+      "fade_out",
+      "uncreate",
+      "unwrite",
+      "shrink",
+      "move",
+      "move_to",
+      "scale",
+      "rotate",
+      "set_opacity",
+      "set_color",
+      "move_along",
+      "indicate",
+      "circumscribe",
+      "flash",
+      "wiggle",
+      "focus",
+      "wave",
+      "transform",
+      "transform_formula",
+      "move_camera"
+    ],
+    "easing": ["smooth", "linear", "rush_into", "rush_from", "slow_into", "double_smooth", "lingering", "there_and_back", "there_and_back_with_pause"],
+    "shape": ["dot", "line", "arrow", "circle", "rectangle", "axes_point"]
+  },
+  "starts": {
+    "reference": {"fixture": "reference-60", "edits": []},
+    "text": {"fixture": "reference-60", "edits": [{"op": "add_text", "afterBeatId": null}]},
+    "transform": {"fixture": "reference-60", "edits": [{"op": "add_formula_transform", "afterBeatId": null}]},
+    "empty": {"fixture": null, "edits": []},
+    "surface": {"fixture": null, "edits": [{"op": "add_three_d_axes", "afterBeatId": null}]},
+    "curve": {"fixture": null, "edits": [{"op": "add_three_d_axes", "afterBeatId": null}, {"op": "set_three_d_mode", "mode": "curve"}]},
+    "shapes": {"fixture": "reference-60", "edits": [
+      {"op": "add_shape", "kind": "dot", "afterBeatId": null},
+      {"op": "add_shape", "kind": "circle", "afterBeatId": null},
+      {"op": "add_shape", "kind": "line", "afterBeatId": null},
+      {"op": "add_shape", "kind": "arrow", "afterBeatId": null},
+      {"op": "add_shape", "kind": "rectangle", "afterBeatId": null},
+      {"op": "add_shape", "kind": "axes_point", "afterBeatId": null, "axesId": "axes_1"}
+    ]},
+    "exited": {"fixture": "reference-60", "edits": [{"op": "add_beat", "afterBeatId": null, "action": "fade_out", "targets": ["title_1"]}]},
+    "two_axes": {"fixture": "reference-60", "edits": [
+      {"op": "add_axes_function", "afterBeatId": null},
+      {"op": "add_shape", "kind": "axes_point", "afterBeatId": null, "axesId": "axes_1"}
+    ]},
+    "camera": {"fixture": null, "edits": [
+      {"op": "add_three_d_axes", "afterBeatId": null},
+      {"op": "add_beat", "afterBeatId": null, "action": "move_camera", "targets": []},
+      {"op": "set_beat_easing", "beatId": "beat_3", "easing": "there_and_back"}
+    ]}
+  },
+  "ops": {
+    "set_project_name": {
+      "fields": {"name": "string"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_project_name", "name": "Lesson"}}
+      ]
+    },
+    "set_object_name": {
+      "fields": {"objectId": "id", "name": "string"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_object_name", "objectId": "plot_1", "name": "Wave"}}
+      ]
+    },
+    "set_object_color": {
+      "fields": {"objectId": "id", "color": "color"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_object_color", "objectId": "plot_1", "color": "#ff0000"}},
+        {"start": "transform", "edit": {"op": "set_object_color", "objectId": "formula_1", "color": "#E07A5F"}},
+        {"start": "surface", "edit": {"op": "set_object_color", "objectId": "surface_1", "color": "#81B29A"}},
+        {"start": "curve", "edit": {"op": "set_object_color", "objectId": "curve_1", "color": "#81B29A"}},
+        {"start": "shapes", "edit": {"op": "set_object_color", "objectId": "circle_1", "color": "#F2CC8F"}}
+      ]
+    },
+    "set_expression": {
+      "fields": {"objectId": "id", "expression": "string"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_expression", "objectId": "plot_1", "expression": "cos(x)"}},
+        {"start": "surface", "edit": {"op": "set_expression", "objectId": "surface_1", "expression": "x*y"}}
+      ]
+    },
+    "set_latex": {
+      "fields": {"objectId": "id", "latex": "string"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_latex", "objectId": "title_1", "latex": "y = x^2"}},
+        {"start": "transform", "edit": {"op": "set_latex", "objectId": "formula_2", "latex": "y = \\tan(x)"}}
+      ]
+    },
+    "set_text": {
+      "fields": {"objectId": "id", "text": "string"},
+      "examples": [
+        {"start": "text", "edit": {"op": "set_text", "objectId": "text_1", "text": "Hello"}}
+      ]
+    },
+    "set_anchor": {
+      "fields": {"objectId": "id", "anchor": "enum:anchor"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_anchor", "objectId": "title_1", "anchor": "origin"}},
+        {"start": "transform", "edit": {"op": "set_anchor", "objectId": "formula_2", "anchor": "edge_down"}}
+      ]
+    },
+    "set_object_shift": {
+      "fields": {"objectId": "id", "shift": "number[2]"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_object_shift", "objectId": "title_1", "shift": [1, 0.5]}},
+        {"start": "transform", "edit": {"op": "set_object_shift", "objectId": "formula_1", "shift": [0, -1]}}
+      ]
+    },
+    "set_axes_range": {
+      "fields": {"objectId": "id", "axis": "enum:axis", "value": "number[3]"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_axes_range", "objectId": "axes_1", "axis": "x", "value": [-5, 5, 1]}},
+        {"start": "surface", "edit": {"op": "set_axes_range", "objectId": "axes_1", "axis": "z", "value": [-3, 3, 1]}}
+      ]
+    },
+    "set_length": {
+      "fields": {"objectId": "id", "axis": "enum:length_axis", "value": "number"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_length", "objectId": "axes_1", "axis": "y", "value": 3}}
+      ]
+    },
+    "set_show_labels": {
+      "fields": {"objectId": "id", "value": "boolean"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_show_labels", "objectId": "axes_1", "value": false}}
+      ]
+    },
+    "set_domain": {
+      "fields": {"objectId": "id", "xMin": "number", "xMax": "number"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_domain", "objectId": "plot_1", "xMin": -3, "xMax": 3}}
+      ]
+    },
+    "set_beat_duration": {
+      "fields": {"beatId": "id", "duration": "number"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_beat_duration", "beatId": "beat_1", "duration": 3}}
+      ]
+    },
+    "set_beat_color": {
+      "fields": {"beatId": "id", "color": "color"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_beat_color", "beatId": "beat_5", "color": "#00FF00"}}
+      ]
+    },
+    "set_beat_shift": {
+      "fields": {"beatId": "id", "shift": "number[2]"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_beat_shift", "beatId": "beat_6", "shift": [0, 1]}}
+      ]
+    },
+    "add_axes_function": {
+      "fields": {"afterBeatId": "id|null"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "add_axes_function", "afterBeatId": "beat_2"}}
+      ]
+    },
+    "add_formula_transform": {
+      "fields": {"afterBeatId": "id|null"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "add_formula_transform", "afterBeatId": null}}
+      ]
+    },
+    "add_three_d_axes": {
+      "fields": {"afterBeatId": "id|null"},
+      "examples": [
+        {"start": "empty", "edit": {"op": "add_three_d_axes", "afterBeatId": null}}
+      ]
+    },
+    "add_formula": {
+      "fields": {"afterBeatId": "id|null", "latex": "string?"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "add_formula", "afterBeatId": "beat_1", "latex": "a^2"}}
+      ]
+    },
+    "add_text": {
+      "fields": {"afterBeatId": "id|null", "text": "string?"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "add_text", "afterBeatId": null}}
+      ]
+    },
+    "delete_object": {
+      "fields": {"objectId": "id"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "delete_object", "objectId": "plot_1"}},
+        {"start": "transform", "edit": {"op": "delete_object", "objectId": "formula_2"}},
+        {"start": "curve", "edit": {"op": "delete_object", "objectId": "axes_1"}}
+      ]
+    },
+    "set_three_d_mode": {
+      "fields": {"mode": "enum:three_d_mode"},
+      "examples": [
+        {"start": "surface", "edit": {"op": "set_three_d_mode", "mode": "curve"}}
+      ]
+    },
+    "set_camera": {
+      "fields": {"key": "enum:camera_key", "value": "number"},
+      "examples": [
+        {"start": "surface", "edit": {"op": "set_camera", "key": "phi", "value": 70}}
+      ]
+    },
+    "set_resolution": {
+      "fields": {"objectId": "id", "value": "integer[2]"},
+      "examples": [
+        {"start": "surface", "edit": {"op": "set_resolution", "objectId": "surface_1", "value": [12, 12]}}
+      ]
+    },
+    "set_curve_component": {
+      "fields": {"objectId": "id", "index": "integer", "expression": "string"},
+      "examples": [
+        {"start": "curve", "edit": {"op": "set_curve_component", "objectId": "curve_1", "index": 2, "expression": "t / 2"}}
+      ]
+    },
+    "set_export_profile": {
+      "fields": {"format": "enum:format", "width": "integer", "height": "integer", "fps": "integer", "transparent": "boolean"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_export_profile", "format": "webm", "width": 1280, "height": 720, "fps": 30, "transparent": true}}
+      ]
+    },
+    "add_beat": {
+      "fields": {"afterBeatId": "id|null", "action": "enum:action", "targets": "id[]", "params": "object?"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "add_beat", "afterBeatId": "beat_3", "action": "indicate", "targets": ["title_1"]}},
+        {"start": "reference", "edit": {"op": "add_beat", "afterBeatId": null, "action": "wait", "targets": []}},
+        {"start": "exited", "edit": {"op": "add_beat", "afterBeatId": null, "action": "write", "targets": ["title_1"]}},
+        {"start": "shapes", "edit": {"op": "add_beat", "afterBeatId": null, "action": "scale", "targets": ["dot_1", "circle_1"], "params": {"factor": 2}}},
+        {"start": "surface", "edit": {"op": "add_beat", "afterBeatId": null, "action": "move_camera", "targets": []}}
+      ]
+    },
+    "set_beat_action": {
+      "fields": {"beatId": "id", "action": "enum:action", "targets": "id[]?"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_beat_action", "beatId": "beat_4", "action": "indicate", "targets": ["title_1"]}}
+      ]
+    },
+    "set_beat_targets": {
+      "fields": {"beatId": "id", "targets": "id[]"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_beat_targets", "beatId": "beat_5", "targets": ["plot_1", "title_1"]}}
+      ]
+    },
+    "set_beat_param": {
+      "fields": {"beatId": "id", "key": "string", "value": "param"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_beat_param", "beatId": "beat_6", "key": "shift", "value": [0, 1]}},
+        {"start": "reference", "edit": {"op": "set_beat_param", "beatId": "beat_5", "key": "color", "value": "#00FF00"}},
+        {"start": "camera", "edit": {"op": "set_beat_param", "beatId": "beat_3", "key": "zoom", "value": 2}}
+      ]
+    },
+    "set_beat_easing": {
+      "fields": {"beatId": "id", "easing": "enum:easing|null"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "set_beat_easing", "beatId": "beat_1", "easing": "linear"}},
+        {"start": "camera", "edit": {"op": "set_beat_easing", "beatId": "beat_3", "easing": null}}
+      ]
+    },
+    "delete_beat": {
+      "fields": {"beatId": "id"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "delete_beat", "beatId": "beat_7"}}
+      ]
+    },
+    "move_beat": {
+      "fields": {"beatId": "id", "toIndex": "integer"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "move_beat", "beatId": "beat_4", "toIndex": 6}}
+      ]
+    },
+    "add_shape": {
+      "fields": {"kind": "enum:shape", "afterBeatId": "id|null", "axesId": "id?"},
+      "examples": [
+        {"start": "reference", "edit": {"op": "add_shape", "kind": "dot", "afterBeatId": null}},
+        {"start": "reference", "edit": {"op": "add_shape", "kind": "axes_point", "afterBeatId": "beat_2", "axesId": "axes_1"}}
+      ]
+    },
+    "set_shape_param": {
+      "fields": {"objectId": "id", "key": "string", "value": "param"},
+      "examples": [
+        {"start": "shapes", "edit": {"op": "set_shape_param", "objectId": "circle_1", "key": "radius", "value": 1.5}},
+        {"start": "shapes", "edit": {"op": "set_shape_param", "objectId": "line_1", "key": "end", "value": [3, 1]}},
+        {"start": "shapes", "edit": {"op": "set_shape_param", "objectId": "rectangle_1", "key": "color", "value": "#81B29A"}},
+        {"start": "two_axes", "edit": {"op": "set_shape_param", "objectId": "point_1", "key": "axesId", "value": "axes_2"}}
+      ]
+    }
+  }
+}

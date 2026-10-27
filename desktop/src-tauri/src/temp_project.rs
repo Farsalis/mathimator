@@ -319,7 +319,7 @@ mod tests {
     fn temp_folder_names_are_mathimator_digits_digits() {
         assert_eq!(created_ms_in_name(Path::new("mathimator-1-2")), Some(2));
         assert_eq!(
-            created_ms_in_name(Path::new("/tmp/mathimator-4321-1761234567890")),
+            created_ms_in_name(Path::new("C:\\Temp\\mathimator-4321-1761234567890")),
             Some(1_761_234_567_890)
         );
         for name in [
@@ -336,16 +336,6 @@ mod tests {
         ] {
             assert_eq!(created_ms_in_name(Path::new(name)), None, "{name}");
         }
-    }
-
-    // A backslash separates path components on Windows only.
-    #[cfg(windows)]
-    #[test]
-    fn temp_folder_names_are_read_from_a_windows_path() {
-        assert_eq!(
-            created_ms_in_name(Path::new("C:\\Temp\\mathimator-4321-1761234567890")),
-            Some(1_761_234_567_890)
-        );
     }
 
     #[test]

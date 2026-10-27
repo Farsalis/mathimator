@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": 2,
+  "id": "shape_axes_point",
+  "name": "Smoke: shape-axes_point",
+  "seed": 1,
+  "scene": {
+    "id": "scene_main",
+    "name": "Main",
+    "kind": "scene",
+    "background": "#000000",
+    "objects": [
+      {
+        "id": "axes_1",
+        "name": "Axes",
+        "type": "axes",
+        "params": {
+          "xRange": [-4, 4, 1],
+          "yRange": [-2, 2, 1],
+          "xLength": 8,
+          "yLength": 4,
+          "color": "#FFFFFF",
+          "showLabels": false
+        }
+      },
+      {
+        "id": "point_1",
+        "name": "Point",
+        "type": "axes_point",
+        "params": {
+          "axesId": "axes_1",
+          "x": 1,
+          "y": 1,
+          "radius": 0.08,
+          "color": "#E07A5F"
+        }
+      }
+    ],
+    "beats": [
+      {
+        "id": "beat_1",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["axes_1"]
+      },
+      {
+        "id": "beat_2",
+        "duration": 0.5,
+        "action": "grow",
+        "targets": ["point_1"]
+      }
+    ],
+    "templateInstances": []
+  },
+  "previewProfile": {
+    "width": 854,
+    "height": 480,
+    "fps": 15,
+    "transparent": false
+  },
+  "exportProfile": {
+    "format": "mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "transparent": false
+  }
+}

@@ -22,6 +22,7 @@ const EDITING = [
   "open-button",
   "save-as-button",
   "add-button",
+  "add-beat",
   "undo-button",
   "redo-button",
   "export-button",
@@ -40,7 +41,7 @@ function stateReply(name = "Sine", source = "class MainScene(Scene):\n    pass\n
       scene: { kind: "scene", objects: [], beats: [], templateInstances: [] },
       exportProfile: { format: "mp4", width: 1920, height: 1080, fps: 30, transparent: false },
     },
-    derived: { starts: [], total: 0, dirty: [], canUndo: false, canRedo: false },
+    derived: { starts: [], total: 0, dirty: [], canUndo: false, canRedo: false, onScreen: [[]] },
     index: null,
     source,
   };
@@ -60,13 +61,84 @@ function textReply() {
         beats: [{ id: "beat_1", duration: 2, action: "write", targets: ["text_1"] }],
       },
     },
-    derived: { starts: [0], total: 2, dirty: [false], canUndo: false, canRedo: false },
+    derived: { starts: [0], total: 2, dirty: [false], canUndo: false, canRedo: false, onScreen: [[], ["text_1"]] },
     index: {
       output: movie,
       beats: [{ id: "beat_1", index: 0, derivedStart: 0, duration: 2, partial: movie, lastGood: null, fresh: true }],
     },
   };
 }
+
+/** A caption and a circle, written then created, followed by `beats`; `onScreen` and `focus` as the worker derives them. */
+function beatsReply(
+  beats: Record<string, unknown>[],
+  onScreen: string[][],
+  focus?: { beatId: string | null; objectId: string | null },
+) {
+  const reply = stateReply();
+  const durations = beats.map((beat) => (typeof beat.duration === "number" ? beat.duration : 0));
+  return {
+    ...reply,
+    document: {
+      ...reply.document,
+      scene: {
+        ...reply.document.scene,
+        objects: [
+          { id: "text_1", name: "Caption", type: "text", params: { text: "Hi", color: "#FFFFFF" } },
+          { id: "circle_1", name: "Circle", type: "circle", params: CIRCLE_PARAMS },
+        ],
+        beats,
+      },
+    },
+    derived: {
+      starts: durations.map((_, index) => durations.slice(0, index).reduce((sum, value) => sum + value, 0)),
+      total: durations.reduce((sum, value) => sum + value, 0),
+      dirty: beats.map(() => true),
+      canUndo: true,
+      canRedo: false,
+      onScreen,
+    },
+    ...(focus === undefined ? {} : { focus }),
+  };
+}
+
+const CIRCLE_PARAMS = { center: [0, 0], radius: 1, color: "#58C4DD", strokeWidth: 4, fillOpacity: 0 };
+
+/** Two axes created one after the other, then a plot on the second; nothing else is on screen. */
+function graphsReply() {
+  const reply = stateReply();
+  const axes = { showLabels: false, xRange: [-3, 3, 1], yRange: [-2, 2, 1], xLength: 6, yLength: 4, color: "#FFFFFF" };
+  return {
+    ...reply,
+    document: {
+      ...reply.document,
+      scene: {
+        ...reply.document.scene,
+        objects: [
+          { id: "axes_1", name: "Axes", type: "axes", params: axes },
+          { id: "axes_2", name: "Axes 2", type: "axes", params: axes },
+          { id: "plot_1", name: "Cosine", type: "function_plot", params: { axesId: "axes_2", expression: "cos(x)" } },
+        ],
+        beats: [
+          { id: "beat_1", duration: 2, action: "create", targets: ["axes_1"] },
+          { id: "beat_2", duration: 2, action: "create", targets: ["axes_2"] },
+          { id: "beat_3", duration: 2, action: "create", targets: ["plot_1"] },
+        ],
+      },
+    },
+    derived: {
+      starts: [0, 2, 4],
+      total: 6,
+      dirty: [true, true, true],
+      canUndo: false,
+      canRedo: false,
+      onScreen: [[], ["axes_1"], ["axes_1", "axes_2"], ["axes_1", "axes_2", "plot_1"]],
+    },
+  };
+}
+const WRITE = { id: "beat_1", duration: 2, action: "write", targets: ["text_1"] };
+const CREATE = { id: "beat_2", duration: 2, action: "create", targets: ["circle_1"] };
+const BOTH_ON = ["text_1", "circle_1"];
 
 /** Scripts the shell: each invoke takes the next reply listed for its command. */
 function script(replies: Record<string, unknown[]>): void {
@@ -269,7 +341,7 @@ describe("App", () => {
     const recoloured = textReply();
     script({ app_status: [READY], get_state: [textReply()], edit_document: [recoloured] });
     await renderReady();
-    fireEvent.click(screen.getByRole("button", { name: /Label/ }));
+    fireEvent.click(within(screen.getByTestId("inspector")).getByRole("button", { name: /Label/ }));
     const picker = document.querySelector<HTMLInputElement>('input[type="color"]');
     if (!picker) {
       throw new Error("No colour picker is shown.");
@@ -283,6 +355,145 @@ describe("App", () => {
     expect(invokeMock.mock.calls.filter(([command]) => command === "edit_document")).toEqual([
       ["edit_document", { edit: { op: "set_object_color", objectId: "text_1", color: "#0090FF" } }],
     ]);
+  });
+
+  it("adds a beat with + Beat, then changes its kind, moves it, retargets it, eases it and deletes it", async () => {
+    const indicate = { id: "beat_3", duration: 1, action: "indicate", targets: ["text_1"] };
+    const scale = { ...indicate, action: "scale", params: { factor: 1.5 } };
+    const both = { ...scale, targets: BOTH_ON };
+    const replies = [
+      beatsReply([WRITE, indicate, CREATE], [[], ["text_1"], ["text_1"], BOTH_ON], {
+        beatId: "beat_3",
+        objectId: "text_1",
+      }),
+      beatsReply([WRITE, scale, CREATE], [[], ["text_1"], ["text_1"], BOTH_ON], { beatId: "beat_3", objectId: null }),
+      beatsReply([WRITE, CREATE, scale], [[], ["text_1"], BOTH_ON, BOTH_ON], { beatId: "beat_3", objectId: null }),
+      beatsReply([WRITE, CREATE, both], [[], ["text_1"], BOTH_ON, BOTH_ON], { beatId: "beat_3", objectId: null }),
+      beatsReply([WRITE, CREATE, { ...both, easing: "rush_into" }], [[], ["text_1"], BOTH_ON, BOTH_ON], {
+        beatId: "beat_3",
+        objectId: null,
+      }),
+      beatsReply([WRITE, CREATE], [[], ["text_1"], BOTH_ON], { beatId: "beat_2", objectId: null }),
+    ];
+    script({
+      app_status: [READY],
+      get_state: [beatsReply([WRITE, CREATE], [[], ["text_1"], BOTH_ON])],
+      edit_document: replies,
+      reserve_job_id: ["preview-1"],
+      render_preview: [null],
+    });
+    await renderReady();
+    // The editor is keyed by its beat, so each header is looked up afresh.
+    const header = (text: string) => screen.findByText(text);
+
+    fireEvent.click(within(screen.getByTestId("beat-beat_1")).getByRole("button", { name: /Write · Caption/ }));
+    fireEvent.click(screen.getByRole("button", { name: "+ Beat" }));
+    await header("Indicate · beat_3 · scene.beats[1]");
+    expect(screen.getByTestId("beat-beat_3").className).toBe("beat selected");
+
+    fireEvent.change(screen.getByLabelText("Kind"), { target: { value: "scale" } });
+    await header("Scale · beat_3 · scene.beats[1]");
+    fireEvent.click(screen.getByRole("button", { name: "Move later" }));
+    await header("Scale · beat_3 · scene.beats[2]");
+    fireEvent.click(within(screen.getByTestId("beat-targets")).getByRole("checkbox", { name: "Circle" }));
+    await waitFor(() => expect(screen.getByTestId("beat-beat_3").textContent).toContain("Scale · Caption, Circle"));
+    fireEvent.change(screen.getByLabelText("Easing"), { target: { value: "rush_into" } });
+    await waitFor(() => expect(screen.getByLabelText<HTMLSelectElement>("Easing").value).toBe("rush_into"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete beat" }));
+    await header("Create · beat_2 · scene.beats[1]");
+
+    expect(invokeMock.mock.calls.filter(([command]) => command === "edit_document")).toEqual(
+      [
+        { op: "add_beat", afterBeatId: "beat_1", action: "indicate", targets: ["text_1"] },
+        { op: "set_beat_action", beatId: "beat_3", action: "scale", targets: ["text_1"] },
+        { op: "move_beat", beatId: "beat_3", toIndex: 2 },
+        { op: "set_beat_targets", beatId: "beat_3", targets: ["text_1", "circle_1"] },
+        { op: "set_beat_easing", beatId: "beat_3", easing: "rush_into" },
+        { op: "delete_beat", beatId: "beat_3" },
+      ].map((edit) => ["edit_document", { edit }]),
+    );
+    expect(screen.queryByTestId("beat-beat_3")).toBeNull();
+    await waitFor(() => expect(commands()).toContain("render_preview"));
+  });
+
+  it("adds a wait at the end with + Beat when nothing is selected", async () => {
+    script({
+      app_status: [READY],
+      get_state: [beatsReply([WRITE, CREATE], [[], ["text_1"], BOTH_ON])],
+      edit_document: [new Promise(() => undefined)],
+    });
+    await renderReady();
+    fireEvent.click(control("add-beat"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("edit_document", {
+        edit: { op: "add_beat", afterBeatId: null, action: "wait", targets: [] },
+      }),
+    );
+  });
+
+  it("brings the selected object on screen with its natural entrance, after the selected beat", async () => {
+    script({
+      app_status: [READY],
+      get_state: [beatsReply([WRITE, CREATE], [[], ["text_1"], BOTH_ON])],
+      edit_document: [new Promise(() => undefined)],
+    });
+    await renderReady();
+    fireEvent.click(within(screen.getByTestId("beat-beat_1")).getByRole("button", { name: /Write · Caption/ }));
+    fireEvent.click(within(screen.getByTestId("inspector")).getByRole("button", { name: /Circle/ }));
+    fireEvent.click(control("add-beat"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("edit_document", {
+        edit: { op: "add_beat", afterBeatId: "beat_1", action: "create", targets: ["circle_1"] },
+      }),
+    );
+  });
+
+  it("adds a shape after the selected beat, and offers no point on axes without axes (design §10.6)", async () => {
+    script({
+      app_status: [READY],
+      get_state: [beatsReply([WRITE, CREATE], [[], ["text_1"], BOTH_ON])],
+      edit_document: [new Promise(() => undefined)],
+    });
+    await renderReady();
+    fireEvent.click(within(screen.getByTestId("beat-beat_1")).getByRole("button", { name: /Write · Caption/ }));
+    fireEvent.click(control("add-button"));
+    expect(control("add-axes-point").disabled).toBe(true);
+    fireEvent.click(control("add-dot"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("edit_document", {
+        edit: { op: "add_shape", kind: "dot", afterBeatId: "beat_1" },
+      }),
+    );
+  });
+
+  it("puts a point added from Add on the axes of the selected plot (design §10.6)", async () => {
+    script({ app_status: [READY], get_state: [graphsReply()], edit_document: [new Promise(() => undefined)] });
+    await renderReady();
+    // The plot's axes are not the first axes on screen, nor the first in the document.
+    fireEvent.click(within(screen.getByTestId("beat-beat_3")).getByRole("button", { name: /Create · Cosine/ }));
+    fireEvent.click(control("add-button"));
+    fireEvent.click(control("add-axes-point"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("edit_document", {
+        edit: { op: "add_shape", kind: "axes_point", afterBeatId: "beat_3", axesId: "axes_2" },
+      }),
+    );
+  });
+
+  it("shows a refused beat edit under its control as well as in the banner (design §10.7)", async () => {
+    const message = "scene.objects[1] circle_1 has no entrance beat";
+    script({
+      app_status: [READY],
+      get_state: [beatsReply([WRITE, CREATE], [[], ["text_1"], BOTH_ON])],
+      edit_document: [{ event: "rejected", jobId: "rpc-2", code: "invalid_edit", message }],
+    });
+    await renderReady();
+    fireEvent.click(within(screen.getByTestId("beat-beat_2")).getByRole("button", { name: /Create · Circle/ }));
+    fireEvent.change(screen.getByLabelText("Kind"), { target: { value: "fade_out" } });
+    const shown = await screen.findByTestId("beat-error-beat_2");
+    expect(shown.textContent).toBe(message);
+    expect(shown.previousElementSibling).toBe(screen.getByLabelText("Kind").closest("label"));
+    expect(screen.getByTestId("error").textContent).toBe(message);
   });
 
   it("scrubs the preview without a worker command (D44)", async () => {

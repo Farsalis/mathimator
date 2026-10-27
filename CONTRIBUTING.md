@@ -74,6 +74,7 @@ Ubuntu package as `libwebkit2gtk-4.1-dev` and `libxdo-dev`.
 | `MATHIMATOR_WIN32_JOBS` | worker, debug shell | `0` turns the kill-on-close Job Objects off. The worker then cancels a render by walking its process tree, and a debug shell leaves the worker outside a job. Unset means on. Release shells neither read it nor pass it to the worker. |
 | `MATHIMATOR_SKIP_PROCESS_TABLE` | worker | `1` keeps the worker from ever starting the Windows process-table helper, a PowerShell child, so a cancel without a Job Object ends Manim alone, not its TeX children. Tests that start a worker but never cancel set it. Release shells do not pass it to the worker. |
 | `MATHIMATOR_PYTHON` | debug shell, tests | The interpreter that runs the worker, in place of `.venv`. |
+| `MATHIMATOR_BEATS_OUT` | pytest | The folder `tests/test_beats_render.py` renders the smoke projects in, in place of `out/beats`. It is emptied first, and gets `render-times.json`, the seconds each preview took. |
 | `MATHIMATOR_TYPST` | debug shell | The `typst` executable for the glyph preview, in place of the bundle's or the one on PATH. |
 | `MATHIMATOR_TINYTEX_BIN` | debug shell | The TinyTeX `bin` folder, in place of the bundle's. |
 | `MATHIMATOR_SHELL_READY_FILE` | shell | When it names a file, the shell writes `ready <unix ms>` there once the UI is up. The startup timing measurements read it. It is the only one of these variables that a release shell reads. |

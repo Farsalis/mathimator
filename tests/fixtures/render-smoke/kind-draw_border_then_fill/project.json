@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": 2,
+  "id": "kind_draw_border_then_fill",
+  "name": "Smoke: kind-draw_border_then_fill",
+  "seed": 1,
+  "scene": {
+    "id": "scene_main",
+    "name": "Main",
+    "kind": "scene",
+    "background": "#000000",
+    "objects": [
+      {
+        "id": "circle_1",
+        "name": "Circle",
+        "type": "circle",
+        "params": {
+          "center": [0, 0],
+          "radius": 1,
+          "color": "#58C4DD",
+          "strokeWidth": 4,
+          "fillOpacity": 0.5
+        }
+      }
+    ],
+    "beats": [
+      {
+        "id": "beat_1",
+        "duration": 0.5,
+        "action": "draw_border_then_fill",
+        "targets": ["circle_1"]
+      }
+    ],
+    "templateInstances": []
+  },
+  "previewProfile": {
+    "width": 854,
+    "height": 480,
+    "fps": 15,
+    "transparent": false
+  },
+  "exportProfile": {
+    "format": "mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "transparent": false
+  }
+}

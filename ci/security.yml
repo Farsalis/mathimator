@@ -76,7 +76,7 @@ audit:rust:
         - .gitlab-ci.yml
   variables:
     # renovate: datasource=crate depName=cargo-deny
-    CARGO_DENY_VERSION: 0.19.0
+    CARGO_DENY_VERSION: 0.18.3
   cache:
     - !reference [.rust, cache]
     - key: cargo-deny-$CARGO_DENY_VERSION
@@ -84,7 +84,4 @@ audit:rust:
   before_script: []
   script:
     - cargo install --locked cargo-deny --version "$CARGO_DENY_VERSION"
-    # cargo-deny resolves --config against the manifest's directory, so run it
-    # from there and name the policy relative to it.
-    - cd desktop/src-tauri
-    - cargo deny check --config ../../ci/deny.toml
+    - cargo deny --manifest-path desktop/src-tauri/Cargo.toml check --config ci/deny.toml

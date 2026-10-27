@@ -1,14 +1,17 @@
-"""Insert the v1 templates plus a single formula or text object."""
+"""Insert the v1 templates, a single formula or text object, or a shape."""
 
 from __future__ import annotations
 
+from mathimator_worker.beats import SHAPES, Param
 from mathimator_worker.document import (
     Beat,
     Camera,
+    Number,
     Project,
     SceneObject,
     TemplateInstance,
     fresh_id,
+    quantize,
     used_ids,
 )
 from mathimator_worker.document_error import DocumentError
@@ -311,14 +314,83 @@ def add_text(project: Project, after_beat_id: str | None, text: str) -> tuple[st
     return beat_id, text_id
 
 
-def _insert_beats(project: Project, beats: list[Beat], after_beat_id: str | None) -> None:
+def add_shape(project: Project, after_beat_id: str | None, shape_type: str, axes_id: str | None) -> tuple[str, str]:
+    """Insert a shape with its defaults and its entrance beat. Returns beat id and object id.
+
+    A point on axes sits at the middle of the ranges of the axes ``axes_id``
+    names, which must be within the bounds of its x and y; no other shape
+    takes axes.
+    """
+    _reject_3d(project)
+    shape = SHAPES[shape_type]
+    params: dict[str, JsonValue] = {param.name: _copied(param.default) for param in shape.params}
+    if shape_type == "axes_point":
+        axes = next((item for item in project.scene.objects if item.id == axes_id and item.type == "axes"), None)
+        if axes is None:
+            raise DocumentError("axesId must name an axes object", field="axesId")
+        point = {param.name: param for param in shape.params}
+        params.update(
+            axesId=axes.id,
+            x=_point_middle(axes, "xRange", point["x"]),
+            y=_point_middle(axes, "yRange", point["y"]),
+        )
+    elif axes_id is not None:
+        raise DocumentError("only a point on axes has axesId", field="axesId")
+    used = used_ids(project)
+    object_id = fresh_id(shape.id_prefix, used)
+    beat_id = fresh_id("beat", used)
+    project.scene.objects.append(SceneObject(id=object_id, name=shape.name, type=shape_type, params=params))
+    _insert_beats(
+        project,
+        [Beat(id=beat_id, duration=2, action=shape.entrance, targets=[object_id])],
+        after_beat_id,
+    )
+    return beat_id, object_id
+
+
+def insertion_index(project: Project, after_beat_id: str | None) -> int:
+    """Where a beat inserted after ``after_beat_id`` goes: just after it, or at the end for None."""
     if after_beat_id is None:
-        project.scene.beats.extend(beats)
-        return
+        return len(project.scene.beats)
     index = next((position for position, beat in enumerate(project.scene.beats) if beat.id == after_beat_id), None)
     if index is None:
         raise DocumentError(f"unknown beat {after_beat_id}", field="afterBeatId")
-    project.scene.beats[index + 1 : index + 1] = beats
+    return index + 1
+
+
+def _insert_beats(project: Project, beats: list[Beat], after_beat_id: str | None) -> None:
+    index = insertion_index(project, after_beat_id)
+    project.scene.beats[index:index] = beats
+
+
+def _copied(value: JsonValue) -> JsonValue:
+    """A default as a new value, so that no two objects share a list."""
+    return list(value) if isinstance(value, list) else value
+
+
+def _point_middle(axes: SceneObject, axis: str, param: Param) -> Number:
+    """The middle of the range ``axis`` of ``axes``, as the default of the point coordinate ``param``.
+
+    An axis range may run beyond the bounds of a point's coordinate, so the
+    middle is checked here, and the refusal names the axes rather than a
+    coordinate the user never set.
+    """
+    middle = _middle(axes.params[axis])
+    if param.low is not None and param.high is not None and not param.low <= middle <= param.high:
+        raise DocumentError(
+            f"the middle of the {param.name} range of {axes.id} must be from {quantize(param.low)} "
+            f"to {quantize(param.high)} for a point on axes",
+            field="axesId",
+        )
+    return middle
+
+
+def _middle(axis_range: JsonValue) -> Number:
+    """The middle of an axis range ``[min, max, step]``, at the three decimals codegen emits."""
+    match axis_range:
+        case [int() | float() as low, int() | float() as high, _step]:
+            return quantize((low + high) / 2)
+    raise DocumentError("an axis range must be three numbers")
 
 
 def _reject_3d(project: Project) -> None:

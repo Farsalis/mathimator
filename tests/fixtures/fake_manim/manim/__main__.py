@@ -90,8 +90,7 @@ if "auto" in plan:
     groups = [render(plan["auto"]["beats"], media)]
 else:
     groups = [{Path(name): bytes.fromhex(data) for name, data in group.items()} for group in plan["groups"]]
-# Begin above every access time an earlier run left, so a clip this run uses is always the newest.
-stamp = max([0, *(path.stat().st_atime_ns for path in media.rglob("*") if path.is_file())])
+stamp = 0
 listed = set()
 for number, group in enumerate(groups):
     for target, data in group.items():

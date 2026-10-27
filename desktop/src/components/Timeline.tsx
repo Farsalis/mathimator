@@ -1,24 +1,31 @@
 import { useRef } from "react";
+import { KINDS, type Family } from "../beatKinds";
+import { beatLabel } from "../beatRules";
 import { clampDuration, formatSeconds } from "../format";
-import type { Beat } from "../types";
+import type { Beat, SceneObject } from "../types";
 
 interface TimelineProps {
   beats: Beat[];
+  /** The objects whose names label the beats. */
+  objects: SceneObject[];
   durations: number[];
   starts: number[];
   dirty: boolean[];
   selectedBeatId: string | null;
   playhead: number;
   total: number;
-  /** The worker is not ready, so durations cannot be changed (C9.5). */
+  /** The worker is not ready, so beats cannot be added and durations cannot be changed (C9.5). */
   disabled: boolean;
   onSelect: (beatId: string) => void;
   onDraft: (beatId: string, duration: number) => void;
   onCommit: (beatId: string, duration: number) => void;
+  /** "+ Beat": adds a beat after the selected beat, on the selected object (design §10.3). */
+  onAddBeat: () => void;
 }
 
 export function Timeline({
   beats,
+  objects,
   durations,
   starts,
   dirty,
@@ -29,11 +36,17 @@ export function Timeline({
   onSelect,
   onDraft,
   onCommit,
+  onAddBeat,
 }: TimelineProps) {
   return (
     <section className="timeline" aria-label="Timeline" data-testid="timeline">
+      <div className="timeline-toolbar">
+        <button type="button" data-testid="add-beat" disabled={disabled} onClick={onAddBeat}>
+          + Beat
+        </button>
+      </div>
       {beats.length === 0 ? (
-        <p className="timeline-empty">No beats yet. Add axes, a formula, or text.</p>
+        <p className="timeline-empty">No beats yet. Add an object, or use + Beat.</p>
       ) : (
         <ol>
           {beats.map((beat, index) => (
@@ -41,6 +54,8 @@ export function Timeline({
               key={beat.id}
               beat={beat}
               beats={beats}
+              label={beatLabel(beat, objects)}
+              family={KINDS[beat.action].family}
               duration={durations[index] ?? beat.duration}
               start={starts[index] ?? 0}
               dirty={dirty[index] === true}
@@ -64,6 +79,8 @@ export function Timeline({
 function BeatCell({
   beat,
   beats,
+  label,
+  family,
   duration,
   start,
   dirty,
@@ -76,6 +93,8 @@ function BeatCell({
 }: {
   beat: Beat;
   beats: Beat[];
+  label: string;
+  family: Family;
   duration: number;
   start: number;
   dirty: boolean;
@@ -111,10 +130,11 @@ function BeatCell({
       className={selected ? "beat selected" : active ? "beat active" : "beat"}
       data-testid={`beat-${beat.id}`}
       data-dirty={dirty ? "true" : "false"}
+      data-family={family}
     >
       <button type="button" className="beat-body" onClick={() => onSelect(beat.id)}>
         <span className="beat-start">{formatSeconds(start)}</span>
-        <span className="beat-action">{beat.action}</span>
+        <span className="beat-action">{label}</span>
         {dirty ? <span className="dirty-mark">dirty</span> : null}
       </button>
       <button

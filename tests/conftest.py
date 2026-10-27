@@ -12,8 +12,11 @@ untested (D47).
 The ``fake_manim`` fixture puts ``support.FakeManim`` on PYTHONPATH for the
 tests that run jobs without Manim, ``stdout`` reads what an in-process
 supervisor wrote, and ``link_kind`` runs a test once for each kind of folder
-link. ``--update-golden`` makes ``test_shell_fixture.py`` rewrite the golden
-``tests/fixtures/protocol/replies.json`` instead of comparing with it.
+link. ``--update-golden`` makes these tests rewrite their goldens instead of
+comparing with them: ``test_shell_fixture.py`` and ``test_beats.py`` the
+protocol fixtures ``replies.json`` and ``beat-kinds.json``,
+``test_codegen_beats.py`` ``tests/fixtures/beats/codegen.json``, and
+``test_smoke_projects.py`` the projects in ``tests/fixtures/render-smoke``.
 """
 
 from __future__ import annotations
@@ -32,7 +35,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--update-golden",
         action="store_true",
-        help="rewrite tests/fixtures/protocol/replies.json from the worker's replies in test_shell_fixture.py",
+        help=(
+            "rewrite the goldens: replies.json (test_shell_fixture.py), beat-kinds.json (test_beats.py),"
+            " codegen.json (test_codegen_beats.py) and render-smoke (test_smoke_projects.py)"
+        ),
     )
 
 

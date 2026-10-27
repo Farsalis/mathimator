@@ -35,8 +35,7 @@ export function formatSeconds(value: number): string {
 /** The number typed in a number field, or null for an empty field or anything but a decimal. 2,5 means 2.5 (D24). */
 export function parseDecimal(text: string): number | null {
   const trimmed = text.trim();
-  const value = DECIMAL.test(trimmed) ? Number(trimmed.replace(",", ".")) : null;
-  return value !== null && Number.isFinite(value) ? value : null;
+  return DECIMAL.test(trimmed) ? Number(trimmed.replace(",", ".")) : null;
 }
 
 /** The duration `next` for beat `beatId`, in milliseconds and inside both limits given the other beats. */

@@ -1,0 +1,14 @@
+# Gitleaks reads this file from the repository root, in the pre-commit hook and
+# in any local `gitleaks git` run. It keeps the default rules.
+[extend]
+useDefault = true
+
+# The golden fixtures pin SHA-256 cache identities (sceneHash, exportKey,
+# lockSha256 and the like). Their hex digests look random enough for the
+# generic-api-key rule. Only a JSON field whose name ends in Key, Hash or Sha256
+# and whose value is lowercase hex is exempt, so a real secret in a fixture is
+# still reported.
+[allowlist]
+description = "SHA-256 digests in JSON fixtures"
+regexTarget = "line"
+regexes = ['''"[A-Za-z]*(Key|Hash|Sha256)": ?"[0-9a-f]{16,64}"''']

@@ -48,6 +48,29 @@ git-cliff generates from the commits.
   preview that used an incomplete clip offers Render again.
 - The Notices panel shows the shipped THIRD_PARTY_NOTICES.txt below a
   corrected summary, and the notices name the embedded WebView2 installer.
+- A beat catalog of 28 kinds in seven families, each still one `play` or
+  `wait`: wait; the entrances create, fade in, write, grow from center, grow
+  arrow, draw border then fill and spin in; the exits fade out, uncreate,
+  unwrite and shrink away; the changes move by, move to, scale, rotate, set
+  opacity, recolor and move along a path; the emphasis indicate,
+  circumscribe, flash, wiggle, focus and wave; the morphs transform and the
+  formula transform that keeps matching symbols; and a camera move in 3D
+  scenes. A beat may act on several objects at once, every animated beat
+  has an easing from nine of Manim's rate functions, and an object may leave
+  the screen and enter again: validation plays the timeline out and tracks
+  what is on screen. Documents without these keep their bytes, generated
+  code and cache keys.
+- Shapes: Dot, Line, Arrow, Circle, Rectangle and Point on axes, added from
+  Add with their entrance beat, each with position, size and colour fields.
+- worker: the edit ops add_beat, set_beat_action, set_beat_targets,
+  set_beat_param, set_beat_easing, delete_beat, move_beat, add_shape and
+  set_shape_param, with set_beat_color and set_beat_shift kept as aliases.
+  The state reply lists what is on screen before each beat, and deleting an
+  object repairs the beats it leaves behind.
+- ui: + Beat on the timeline, a beat editor in the Inspector for the kind,
+  targets, settings, easing and order of a beat and for deleting it, a
+  selection that holds a beat and an object at once, timeline labels that
+  name the targets, and the shape fields.
 
 ### Fixes
 
@@ -77,6 +100,12 @@ git-cliff generates from the commits.
 - shell: a release build passes no inherited `MATHIMATOR_*` variable to the
   worker or the TeX self-test, and names each one it ignored in shell.log.
   Each worker process is ended once.
+- worker: a preview rendered again with no edit reuses every clip. Manim
+  runs with `PYTHONHASHSEED=0`, so a rotate or a wave beat has the same cache
+  key in every Manim process, and a camera move resets the camera's rotation
+  after its play, so the beats after it keep their keys. While Manim runs,
+  the beats after the first camera move that are not fresh take their clips
+  from the segment list.
 - tokio 1.54.1 clears RUSTSEC-2026-0384.
 
 ### Refactoring
@@ -92,6 +121,10 @@ git-cliff generates from the commits.
   remediation status of each finding.
 - design-spec.md section 6 rewritten as the protocol 2 contract, and the rest
   of the spec brought up to date with the code and the owner's decisions.
+- design-spec.md: the beat catalog, the shapes, the on-screen rules, easing
+  and the camera move in section 4, the code of every kind in section 5, the
+  beat and shape edits, + Beat and the beat editor in section 6, and their
+  acceptance criteria and tests in section 7.
 - README, CONTRIBUTING and SECURITY: setup, Linux notes, running, test tiers,
   the installer build, CI and its compute-minutes policy, the environment
   variables, commit and merge rules, releases, setting up the GitLab project,
@@ -114,6 +147,18 @@ git-cliff generates from the commits.
   launcher, run with `MATHIMATOR_REAL_WORKER_TESTS=1`.
 - A fractional-beat fixture in the slow frame-count checks, and a 101-beat
   preview that stays fresh.
+- Shared fixtures for the beat catalog (beat-kinds.json), every edit op with
+  an accepted example (edit-ops.json) and the stored order of a beat's
+  targets; codegen goldens for every kind; legacy goldens that hold
+  documents written before the catalog to their bytes, code and keys; and
+  quick render-smoke projects for every kind, shape and easing, which
+  tests/test_beats_render.py previews with one clip per beat, rendering the
+  cache scenes three times to check that Manim reuses every clip.
+- Every example of edit-ops.json also goes to a supervisor as an `edit`
+  request and reads back from `get_state`, undo, redo and a reload from
+  disk; the UI's components send every edit through the builders those
+  examples test, and the UI's parser reads every render-smoke document
+  whole.
 
 ### Build
 
@@ -146,6 +191,8 @@ git-cliff generates from the commits.
 - SAST, Secret Detection, pip-audit, npm audit and cargo-deny; a protected-tag
   release that uploads the installer to the package registry and creates a
   GitLab Release with glab; Renovate with the spec's pins.
+- `test:ui` also runs for the beat and render-smoke fixtures that its tests
+  read, and the lane check follows the UI's glob imports.
 
 ### Chores
 

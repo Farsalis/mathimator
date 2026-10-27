@@ -165,11 +165,17 @@ def manim_environment(base: Mapping[str, str], home: Path, launcher: str | None 
     allowlist keeps a formula from reading files, and the worker removes TeX
     inputs planted in Manim's TeX folder before each render. ``launcher`` is
     the venv launcher of ``manim_interpreter``, if any (D16).
+
+    ``PYTHONHASHSEED`` is fixed whatever the user set: Manim's key for a play
+    serialises a function's global names in the order of Python's string
+    hashing, which otherwise differs in every process, so a rotate or a wave
+    play would miss Manim's cache on every render.
     """
     settings = {
         "PYTHONUNBUFFERED": "1",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1",
+        "PYTHONHASHSEED": "0",
         "COLUMNS": "240",
         "NO_COLOR": "1",
         "HOME": str(home),

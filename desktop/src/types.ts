@@ -1,3 +1,19 @@
+import {
+  BEAT_ACTIONS,
+  EASING_NAMES,
+  isShapeType,
+  KINDS,
+  OBJECT_TYPES,
+  SHAPES,
+  type BeatAction,
+  type Easing,
+  type ObjectType,
+  type ParamSpec,
+  type Params,
+  type ParamValue,
+  type ShapeType,
+  type Vector,
+} from "./beatKinds";
 import { asExportProfile, type ExportProfile } from "./exportProfile";
 import {
   asBoolean,
@@ -11,26 +27,36 @@ import {
   nullable,
   oneOf,
   optional,
+  pairOf,
   ParseError,
+  type Read,
 } from "./parse";
 
-export type { ExportProfile };
-
-export type ObjectType =
-  "axes" | "function_plot" | "math_formula" | "text" | "three_d_axes" | "surface" | "parametric_curve";
+export type { BeatAction, Easing, ExportProfile, ObjectType, Params, ParamValue, ShapeType, Vector };
 
 export type SceneKind = "scene" | "three_d_scene";
 
-export type ThreeDMode = "surface" | "curve";
+export const THREE_D_MODES = ["surface", "curve"] as const;
+export type ThreeDMode = (typeof THREE_D_MODES)[number];
 
-export type BeatAction = "create" | "fade_in" | "write" | "wait" | "transform_formula" | "set_color" | "move";
+export const ANCHORS = ["origin", "edge_up", "edge_down", "edge_left", "edge_right"] as const;
+export type Anchor = (typeof ANCHORS)[number];
 
-export type Anchor = "origin" | "edge_up" | "edge_down" | "edge_left" | "edge_right";
+export const AXES = ["x", "y", "z"] as const;
+export type Axis = (typeof AXES)[number];
+
+/** The axes set_length accepts: only 2D axes have a length, along x and y. */
+export const LENGTH_AXES = ["x", "y"] as const;
+export type LengthAxis = (typeof LENGTH_AXES)[number];
+
+export const CAMERA_KEYS = ["phi", "theta", "zoom"] as const;
+export type CameraKey = (typeof CAMERA_KEYS)[number];
 
 export interface SceneObject {
   id: string;
   name: string;
   type: ObjectType;
+  /** A shape's settings are read by the catalog, so each has the type the catalog gives it. */
   params: Record<string, unknown>;
 }
 
@@ -38,8 +64,12 @@ export interface Beat {
   id: string;
   duration: number;
   action: BeatAction;
+  /** One or more objects for a kind of arity "some"; source then destination, or object then path, for a pair. */
   targets: string[];
-  params?: Record<string, unknown>;
+  /** The settings of a kind that has them, read by the catalog; absent for every other kind. */
+  params?: Params;
+  /** Absent: the kind's default easing. */
+  easing?: Easing;
 }
 
 export interface Camera {
@@ -93,6 +123,8 @@ export interface EditorState {
     dirty: boolean[];
     canUndo: boolean;
     canRedo: boolean;
+    /** The object ids on screen before each beat, then after the last, in document order. */
+    onScreen: string[][];
   };
   index: PreviewIndex | null;
   /** The generated scene.py, or null when codegen refused the document; `sourceError` then says why. */
@@ -153,8 +185,8 @@ export type Edit =
   | { op: "set_text"; objectId: string; text: string }
   | { op: "set_anchor"; objectId: string; anchor: Anchor }
   | { op: "set_object_shift"; objectId: string; shift: [number, number] }
-  | { op: "set_axes_range"; objectId: string; axis: "x" | "y" | "z"; value: [number, number, number] }
-  | { op: "set_length"; objectId: string; axis: "x" | "y"; value: number }
+  | { op: "set_axes_range"; objectId: string; axis: Axis; value: [number, number, number] }
+  | { op: "set_length"; objectId: string; axis: LengthAxis; value: number }
   | { op: "set_show_labels"; objectId: string; value: boolean }
   | { op: "set_domain"; objectId: string; xMin: number; xMax: number }
   | { op: "set_beat_duration"; beatId: string; duration: number }
@@ -167,7 +199,7 @@ export type Edit =
   | { op: "add_text"; afterBeatId: string | null; text?: string }
   | { op: "delete_object"; objectId: string }
   | { op: "set_three_d_mode"; mode: ThreeDMode }
-  | { op: "set_camera"; key: "phi" | "theta" | "zoom"; value: number }
+  | { op: "set_camera"; key: CameraKey; value: number }
   | { op: "set_resolution"; objectId: string; value: [number, number] }
   | { op: "set_curve_component"; objectId: string; index: 0 | 1 | 2; expression: string }
   | {
@@ -177,18 +209,21 @@ export type Edit =
       height: number;
       fps: number;
       transparent: boolean;
-    };
+    }
+  | { op: "add_beat"; afterBeatId: string | null; action: BeatAction; targets: string[]; params?: Params }
+  /** Without `targets` the worker keeps the beat's targets where the new kind can take them. */
+  | { op: "set_beat_action"; beatId: string; action: BeatAction; targets?: string[] }
+  | { op: "set_beat_targets"; beatId: string; targets: string[] }
+  | { op: "set_beat_param"; beatId: string; key: string; value: ParamValue }
+  /** Null goes back to the kind's default easing. */
+  | { op: "set_beat_easing"; beatId: string; easing: Easing | null }
+  | { op: "delete_beat"; beatId: string }
+  /** `toIndex` is the beat's index in the resulting list. */
+  | { op: "move_beat"; beatId: string; toIndex: number }
+  /** `axesId` names the axes of a point on axes, and is given for no other shape. */
+  | { op: "add_shape"; kind: ShapeType; afterBeatId: string | null; axesId?: string }
+  | { op: "set_shape_param"; objectId: string; key: string; value: ParamValue };
 
-const OBJECT_TYPES: readonly ObjectType[] = [
-  "axes",
-  "function_plot",
-  "math_formula",
-  "text",
-  "three_d_axes",
-  "surface",
-  "parametric_curve",
-];
-const ACTIONS: readonly BeatAction[] = ["create", "fade_in", "write", "wait", "transform_formula", "set_color", "move"];
 const SCENE_KINDS: readonly SceneKind[] = ["scene", "three_d_scene"];
 
 /** Parses a `state` reply (C5.1). Throws ParseError naming the first field that does not match. */
@@ -313,22 +348,40 @@ function asScene(value: unknown, path: string): ProjectDocument["scene"] {
 
 function asObject(value: unknown, path: string): SceneObject {
   const read = fieldsOf(value, path);
-  return {
-    id: read("id", asString),
-    name: read("name", asString),
-    type: read("type", oneOf(OBJECT_TYPES)),
-    params: read("params", asRecord),
-  };
+  const id = read("id", asString);
+  const name = read("name", asString);
+  const type = read("type", oneOf(OBJECT_TYPES));
+  return { id, name, type, params: read("params", isShapeType(type) ? asParams(SHAPES[type].params) : asRecord) };
 }
 
 function asBeat(value: unknown, path: string): Beat {
   const read = fieldsOf(value, path);
+  const id = read("id", asString);
+  const duration = read("duration", asNumber);
+  const action = read("action", oneOf(BEAT_ACTIONS));
+  const { params } = KINDS[action];
   return {
-    id: read("id", asString),
-    duration: read("duration", asNumber),
-    action: read("action", oneOf(ACTIONS)),
+    id,
+    duration,
+    action,
     targets: read("targets", listOf(asString)),
-    params: read("params", optional(asRecord)),
+    params: params.length > 0 ? read("params", asParams(params)) : undefined,
+    easing: read("easing", optional(oneOf(EASING_NAMES))),
+  };
+}
+
+const PARAM_READERS: Record<ParamSpec["type"], Read<ParamValue>> = {
+  number: asNumber,
+  vector: pairOf(asNumber),
+  color: asString,
+  id: asString,
+};
+
+/** Reads each setting `specs` lists by its type, and leaves out any other key. */
+function asParams(specs: readonly ParamSpec[]): Read<Params> {
+  return (value, path) => {
+    const read = fieldsOf(value, path);
+    return Object.fromEntries(specs.map((spec) => [spec.name, read(spec.name, PARAM_READERS[spec.type])]));
   };
 }
 
@@ -356,6 +409,7 @@ function asDerived(value: unknown, path: string): EditorState["derived"] {
     dirty: read("dirty", listOf(asBoolean)),
     canUndo: read("canUndo", asBoolean),
     canRedo: read("canRedo", asBoolean),
+    onScreen: read("onScreen", listOf(listOf(asString))),
   };
 }
 

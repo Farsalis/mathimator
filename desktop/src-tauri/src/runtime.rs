@@ -941,8 +941,6 @@ mod tests {
             .collect()
     }
 
-    // The paths are Windows paths: on Unix `C:` holds the PATH separator, so join_paths refuses them.
-    #[cfg(windows)]
     #[test]
     fn children_lose_inherited_python_and_tex_settings_and_get_tinytex_first_on_path() {
         let runtime = runtime(Some(PathBuf::from("C:\\rt\\tinytex\\bin\\windows")));

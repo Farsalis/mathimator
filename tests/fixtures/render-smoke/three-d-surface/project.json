@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "generatorVersion": 2,
+  "id": "three_d_surface",
+  "name": "Smoke: three-d-surface",
+  "seed": 1,
+  "scene": {
+    "id": "scene_main",
+    "name": "Main",
+    "kind": "three_d_scene",
+    "background": "#000000",
+    "camera": {
+      "phi": 65,
+      "theta": -45,
+      "zoom": 1
+    },
+    "objects": [
+      {
+        "id": "axes_1",
+        "name": "Axes",
+        "type": "three_d_axes",
+        "params": {
+          "xRange": [-3, 3, 1],
+          "yRange": [-3, 3, 1],
+          "zRange": [-2, 2, 1]
+        }
+      },
+      {
+        "id": "surface_1",
+        "name": "Surface",
+        "type": "surface",
+        "params": {
+          "axesId": "axes_1",
+          "expression": "sin(x)*cos(y)",
+          "uRange": [-2.5, 2.5],
+          "vRange": [-2.5, 2.5],
+          "resolution": [8, 8],
+          "color": "#58C4DD"
+        }
+      }
+    ],
+    "beats": [
+      {
+        "id": "beat_1",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["axes_1"]
+      },
+      {
+        "id": "beat_2",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["surface_1"]
+      },
+      {
+        "id": "beat_3",
+        "duration": 0.5,
+        "action": "indicate",
+        "targets": ["surface_1"]
+      },
+      {
+        "id": "beat_4",
+        "duration": 0.5,
+        "action": "wiggle",
+        "targets": ["surface_1"]
+      },
+      {
+        "id": "beat_5",
+        "duration": 0.5,
+        "action": "rotate",
+        "targets": ["surface_1"],
+        "params": {
+          "angle": 45
+        }
+      },
+      {
+        "id": "beat_6",
+        "duration": 0.5,
+        "action": "scale",
+        "targets": ["surface_1"],
+        "params": {
+          "factor": 0.8
+        }
+      },
+      {
+        "id": "beat_7",
+        "duration": 0.5,
+        "action": "move_to",
+        "targets": ["surface_1"],
+        "params": {
+          "point": [0.5, 0]
+        }
+      },
+      {
+        "id": "beat_8",
+        "duration": 0.5,
+        "action": "set_opacity",
+        "targets": ["surface_1"],
+        "params": {
+          "opacity": 0.5
+        }
+      },
+      {
+        "id": "beat_9",
+        "duration": 0.5,
+        "action": "shrink",
+        "targets": ["surface_1"]
+      },
+      {
+        "id": "beat_10",
+        "duration": 0.5,
+        "action": "grow",
+        "targets": ["surface_1"]
+      },
+      {
+        "id": "beat_11",
+        "duration": 0.5,
+        "action": "uncreate",
+        "targets": ["surface_1"]
+      },
+      {
+        "id": "beat_12",
+        "duration": 0.5,
+        "action": "create",
+        "targets": ["surface_1"]
+      }
+    ],
+    "templateInstances": [
+      {
+        "id": "tmpl_1",
+        "templateId": "three_d_axes",
+        "params": {
+          "mode": "surface",
+          "xRange": [-3, 3, 1],
+          "yRange": [-3, 3, 1],
+          "zRange": [-2, 2, 1],
+          "phi": 65,
+          "theta": -45,
+          "zoom": 1,
+          "expression": "sin(x)*cos(y)",
+          "uRange": [-2.5, 2.5],
+          "vRange": [-2.5, 2.5],
+          "resolution": [8, 8],
+          "surfaceColor": "#58C4DD",
+          "components": ["cos(t)", "sin(t)", "t / 3"],
+          "tRange": [0, 12.56],
+          "curveColor": "#F2CC8F"
+        },
+        "objectIds": ["axes_1", "surface_1"],
+        "beatIds": ["beat_1", "beat_2"]
+      }
+    ]
+  },
+  "previewProfile": {
+    "width": 854,
+    "height": 480,
+    "fps": 15,
+    "transparent": false
+  },
+  "exportProfile": {
+    "format": "mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "transparent": false
+  }
+}

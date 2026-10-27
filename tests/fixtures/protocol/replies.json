@@ -58,7 +58,10 @@
             "total": 0,
             "dirty": [],
             "canUndo": false,
-            "canRedo": false
+            "canRedo": false,
+            "onScreen": [
+              []
+            ]
           },
           "index": {
             "output": null,
@@ -144,7 +147,13 @@
               true
             ],
             "canUndo": true,
-            "canRedo": false
+            "canRedo": false,
+            "onScreen": [
+              [],
+              [
+                "formula_1"
+              ]
+            ]
           },
           "index": {
             "output": null,
@@ -289,7 +298,17 @@
               true
             ],
             "canUndo": true,
-            "canRedo": false
+            "canRedo": false,
+            "onScreen": [
+              [],
+              [
+                "formula_1"
+              ],
+              [
+                "formula_1",
+                "text_1"
+              ]
+            ]
           },
           "index": {
             "output": null,
@@ -423,7 +442,17 @@
               true
             ],
             "canUndo": true,
-            "canRedo": false
+            "canRedo": false,
+            "onScreen": [
+              [],
+              [
+                "formula_1"
+              ],
+              [
+                "formula_1",
+                "text_1"
+              ]
+            ]
           },
           "index": {
             "output": null,
@@ -525,7 +554,13 @@
               true
             ],
             "canUndo": true,
-            "canRedo": true
+            "canRedo": true,
+            "onScreen": [
+              [],
+              [
+                "formula_1"
+              ]
+            ]
           },
           "index": {
             "output": null,
@@ -641,7 +676,17 @@
               true
             ],
             "canUndo": true,
-            "canRedo": false
+            "canRedo": false,
+            "onScreen": [
+              [],
+              [
+                "formula_1"
+              ],
+              [
+                "formula_1",
+                "text_1"
+              ]
+            ]
           },
           "index": {
             "output": null,
@@ -881,7 +926,17 @@
               true
             ],
             "canUndo": true,
-            "canRedo": false
+            "canRedo": false,
+            "onScreen": [
+              [],
+              [
+                "formula_1"
+              ],
+              [
+                "formula_1",
+                "text_1"
+              ]
+            ]
           },
           "index": {
             "output": null,
@@ -1006,7 +1061,17 @@
               true
             ],
             "canUndo": false,
-            "canRedo": false
+            "canRedo": false,
+            "onScreen": [
+              [],
+              [
+                "formula_1"
+              ],
+              [
+                "formula_1",
+                "text_1"
+              ]
+            ]
           },
           "index": {
             "output": null,
@@ -1131,7 +1196,17 @@
               true
             ],
             "canUndo": false,
-            "canRedo": false
+            "canRedo": false,
+            "onScreen": [
+              [],
+              [
+                "formula_1"
+              ],
+              [
+                "formula_1",
+                "text_1"
+              ]
+            ]
           },
           "index": {
             "output": null,
@@ -1270,7 +1345,17 @@
               true
             ],
             "canUndo": false,
-            "canRedo": false
+            "canRedo": false,
+            "onScreen": [
+              [],
+              [
+                "formula_1"
+              ],
+              [
+                "formula_1",
+                "text_1"
+              ]
+            ]
           },
           "index": {
             "output": null,
