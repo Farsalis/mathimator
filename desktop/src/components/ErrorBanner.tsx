@@ -6,7 +6,7 @@ const CLIP_REMOVED = /^manim used an incomplete clip .+; it was removed, so rend
 
 interface ErrorBannerProps {
   failure: Failure;
-  /** Save As is offered when the project folder is gone (D57). */
+  /** Save As is offered when the project folder is gone. */
   canSaveAs: boolean;
   onSaveAs: () => void;
   /** Render again is offered when a preview used an incomplete clip that the worker removed. */
@@ -15,7 +15,7 @@ interface ErrorBannerProps {
   onDismiss: () => void;
 }
 
-/** The error banner (C9.3, D23): the message as a short summary, the worker's output on request, and Dismiss. */
+/** The error banner: the message as a short summary, the worker's output on request, and Dismiss. */
 export function ErrorBanner({
   failure,
   canSaveAs,

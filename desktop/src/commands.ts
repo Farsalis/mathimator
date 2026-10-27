@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 type CommandTable = Readonly<Record<string, readonly string[]>>;
 
 /**
- * The worker-bound shell commands (C9.1). Each one goes through `invokeWorker` inside a queued task (C9.2). This table
+ * The worker-bound shell commands. Each one goes through `invokeWorker` inside a queued task. This table
  * and SHELL_COMMANDS are the UI's half of tests/fixtures/protocol/commands.json, which commands.test.ts checks.
  */
 export const WORKER_COMMANDS = {
@@ -25,7 +25,7 @@ export const WORKER_COMMANDS = {
   cancel_render: ["jobId"],
 } as const satisfies CommandTable;
 
-/** The shell commands that the shell answers itself (C9.1). */
+/** The shell commands that the shell answers itself. */
 export const SHELL_COMMANDS = {
   app_status: [],
   restart_worker: [],

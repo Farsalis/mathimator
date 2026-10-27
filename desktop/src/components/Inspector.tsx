@@ -35,9 +35,9 @@ interface InspectorProps {
   selectedBeatId: string | null;
   selectedObjectId: string | null;
   fieldError: FieldError | null;
-  /** The TeX check failed, so formulas and axis labels cannot render (C9.7, C14 Q4). */
+  /** The TeX check failed, so formulas and axis labels cannot render. */
   texBlocked: boolean;
-  /** The worker is not ready, so nothing can be edited (C9.5). */
+  /** The worker is not ready, so nothing can be edited. */
   disabled: boolean;
   onSelectObject: (objectId: string) => void;
   /** Sends an edit. The promise settles once the edit was applied or refused. */
@@ -69,7 +69,7 @@ export function Inspector({
   const index = beats.findIndex((item) => item.id === selectedBeatId);
   const beat = beats[index] ?? null;
   const selectedObject = objects.find((item) => item.id === selectedObjectId) ?? null;
-  // A formula transform shows the fields of both its formulas below the editor (design §10.4).
+  // A formula transform shows the fields of both its formulas below the editor (spec §6, Beat editor).
   const formulas = beat?.action === "transform_formula" ? objects.filter((item) => beat.targets.includes(item.id)) : [];
   const context: FieldContext = { objects, fieldError, texBlocked, onEdit };
 
@@ -424,7 +424,7 @@ function PlacementFields({ object, onEdit }: { object: SceneObject; onEdit: (edi
 }
 
 /**
- * A shape's settings, one control per setting of its type in the catalog with the colour last (design §10.6). Each
+ * A shape's settings, one control per setting of its type in the catalog with the colour last (spec §6, Shapes). Each
  * sends `set_shape_param`, and a refused value shows under its own control. A point on axes picks its axes.
  */
 function ShapeFields({ object, shape, context }: { object: SceneObject; shape: Shape; context: FieldContext }) {
@@ -528,7 +528,7 @@ function ExpressionField({
 }
 
 /**
- * The refusal of an edit to `field` on `objectId`, shown under that field only (C9.3, F112). `op`, `axis` and
+ * The refusal of an edit to `field` on `objectId`, shown under that field only. `op`, `axis` and
  * `paramKey` pick one input out of those whose edits name the same field, such as the axes ranges and lengths, or the
  * settings of a shape.
  */

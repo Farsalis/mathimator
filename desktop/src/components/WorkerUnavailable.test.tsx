@@ -8,7 +8,7 @@ afterEach(cleanup);
 const REASON = "The installed runtime is incomplete (python). Reinstall Mathimator.";
 
 describe("WorkerUnavailable", () => {
-  it("shows the reason, and Retry is disabled until the retry settles (D31)", async () => {
+  it("shows the reason, and Retry is disabled until the retry settles", async () => {
     let finish: () => void = () => undefined;
     const retried = new Promise<void>((resolve) => {
       finish = resolve;

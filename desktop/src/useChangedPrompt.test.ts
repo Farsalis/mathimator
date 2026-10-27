@@ -9,7 +9,7 @@ function retry(): Promise<void> {
   return Promise.resolve();
 }
 
-describe("useChangedPrompt (C9.3)", () => {
+describe("useChangedPrompt", () => {
   it("opens one prompt, joins later refusals to it and hands back their retries in order on close", () => {
     const { result } = renderHook(() => useChangedPrompt());
     const later = (): Promise<void> => Promise.resolve();

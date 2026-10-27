@@ -42,7 +42,7 @@ function button(testId: string): HTMLButtonElement {
 }
 
 describe("TopBar", () => {
-  it("disables New, Open, Save As and Sample while an export runs and keeps Export clickable (D22, C7.6)", () => {
+  it("disables New, Open, Save As and Sample while an export runs and keeps Export clickable", () => {
     renderTopBar(true);
     for (const testId of PROJECT_ACTIONS) {
       expect(button(testId).disabled).toBe(true);
@@ -61,7 +61,7 @@ describe("TopBar", () => {
     expect(button("export-button").textContent).toBe("Export");
   });
 
-  it("shows the project folder and sends New and Save As (D29)", () => {
+  it("shows the project folder and sends New and Save As", () => {
     const onNew = vi.fn();
     const onSaveAs = vi.fn();
     renderTopBar(false, { onNew, onSaveAs });

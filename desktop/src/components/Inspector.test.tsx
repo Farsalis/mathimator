@@ -75,7 +75,7 @@ function renderInspector(
 }
 
 describe("Inspector", () => {
-  it("shows a field error under the refused field of the edited object only (C9.3, F112)", () => {
+  it("shows a field error under the refused field of the edited object only", () => {
     renderInspector("plot_1", { fieldError: UNSUPPORTED });
     expect(screen.getByTestId("field-error-plot_1-expression").textContent).toBe(UNSUPPORTED.message);
     cleanup();
@@ -87,7 +87,7 @@ describe("Inspector", () => {
     expect(screen.queryByTestId("field-error-plot_1-expression")).toBeNull();
   });
 
-  it("shows a refused domain under x max, the field the worker names (C9.3)", () => {
+  it("shows a refused domain under x max, the field the worker names", () => {
     const message = "xMax must be greater than xMin";
     renderInspector("plot_2", {
       fieldError: { ...UNSUPPORTED, objectId: "plot_2", field: "xMax", op: "set_domain", message },
@@ -100,7 +100,7 @@ describe("Inspector", () => {
     ["set_axes_range", "y", "Y range"],
     ["set_length", "x", "X length"],
     ["set_length", "y", "Y length"],
-  ] as const)("shows a refused %s on axis %s under %s only (C9.3)", (op, axis, label) => {
+  ] as const)("shows a refused %s on axis %s under %s only", (op, axis, label) => {
     renderInspector("axes_2", {
       fieldError: { ...UNSUPPORTED, objectId: "axes_2", field: "value", op, axis, message: TOO_MANY_TICKS },
     });
@@ -113,7 +113,7 @@ describe("Inspector", () => {
     ["a formula", "eq_1", true],
     ["labelled axes", "axes_1", true],
     ["axes without labels", "axes_2", false],
-  ])("says LaTeX must be reinstalled on %s while TeX is blocked (C14 Q4)", (_, objectId, shown) => {
+  ])("says LaTeX must be reinstalled on %s while TeX is blocked", (_, objectId, shown) => {
     renderInspector(objectId, { texBlocked: true });
     expect(screen.queryByTestId("tex-blocked") !== null).toBe(shown);
     cleanup();
@@ -121,14 +121,14 @@ describe("Inspector", () => {
     expect(screen.queryByTestId("tex-blocked")).toBeNull();
   });
 
-  it("disables every field while the worker is not ready (C9.5)", () => {
+  it("disables every field while the worker is not ready", () => {
     renderInspector("plot_1", { disabled: true });
     expect(screen.getByTestId("plot-expression").matches(":disabled")).toBe(true);
     expect(screen.getByTestId("delete-object").matches(":disabled")).toBe(true);
   });
 });
 
-describe("Inspector beat editor (design §10.2, §10.4)", () => {
+describe("Inspector beat editor (spec §6, Selection and Beat editor)", () => {
   const graph: SceneObject[] = [
     { id: "axes_1", name: "Axes", type: "axes", params: { showLabels: false } },
     { id: "plot_1", name: "Sine", type: "function_plot", params: { axesId: "axes_1", expression: "sin(x)" } },
@@ -247,7 +247,7 @@ describe("Inspector beat editor (design §10.2, §10.4)", () => {
   });
 });
 
-describe("Inspector shape fields (design §10.6)", () => {
+describe("Inspector shape fields (spec §6, Shapes)", () => {
   const SHAPE_OBJECTS: SceneObject[] = [
     { id: "axes_1", name: "Axes", type: "axes", params: { showLabels: false } },
     { id: "axes_2", name: "Second axes", type: "axes", params: { showLabels: false } },
@@ -385,7 +385,7 @@ describe("Inspector shape fields (design §10.6)", () => {
     ]);
   });
 
-  it("shows a refused setting under that setting only (design §10.7)", () => {
+  it("shows a refused setting under that setting only (spec §6, Refusals in the UI)", () => {
     const message = "value must be from 0.001 to 50";
     const refusal: FieldError = {
       objectId: "circle_1",
@@ -433,7 +433,7 @@ function compiles(): unknown[] {
 describe("Inspector fields", () => {
   afterEach(() => vi.mocked(invoke).mockClear());
 
-  it("commits a colour once, when the picker closes (D08, C10)", () => {
+  it("commits a colour once, when the picker closes", () => {
     const onEdit = vi.fn(() => Promise.resolve());
     renderInspector("eq_1", { onEdit });
     const { picker, hex } = colorInputs();
@@ -446,7 +446,7 @@ describe("Inspector fields", () => {
     expect(onEdit).toHaveBeenCalledExactlyOnceWith({ op: "set_object_color", objectId: "eq_1", color: "#FF0090" });
   });
 
-  it("sends no edit for a colour that differs only in case (D08)", () => {
+  it("sends no edit for a colour that differs only in case", () => {
     const onEdit = vi.fn(() => Promise.resolve());
     renderInspector("eq_1", { onEdit });
     const { picker, hex } = colorInputs();
@@ -461,7 +461,7 @@ describe("Inspector fields", () => {
     ["an empty field", "  "],
     ["text that is not a decimal", "1e3"],
     ["the same number", "1.50"],
-  ])("shows the value again for %s and sends no edit (D24)", (_, text) => {
+  ])("shows the value again for %s and sends no edit", (_, text) => {
     const onEdit = vi.fn(() => Promise.resolve());
     renderInspector("eq_1", { onEdit });
     const dx = screen.getByLabelText<HTMLInputElement>("dx");
@@ -470,7 +470,7 @@ describe("Inspector fields", () => {
     expect(dx.value).toBe("1.5");
   });
 
-  it("reads a comma as the decimal point (D24)", () => {
+  it("reads a comma as the decimal point", () => {
     const onEdit = vi.fn(() => Promise.resolve());
     renderInspector("eq_1", { onEdit });
     typeAndLeave(screen.getByLabelText("dx"), " 2,5 ");
@@ -488,7 +488,7 @@ describe("Inspector fields", () => {
     expect(onEdit).toHaveBeenCalledExactlyOnceWith({ op: "set_object_shift", objectId: "eq_1", shift: [1.5, -2] });
   });
 
-  it("commits a hex colour typed in the field when it loses focus (C10)", () => {
+  it("commits a hex colour typed in the field when it loses focus", () => {
     const onEdit = vi.fn(() => Promise.resolve());
     renderInspector("eq_1", { onEdit });
     const { picker, hex } = colorInputs();
@@ -499,7 +499,7 @@ describe("Inspector fields", () => {
     expect(onEdit).toHaveBeenCalledExactlyOnceWith({ op: "set_object_color", objectId: "eq_1", color: "#58C4DD" });
   });
 
-  it("places a text with the same anchor, colour and shift fields as a formula (F119)", () => {
+  it("places a text with the same anchor, colour and shift fields as a formula", () => {
     const onEdit = vi.fn(() => Promise.resolve());
     renderInspector("text_1", { onEdit });
     const anchor = screen.getByLabelText<HTMLSelectElement>("Anchor");
@@ -512,7 +512,7 @@ describe("Inspector fields", () => {
     ]);
   });
 
-  it("edits a surface's expression with its variables and refusal shown, as a plot's (C9.3, F119)", () => {
+  it("edits a surface's expression with its variables and refusal shown, as a plot's", () => {
     const surface: SceneObject = { id: "surface_1", name: "Surface", type: "surface", params: { expression: "x*y" } };
     const onEdit = vi.fn(() => Promise.resolve());
     render(
@@ -553,7 +553,7 @@ describe("Inspector fields", () => {
     });
   });
 
-  it("keeps a number while its edit is pending and shows the stored value once it is refused (F045)", async () => {
+  it("keeps a number while its edit is pending and shows the stored value once it is refused", async () => {
     let settle: () => void = () => undefined;
     const pending = new Promise<void>((resolve) => {
       settle = resolve;
@@ -569,7 +569,7 @@ describe("Inspector fields", () => {
     expect(dx.value).toBe("1.5");
   });
 
-  it("previews the formula being typed in its own slot, and the stored one after a refusal (C9.9)", async () => {
+  it("previews the formula being typed in its own slot, and the stored one after a refusal", async () => {
     renderInspector("eq_1");
     await waitFor(() => expect(compiles()).toHaveLength(1));
     expect(compiles()[0]).toMatchObject({ latex: "y = \\sin(x)", slot: "eq_1" });

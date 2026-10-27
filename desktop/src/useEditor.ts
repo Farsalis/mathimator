@@ -54,7 +54,7 @@ const RESTART_NOTE = "The worker restarted. The document was reloaded from disk 
 const WORKER_UNAVAILABLE = "Worker unavailable";
 const TEX_FAILED = "Formulas and axis labels cannot render on this PC. Reinstall Mathimator.";
 
-/** Refusal codes that point at the edited field (C9.3). */
+/** Refusal codes that point at the edited field. */
 const FIELD_CODES: ReadonlySet<string> = new Set([
   "invalid_edit",
   "invalid_text",
@@ -64,8 +64,8 @@ const FIELD_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * What is selected (design §10.2): a beat and an object at once. The Inspector edits the beat and shows the object's
- * fields; Add and "+ Beat" insert after the beat, and "+ Beat" targets the object.
+ * What is selected (spec §6, Selection): a beat and an object at once. The Inspector edits the beat and shows the
+ * object's fields; Add and "+ Beat" insert after the beat, and "+ Beat" targets the object.
  */
 export interface Selection {
   beatId: string | null;
@@ -78,9 +78,9 @@ const NO_SELECTION: Selection = { beatId: null, objectId: null };
 type Panel = "inspector" | "code" | "notices";
 
 /**
- * A refused edit's message, shown under the field it is about (C9.3, S59, design §10.7): on the object an object edit
- * named, under the field the refusal names; or on the beat a beat edit named, under the control of its op, whatever
- * the field, since a refusal by a document rule names none.
+ * A refused edit's message, shown under the field it is about (spec §6, Refusals in the UI): on the object an object
+ * edit named, under the field the refusal names; or on the beat a beat edit named, under the control of its op,
+ * whatever the field, since a refusal by a document rule names none.
  */
 export interface FieldError {
   objectId: string | null;
@@ -98,7 +98,7 @@ type OpenCommand = "open_project_dialog" | "open_sample" | "new_project";
 
 export function useEditor() {
   const [state, setState] = useState<EditorState | null>(null);
-  /** Why the worker is unavailable (C9.5), or null. */
+  /** Why the worker is unavailable, or null. */
   const [unavailable, setUnavailable] = useState<string | null>(null);
   const [tex, setTex] = useState<TexStatus>({ state: "checking", message: null });
   const { notices, add: addNotices, dismiss: onDismissNotice } = useNotices();
@@ -123,13 +123,13 @@ export function useEditor() {
   const jobs = useRef(handshake);
   /** The last applied state reply. Queued tasks read it before React has rendered it. */
   const applied = useRef<EditorState | null>(null);
-  /** The worker exited or was restarted, so the next get_state is the C8.6 resync. */
+  /** The worker exited or was restarted, so the next get_state is the resync after a worker exit. */
   const restarted = useRef(false);
   const notedReady = useRef(false);
   /** Bumped by every schedulePreview, so a later one supersedes a preview task that has not recorded its id. */
   const epoch = useRef(0);
   const debounce = useRef<number | null>(null);
-  /** The profile and `force` of the current export, so a refused export is retried the same way (C9.3). */
+  /** The profile and `force` of the current export, so a refused export is retried the same way. */
   const exportOrder = useRef<{ profile: ExportProfile; force: boolean } | null>(null);
 
   const ready = state !== null && unavailable === null;
@@ -180,7 +180,7 @@ export function useEditor() {
     }
   }, [ready]);
 
-  /** Startup (C9.5): `app_status` answers once the shell's handshake is done. */
+  /** Startup: `app_status` answers once the shell's handshake is done. */
   async function loadStatus(): Promise<void> {
     try {
       applyStatus(parseAppStatus(await invokeShell("app_status")));
@@ -189,7 +189,7 @@ export function useEditor() {
     }
   }
 
-  /** Retry in the "Worker unavailable" view. A worker that starts is loaded as after a restart (C8.6). */
+  /** Retry in the "Worker unavailable" view. A worker that starts is loaded as after a restart. */
   async function onRetry(): Promise<void> {
     try {
       const status = parseAppStatus(await invokeShell("restart_worker"));
@@ -202,7 +202,7 @@ export function useEditor() {
 
   /**
    * Shows the notices and TeX state of an AppStatus, then loads the state of a ready worker. A `tex_status` event can
-   * overtake the reply (C9.2), and the check never goes back to `checking`, so a reply still checking keeps the result.
+   * overtake the reply, and the check never goes back to `checking`, so a reply still checking keeps the result.
    */
   function applyStatus(status: AppStatus): void {
     addNotices(status.notices);
@@ -215,7 +215,7 @@ export function useEditor() {
     void queue.enqueue(refreshState);
   }
 
-  /** Shows why a task failed: `worker_unavailable` opens the unavailable view (C9.5), anything else the banner. */
+  /** Shows why a task failed: `worker_unavailable` opens the unavailable view, anything else the banner. */
   function showFailure(reason: unknown): void {
     if (reason instanceof WorkerFailure && reason.code === "worker_unavailable") {
       setUnavailable(reason.message);
@@ -227,7 +227,7 @@ export function useEditor() {
   /**
    * Loads the worker's state: at startup, after a preview, and as the queue's single-flight resync. The first load
    * after the worker exited also clears the drafts and field errors and shows the restart note. On another folder the
-   * Open reset does that instead, and no note is shown (C8.6). No preview follows (Q5).
+   * Open reset does that instead, and no note is shown. No preview follows.
    */
   async function refreshState(): Promise<void> {
     const restart = restarted.current;
@@ -242,7 +242,7 @@ export function useEditor() {
     }
   }
 
-  /** Applies a state reply. A state for another folder, such as a late Open reply, runs the Open reset (C9.2). */
+  /** Applies a state reply. A state for another folder, such as a late Open reply, runs the Open reset. */
   function applyState(next: EditorState): void {
     if (applied.current !== null && applied.current.projectPath !== next.projectPath) {
       resetView();
@@ -256,7 +256,7 @@ export function useEditor() {
     setState(next);
   }
 
-  /** Applies an edit reply. An edit that changed the document overtakes the current preview (C9.2). */
+  /** Applies an edit reply. An edit that changed the document overtakes the current preview. */
   function applyEdit(next: EditorState): void {
     applyState(next);
     if (next.changed !== false) {
@@ -264,7 +264,7 @@ export function useEditor() {
     }
   }
 
-  /** Applies the reply of Open, Sample or New: the Open reset, then a preview (C7.5). */
+  /** Applies the reply of Open, Sample or New: the Open reset, then a preview. */
   function applyOpened(next: EditorState): void {
     resetView();
     adopt(next);
@@ -274,9 +274,9 @@ export function useEditor() {
   }
 
   /**
-   * Applies the state of Save As (D29, O9). It names the new folder but holds the same document, so it runs no Open
+   * Applies the state of Save As. It names the new folder but holds the same document, so it runs no Open
    * reset: the selection, the playhead, the open panel and the note stay, and the export path names the export's copy.
-   * The current preview goes stale all the same, as for any state of another folder (C9.2).
+   * The current preview goes stale all the same, as for any state of another folder.
    */
   function applySavedAs(next: EditorState): void {
     publish(savedAs(jobs.current, applied.current?.projectPath ?? next.projectPath, next.projectPath));
@@ -285,7 +285,7 @@ export function useEditor() {
   }
 
   /**
-   * The Open reset (C9.2). It closes View code. For a state of another folder, such as a late reply, the Notices stay
+   * The Open reset. It closes View code. For a state of another folder, such as a late reply, the Notices stay
    * open; Open, Sample and New also close them (applyOpened).
    */
   function resetView(): void {
@@ -343,7 +343,7 @@ export function useEditor() {
     }
   }
 
-  /** Reload: read project.json again, which discards undo history and the joined refusals, then preview (C9.3, Q7). */
+  /** Reload: read project.json again, which discards undo history and the joined refusals, then preview. */
   function onReload(): void {
     changedPrompt.close();
     queue.resume([
@@ -358,7 +358,7 @@ export function useEditor() {
     ]);
   }
 
-  /** Overwrite: save this document over project.json, then retry each joined refusal once, in order (C9.3). */
+  /** Overwrite: save this document over project.json, then retry each joined refusal once, in order. */
   function onOverwrite(): void {
     const retries = changedPrompt.close();
     let saved = false;
@@ -376,19 +376,19 @@ export function useEditor() {
     ]);
   }
 
-  /** Cancel: write nothing, drop the joined refusals and go on with the queue (C13.2 E2). */
+  /** Cancel: write nothing, drop the joined refusals and go on with the queue. */
   function onCancelPrompt(): void {
     changedPrompt.close();
     queue.resume();
   }
 
-  /** What Overwrite runs again for a job refused with `project_changed`: a new job of the same kind (C9.3). */
+  /** What Overwrite runs again for a job refused with `project_changed`: a new job of the same kind. */
   function jobRetry(job: JobFailure["job"]): Task {
     const order = exportOrder.current;
     return job === "export" && order !== null ? exportRetry(order.profile, order.force) : previewNow;
   }
 
-  /** Schedules a preview of the applied state after the debounce. A scene with no beats gets none (C7.5). */
+  /** Schedules a preview of the applied state after the debounce. A scene with no beats gets none. */
   function schedulePreview(): void {
     epoch.current += 1;
     const token = epoch.current;
@@ -405,7 +405,7 @@ export function useEditor() {
     }, PREVIEW_DEBOUNCE_MS);
   }
 
-  /** A preview task that supersedes every scheduled one: the retry of a refused preview replaces it (C7.5). */
+  /** A preview task that supersedes every scheduled one: the retry of a refused preview replaces it. */
   function previewNow(): Promise<void> {
     epoch.current += 1;
     return runPreview(epoch.current);
@@ -417,7 +417,7 @@ export function useEditor() {
     void queue.enqueue(previewNow);
   }
 
-  /** The preview task (C9.2). A later schedulePreview supersedes it until its id is recorded. */
+  /** The preview task. A later schedulePreview supersedes it until its id is recorded. */
   async function runPreview(token: number): Promise<void> {
     if (token !== epoch.current) {
       return;
@@ -430,7 +430,7 @@ export function useEditor() {
     try {
       await invokeWorker("render_preview", { jobId });
     } catch (reason: unknown) {
-      // A failed send ends the preview as if its terminal line were this error (C7.4); the queue shows the banner.
+      // A failed send ends the preview as if its terminal line were this error; the queue shows the banner.
       publish(abandonPreview(jobs.current, jobId));
       throw reason;
     }
@@ -445,13 +445,13 @@ export function useEditor() {
         setFieldError(null);
         const focus = next.focus;
         if (focus) {
-          // The beat or object the edit is about, such as a new beat and its first target (design §10.2).
+          // The beat or object the edit is about, such as a new beat and its first target (spec §6, Selection).
           setSelection((current) => ({
             beatId: focus.beatId ?? current.beatId,
             objectId: focus.objectId ?? current.objectId,
           }));
         }
-        // An edit that changed nothing gets no preview (D08).
+        // An edit that changed nothing gets no preview.
         if (preview && next.changed !== false) {
           schedulePreview();
         }
@@ -500,7 +500,7 @@ export function useEditor() {
     setPresetOpen(true);
   }
 
-  /** The Export click: "Rendering export" at once, then the Export task. Re-export passes `force` (D56). */
+  /** The Export click: "Rendering export" at once, then the Export task. Re-export passes `force`. */
   function onStartExport(profile: ExportProfile, force: boolean): void {
     if (exportRunning()) {
       return;
@@ -511,7 +511,7 @@ export function useEditor() {
     void queue.enqueue(() => runExport(profile, force), exportRetry(profile, force));
   }
 
-  /** The retry of a refused export: a new Export task with a new id, the same profile and the same `force` (C9.3). */
+  /** The retry of a refused export: a new Export task with a new id, the same profile and the same `force`. */
   function exportRetry(profile: ExportProfile, force: boolean): Task {
     return async () => {
       if (exportRunning()) {
@@ -523,9 +523,9 @@ export function useEditor() {
   }
 
   /**
-   * The Export task (C9.2): record the id, save the profile (a no-op when it is unchanged, F168), then send the export.
+   * The Export task: record the id, save the profile (a no-op when it is unchanged), then send the export.
    * Cancel export pressed before the send stops the task with "Cancelled"; a refused or failed step stops it with
-   * "Ready". After worker_exited has ended the export (C8.6), the task stops without sending anything more.
+   * "Ready". After worker_exited has ended the export, the task stops without sending anything more.
    */
   async function runExport(profile: ExportProfile, force: boolean): Promise<void> {
     try {
@@ -555,7 +555,7 @@ export function useEditor() {
 
   /**
    * Cancel export: marks the cancel as the user's and queues the Cancel task. The queue runs it after the Export task,
-   * so an export id that is still current has been sent; otherwise the Export task has already stopped (C9.2).
+   * so an export id that is still current has been sent; otherwise the Export task has already stopped.
    */
   function onCancelExport(): void {
     if (!jobs.current.exporting || jobs.current.cancelRequested) {
@@ -570,7 +570,7 @@ export function useEditor() {
     });
   }
 
-  /** Clear cache, then a preview (C7.5). It keeps the exports, so the export path and the note stay. */
+  /** Clear cache, then a preview. It keeps the exports, so the export path and the note stay. */
   function onClearCache(): Promise<void> {
     return queue.enqueue(async () => {
       const next = parseEditorState(await invokeWorker("clear_cache"));
@@ -581,7 +581,7 @@ export function useEditor() {
   }
 
   /**
-   * Open, Sample and New. The shell first offers to save a touched temp project (C14 Q2); a cancel there, or in the
+   * Open, Sample and New. The shell first offers to save a touched temp project; a cancel there, or in the
    * folder picker, returns null and changes nothing. When the project was saved there but no other project opened,
    * the shell returns the Save As state as `{savedAs}`, and the UI follows the move as after Save As.
    */
@@ -596,7 +596,7 @@ export function useEditor() {
     });
   }
 
-  /** Save As (D29). A cancel in the folder picker returns null and changes nothing. */
+  /** Save As. A cancel in the folder picker returns null and changes nothing. */
   function onSaveAs(): Promise<void> {
     return queue.enqueue(async () => {
       const reply = await invokeWorker("save_project_as_dialog");
@@ -619,8 +619,8 @@ export function useEditor() {
   }
 
   /**
-   * Selects a beat and its first target, or keeps the selected object for a beat without targets (design §10.2). A
-   * field error belongs to what was selected, so it goes (F112).
+   * Selects a beat and its first target, or keeps the selected object for a beat without targets (spec §6,
+   * Selection). A field error belongs to what was selected, so it goes.
    */
   function selectBeat(beatId: string): void {
     const beat = applied.current?.document.scene.beats.find((item) => item.id === beatId);
@@ -628,7 +628,7 @@ export function useEditor() {
     setFieldError(null);
   }
 
-  /** Selects an object and keeps the selected beat, so "+ Beat" adds a beat on it there (design §10.2, F112). */
+  /** Selects an object and keeps the selected beat, so "+ Beat" adds a beat on it there (spec §6, Selection). */
   function selectObject(objectId: string): void {
     setSelection((current) => ({ ...current, objectId }));
     setFieldError(null);
@@ -640,7 +640,7 @@ export function useEditor() {
 
   /**
    * Ends a duration drag. The beat keeps its dragged duration until the edit settles, so it does not snap back for
-   * the round trip (F114). A duration equal to the stored one, such as an interrupted drag's (D48), only drops the
+   * the round trip. A duration equal to the stored one, such as an interrupted drag's, only drops the
    * draft.
    */
   function onCommitDuration(beatId: string, duration: number): void {
@@ -662,7 +662,7 @@ export function useEditor() {
   const starts = dragging ? derivedStarts(durations) : (state?.derived.starts ?? []);
   const total = dragging ? roundMs(durations.reduce((sum, value) => sum + value, 0)) : (state?.derived.total ?? 0);
   if (playhead > total) {
-    // A delete, an undo or a shorter beat moved the end before the playhead (F123).
+    // A delete, an undo or a shorter beat moved the end before the playhead.
     setPlayhead(total);
   }
 
@@ -676,7 +676,7 @@ export function useEditor() {
     fieldError,
     changedPrompt: changedPrompt.message,
     status: unavailable === null ? handshake.status : WORKER_UNAVAILABLE,
-    /** The selection, while the document still holds it: a deleted or undone beat or object is not selected (F117). */
+    /** The selection, while the document still holds it: a deleted or undone beat or object is not selected. */
     selection: state === null ? NO_SELECTION : selectionIn(selection, state.document),
     selectBeat,
     selectObject,
@@ -710,7 +710,7 @@ export function useEditor() {
     onCancelExport,
     onClearCache,
     onNotices: () => setPanel("notices"),
-    /** View code shows the applied state's source, so it follows every change (D25). */
+    /** View code shows the applied state's source, so it follows every change. */
     onViewCode: () => setPanel("code"),
     onClosePanel: () => setPanel("inspector"),
     onExportCode,
@@ -723,7 +723,7 @@ export function useEditor() {
   };
 }
 
-/** A new job id from the shell (C7.1). */
+/** A new job id from the shell. */
 async function reserveJobId(prefix: "preview" | "export"): Promise<string> {
   return asString(await invokeShell("reserve_job_id", { prefix }), "reserve_job_id");
 }
@@ -744,9 +744,9 @@ function selectionIn(selection: Selection, document: ProjectDocument): Selection
 }
 
 /**
- * The field error of a refused edit, or null when the refusal is not about a field (C9.3, design §10.7). An object
- * edit needs the field the refusal names; a beat edit is shown on its beat whatever the field. Add, the template
- * inserts and the other edits show in the banner only.
+ * The field error of a refused edit, or null when the refusal is not about a field (spec §6, Refusals in the UI). An
+ * object edit needs the field the refusal names; a beat edit is shown on its beat whatever the field. Add, the
+ * template inserts and the other edits show in the banner only.
  */
 function fieldErrorOf(edit: Edit, refusal: WorkerRefusal): FieldError | null {
   if (!FIELD_CODES.has(refusal.code)) {

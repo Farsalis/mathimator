@@ -4,13 +4,13 @@ import type { Notice } from "./types";
 
 export interface Notices {
   notices: Notice[];
-  /** Shows the notices whose ids were never shown, so a StrictMode double mount shows each once (C9.5). */
+  /** Shows the notices whose ids were never shown, so a StrictMode double mount shows each once. */
   add: (added: readonly Notice[]) => void;
-  /** Hides a notice and tells the shell, which then leaves it out of `app_status` (C9.5). */
+  /** Hides a notice and tells the shell, which then leaves it out of `app_status`. */
   dismiss: (id: number) => void;
 }
 
-/** The shell's notices under the status line: each id is shown once (C9.5). */
+/** The shell's notices under the status line: each id is shown once. */
 export function useNotices(): Notices {
   const [notices, setNotices] = useState<Notice[]>([]);
   /** The id of every notice shown so far. */

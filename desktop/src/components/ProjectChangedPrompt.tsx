@@ -8,7 +8,7 @@ interface ProjectChangedPromptProps {
 }
 
 /**
- * The D59 prompt: project.json changed outside Mathimator, and nothing is written until the user chooses (C9.3).
+ * The project_changed prompt: project.json changed outside Mathimator, and nothing is written until the user chooses.
  * The app behind it is inert, and Escape is Cancel.
  */
 export function ProjectChangedPrompt({ message, onReload, onOverwrite, onCancel }: ProjectChangedPromptProps) {

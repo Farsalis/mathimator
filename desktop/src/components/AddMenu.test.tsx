@@ -16,7 +16,7 @@ function shapes(): HTMLElement {
   return screen.getByRole("group", { name: "Shapes" });
 }
 
-describe("AddMenu (design §10.6)", () => {
+describe("AddMenu (spec §6, Shapes)", () => {
   it("lists the shapes in a group after the templates", () => {
     openMenu(true);
     const items = screen.getAllByRole("menuitem").map((item) => item.textContent);

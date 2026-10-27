@@ -5,7 +5,7 @@ import { useCommitDraft, type CommitDraft } from "../useCommitDraft";
 
 /**
  * A colour picker beside a hex field. While the picker is open it moves only the draft; it commits once, on the
- * native `change` event when it closes, so one use of it is one edit and one undo step (D08, F009). React's onChange
+ * native `change` event when it closes, so one use of it is one edit and one undo step. React's onChange
  * on a colour input follows every `input` event, hence the listener. The hex field commits on blur. Both compare
  * case-insensitively.
  */

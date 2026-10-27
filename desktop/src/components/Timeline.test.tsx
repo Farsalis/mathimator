@@ -59,7 +59,7 @@ describe("Timeline labels", () => {
   });
 });
 
-describe("Timeline + Beat (design §10.3)", () => {
+describe("Timeline + Beat (spec §6, + Beat)", () => {
   it("asks for a beat from the toolbar", () => {
     const button = screen.getByRole("button", { name: "+ Beat" });
     expect(button).toBe(screen.getByTestId("add-beat"));
@@ -67,7 +67,7 @@ describe("Timeline + Beat (design §10.3)", () => {
     expect(onAddBeat).toHaveBeenCalledOnce();
   });
 
-  it("is disabled while the worker is not ready (C9.5)", () => {
+  it("is disabled while the worker is not ready", () => {
     renderTimeline({ disabled: true });
     expect(screen.getByTestId<HTMLButtonElement>("add-beat").disabled).toBe(true);
   });
@@ -79,7 +79,7 @@ describe("Timeline + Beat (design §10.3)", () => {
   });
 });
 
-describe("Timeline duration drag (D48, F110)", () => {
+describe("Timeline duration drag", () => {
   it.each(["mouse", "touch", "pen"])("resizes the beat with a %s, 48 px per second", (pointerType) => {
     fireEvent.pointerDown(handle(), { pointerId: 3, pointerType, clientX: 100 });
     fireEvent.pointerMove(handle(), { pointerId: 3, pointerType, clientX: 148 });

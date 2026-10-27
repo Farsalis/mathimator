@@ -15,7 +15,7 @@ import { ParseError } from "./parse";
 
 const PROFILE: ExportProfile = { format: "webm", width: 1280, height: 720, fps: 60, transparent: true };
 
-describe("export choices (spec §1, F174)", () => {
+describe("export choices (spec §1)", () => {
   it("offers the formats, sizes and frame rates the worker accepts", () => {
     expect(new Set(EXPORT_FORMATS)).toEqual(new Set(fixture.formats));
     expect(new Set(RESOLUTIONS.map(({ width, height }) => `${width}x${height}`))).toEqual(
@@ -55,7 +55,7 @@ describe("isExportFormat", () => {
   });
 });
 
-describe("asExportProfile (D50)", () => {
+describe("asExportProfile", () => {
   it("reads a profile", () => {
     expect(asExportProfile({ ...PROFILE }, "document.exportProfile")).toEqual(PROFILE);
   });

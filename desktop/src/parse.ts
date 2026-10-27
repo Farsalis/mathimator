@@ -1,4 +1,4 @@
-/** A reply that does not have the shape the UI expects. `field` is the path of the value that failed (D50). */
+/** A reply that does not have the shape the UI expects. `field` is the path of the value that failed. */
 export class ParseError extends Error {
   name = "ParseError";
 

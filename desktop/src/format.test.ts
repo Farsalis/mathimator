@@ -21,7 +21,7 @@ function beats(...durations: number[]): Beat[] {
   }));
 }
 
-describe("duration limits (spec §4, F174)", () => {
+describe("duration limits (spec §4)", () => {
   it("are the worker's", () => {
     expect(MIN_BEAT_SECONDS).toBe(fixture.minBeatSeconds);
     expect(MAX_TOTAL_SECONDS).toBe(fixture.maxTotalSeconds);
@@ -80,7 +80,7 @@ describe("roundMs", () => {
   });
 });
 
-describe("parseDecimal (D24, F045)", () => {
+describe("parseDecimal", () => {
   it.each([
     ["1.5", 1.5],
     ["2,5", 2.5],

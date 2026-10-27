@@ -14,7 +14,7 @@ afterEach(() => {
 const RESTART = { id: 4, message: "The worker restarted." };
 const REOPEN = { id: 5, message: "Could not reopen C:/first after the worker restarted." };
 
-describe("useNotices (C9.5)", () => {
+describe("useNotices", () => {
   it("shows each notice id once, however often it is added", () => {
     const { result } = renderHook(() => useNotices());
     act(() => result.current.add([RESTART]));

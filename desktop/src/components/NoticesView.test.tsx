@@ -18,7 +18,7 @@ afterEach(() => {
   invokeMock.mockReset();
 });
 
-describe("NoticesView (D75)", () => {
+describe("NoticesView", () => {
   it("names the licence of each bundled part and where the texts are, above the shipped notices file", async () => {
     invokeMock.mockResolvedValue(NOTICES);
     render(<NoticesView onClose={vi.fn()} />);

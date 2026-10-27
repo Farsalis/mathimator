@@ -29,7 +29,7 @@ function argsOf(command: string): Array<{ slot: string; generation: number; late
     .map(([, args]) => args as { slot: string; generation: number; latex?: string });
 }
 
-describe("FormulaPreview (C9.9, F037)", () => {
+describe("FormulaPreview", () => {
   it("cancels a compile in flight on unmount, and a remount asks above every earlier cancel", async () => {
     script(new Promise(() => undefined), { status: "unsupported" });
     const first = render(<FormulaPreview slot="eq_1" latex="y = \sin(x)" />);

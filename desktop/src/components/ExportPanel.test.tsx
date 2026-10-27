@@ -13,7 +13,7 @@ function button(testId: string): HTMLButtonElement {
 }
 
 describe("ExportPanel", () => {
-  it("starts an export, and a Re-export that skips the export cache (D56)", () => {
+  it("starts an export, and a Re-export that skips the export cache", () => {
     const onStart = vi.fn();
     render(<ExportPanel initial={PROFILE} canStart onStart={onStart} onClose={vi.fn()} />);
     fireEvent.click(button("export-start"));

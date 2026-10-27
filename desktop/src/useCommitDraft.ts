@@ -13,7 +13,7 @@ export interface CommitDraft {
   change: (text: string) => void;
   /**
    * Keeps the draft until the edit `pending` settles, then shows the value again. A refused edit left the value as
-   * it was, so the field no longer shows text the document does not hold (F045).
+   * it was, so the field no longer shows text the document does not hold.
    */
   commit: (pending: Promise<void>) => void;
   /** Drops the draft and shows the value. */
@@ -21,7 +21,7 @@ export interface CommitDraft {
 }
 
 /**
- * The draft of a field that commits on blur (F119). A draft belongs to the value it was typed over: once the document
+ * The draft of a field that commits on blur. A draft belongs to the value it was typed over: once the document
  * holds another value, after an undo or the edit itself, the draft is dropped while rendering, not by an effect.
  */
 export function useCommitDraft(value: string): CommitDraft {

@@ -79,7 +79,7 @@ function playingVideo(video: HTMLVideoElement): {
 }
 
 describe("PreviewStage", () => {
-  it("logs an unreadable preview file, shows blank plus the badge, and reads it again for a new index (D23, F115)", async () => {
+  it("logs an unreadable preview file, shows blank plus the badge, and reads it again for a new index", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -102,7 +102,7 @@ describe("PreviewStage", () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it("does not seek the playing video to the time it reported, and seeks for a scrub (F043, F123)", async () => {
+  it("does not seek the playing video to the time it reported, and seeks for a scrub", async () => {
     serveFiles();
     const onTime = vi.fn<(time: number) => void>();
     const index = twoBeats(MOVIE);
@@ -144,7 +144,7 @@ describe("PreviewStage", () => {
     expect(onTime.mock.lastCall?.[0]).toBeCloseTo(1.4, 9);
   });
 
-  it("plays again when the next beat plays the same file (F111)", async () => {
+  it("plays again when the next beat plays the same file", async () => {
     const { play } = serveFiles();
     const onPlaying = vi.fn();
     const index = twoBeats(null);
@@ -159,7 +159,7 @@ describe("PreviewStage", () => {
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the clock running over a beat with no file, and stops at the end (D49)", () => {
+  it("keeps the clock running over a beat with no file, and stops at the end", () => {
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal(
       "requestAnimationFrame",

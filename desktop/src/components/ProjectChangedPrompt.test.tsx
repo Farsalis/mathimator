@@ -8,7 +8,7 @@ afterEach(cleanup);
 const MESSAGE = "project.json was changed outside Mathimator.";
 
 describe("ProjectChangedPrompt", () => {
-  it("shows the refusal as a modal prompt with Cancel focused (D59, C13.2 E2)", () => {
+  it("shows the refusal as a modal prompt with Cancel focused", () => {
     render(<ProjectChangedPrompt message={MESSAGE} onReload={vi.fn()} onOverwrite={vi.fn()} onCancel={vi.fn()} />);
     const dialog = screen.getByRole("alertdialog", { name: "Project changed on disk" });
     expect(dialog.getAttribute("aria-modal")).toBe("true");

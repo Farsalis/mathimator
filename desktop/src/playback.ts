@@ -14,7 +14,7 @@ export type Playback =
 export type FilePlayback = Extract<Playback, { path: string }>;
 
 /**
- * What the canvas shows at timeline `time` (spec §6). This is the one scrub rule: the worker has none (D44). For a
+ * What the canvas shows at timeline `time` (spec §6). This is the one scrub rule: the worker has none. For a
  * file, `time` is the middle of the frame to show, in the movie or in the beat's own partial movie: a seek to the edge
  * of a frame can show the frame before it, which may belong to the beat before.
  */
@@ -63,7 +63,7 @@ export function playbackAt(
 }
 
 /**
- * The timeline time at `currentTime` in the file `choice` plays, the inverse of playbackAt (G3.2). In the movie it is
+ * The timeline time at `currentTime` in the file `choice` plays, the inverse of playbackAt. In the movie it is
  * in the beat whose frames hold `currentTime`, so the timeline highlights the beat on screen, and it never passes the
  * end of the timeline.
  */
@@ -107,7 +107,7 @@ function exists(path: string | null, fileExists: (path: string) => boolean): pat
 
 /**
  * The beat playing at `time`: the last one that has started, by the same rule as the timeline highlight. A time on a
- * boundary is the next beat's start, not the end of the one before it (G3.4). Undefined only when there are no beats.
+ * boundary is the next beat's start, not the end of the one before it. Undefined only when there are no beats.
  */
 function beatAt(beats: readonly IndexBeat[], time: number): IndexBeat | undefined {
   return lastStarted(beats, time, (beat) => beat.derivedStart);
@@ -125,7 +125,7 @@ function lastStarted(
 
 /**
  * The frames of `beat` in the movie: `count` frames from `first`. Generated code snaps every beat to whole frames,
- * rounding each boundary half up (D63), so every frame rate lines up with the timeline.
+ * rounding each boundary half up, so every frame rate lines up with the timeline.
  */
 function framesOf(beat: IndexBeat): { first: number; count: number } {
   const first = frameAt(beat.derivedStart);

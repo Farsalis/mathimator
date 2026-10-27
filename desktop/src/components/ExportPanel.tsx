@@ -13,7 +13,7 @@ import {
 interface ExportPanelProps {
   initial: ExportProfile;
   canStart: boolean;
-  /** Starts the export; `force` (Re-export) skips the export cache (D56). */
+  /** Starts the export; `force` (Re-export) skips the export cache. */
   onStart: (profile: ExportProfile, force: boolean) => void;
   onClose: () => void;
 }

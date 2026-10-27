@@ -72,7 +72,7 @@ function refusal(op: Edit["op"], key: string | null = null): FieldError {
   return { objectId: null, beatId: "beat_2", field: null, op, axis: null, key, message: `${op} was refused` };
 }
 
-describe("BeatEditor kind (design §10.4)", () => {
+describe("BeatEditor kind (spec §6, Beat editor)", () => {
   it("names the beat and the path refusals give it", () => {
     renderEditor(SCALE);
     expect(screen.getByText("Scale · beat_2 · scene.beats[1]")).toBeTruthy();
@@ -128,7 +128,7 @@ describe("BeatEditor kind (design §10.4)", () => {
   });
 });
 
-describe("BeatEditor targets (design §10.4)", () => {
+describe("BeatEditor targets (spec §6, Beat editor)", () => {
   it("lists the objects on screen for a kind that acts on them", () => {
     renderEditor(INDICATE);
     const names = within(screen.getByTestId("beat-targets"))
@@ -221,7 +221,7 @@ describe("BeatEditor targets (design §10.4)", () => {
   });
 });
 
-describe("BeatEditor settings and easing (design §10.4)", () => {
+describe("BeatEditor settings and easing (spec §6, Beat editor)", () => {
   it("edits a number setting, with its range", () => {
     const onEdit = renderEditor(SCALE);
     const factor = screen.getByLabelText<HTMLInputElement>("Factor");
@@ -328,7 +328,7 @@ describe("BeatEditor settings and easing (design §10.4)", () => {
   });
 });
 
-describe("BeatEditor order and delete (design §10.4)", () => {
+describe("BeatEditor order and delete (spec §6, Beat editor)", () => {
   it("moves the beat one place earlier or later, and deletes it", () => {
     const onEdit = renderEditor(INDICATE);
     fireEvent.click(screen.getByRole("button", { name: "Move earlier" }));
@@ -366,7 +366,7 @@ describe("BeatEditor order and delete (design §10.4)", () => {
   });
 });
 
-describe("BeatEditor refusals (design §10.7)", () => {
+describe("BeatEditor refusals (spec §6, Refusals in the UI)", () => {
   /** The element just before the refusal shown, which is the control it is about. */
   function shownAfter(error: FieldError, beat: Beat = SCALE): Element | null {
     renderEditor(beat, { fieldError: error });

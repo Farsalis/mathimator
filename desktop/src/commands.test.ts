@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fixture from "../../tests/fixtures/protocol/commands.json";
 import { SHELL_COMMANDS, WORKER_COMMANDS } from "./commands";
 
-/** The shared command list (C9.1) without the debug-only commands, which the UI never sends. */
+/** The shared command list without the debug-only commands, which the UI never sends. */
 const sent = fixture.tauriCommands.filter((command) => command.debugOnly !== true);
 
 /** The argument names of the listed commands that reach the worker, or of those that do not. */
@@ -12,7 +12,7 @@ function argsByName(toWorker: boolean): Record<string, string[]> {
   );
 }
 
-describe("command names (C9.1)", () => {
+describe("command names", () => {
   it("sends the worker-bound commands of commands.json through invokeWorker, with its argument names", () => {
     expect(WORKER_COMMANDS).toEqual(argsByName(true));
   });

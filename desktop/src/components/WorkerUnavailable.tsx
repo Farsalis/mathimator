@@ -6,7 +6,7 @@ interface WorkerUnavailableProps {
   onRetry: () => Promise<void>;
 }
 
-/** Shown while the worker cannot run: why, and Retry (D31, C9.5). */
+/** Shown while the worker cannot run: why, and Retry. */
 export function WorkerUnavailable({ reason, onRetry }: WorkerUnavailableProps) {
   const [retrying, setRetrying] = useState(false);
 

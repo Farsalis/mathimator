@@ -134,25 +134,25 @@ export interface EditorState {
     beatId: string | null;
     objectId: string | null;
   };
-  /** Edit replies only: false for an edit that changed nothing (D08). */
+  /** Edit replies only: false for an edit that changed nothing. */
   changed?: boolean;
   /** Clear cache only: some files could not be removed. */
   warning?: { code: string; message: string };
 }
 
-/** The TeX check (C9.7). A failed check blocks formulas and axis labels (C14 Q4). */
+/** The TeX check. A failed check blocks formulas and axis labels. */
 export interface TexStatus {
   state: "checking" | "ok" | "failed";
   message: string | null;
 }
 
-/** A shell notice, shown once and kept by the shell until `dismiss_notice` (C9.5). */
+/** A shell notice, shown once and kept by the shell until `dismiss_notice`. */
 export interface Notice {
   id: number;
   message: string;
 }
 
-/** The reply of `app_status` and `restart_worker` (C9.5). */
+/** The reply of `app_status` and `restart_worker`. */
 export interface AppStatus {
   worker: "ready" | "unavailable";
   /** Why the worker is unavailable. */
@@ -169,11 +169,11 @@ export type WorkerEvent =
   | { event: "done"; jobId: string; path: string; current?: boolean }
   | { event: "error"; jobId: string | null; code: string; message: string; details?: string }
   | { event: "rejected"; jobId: string; code: string; message: string; field?: string }
-  /** The shell's line when the worker process ended without being asked to (C8.6). */
+  /** The shell's line when the worker process ended without being asked to. */
   | { event: "worker_exited"; message: string; exitCode: number | null }
-  /** A notice the shell added after startup, for example after a respawn fell back to a new project (C9.5). */
+  /** A notice the shell added after startup, for example after a respawn fell back to a new project. */
   | ({ event: "notice" } & Notice)
-  /** The TeX self-test finished (C9.7). */
+  /** The TeX self-test finished. */
   | { event: "tex_status"; state: "ok" | "failed"; message: string | null };
 
 export type Edit =
@@ -226,7 +226,7 @@ export type Edit =
 
 const SCENE_KINDS: readonly SceneKind[] = ["scene", "three_d_scene"];
 
-/** Parses a `state` reply (C5.1). Throws ParseError naming the first field that does not match. */
+/** Parses a `state` reply. Throws ParseError naming the first field that does not match. */
 export function parseEditorState(value: unknown): EditorState {
   const read = fieldsOf(value, "state");
   return {
@@ -254,7 +254,7 @@ export function parseAppStatus(value: unknown): AppStatus {
 }
 
 /**
- * Parses a line from the `worker-event` channel. Returns null for an event the UI does not read (C2: unknown
+ * Parses a line from the `worker-event` channel. Returns null for an event the UI does not read (unknown
  * events are ignored) and throws ParseError naming the field when a known event is malformed.
  */
 export function parseWorkerEvent(value: unknown): WorkerEvent | null {

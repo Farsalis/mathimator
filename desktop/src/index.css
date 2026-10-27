@@ -169,7 +169,7 @@ select:focus-visible,
   color: #e7c27a;
 }
 
-/* Banner, worker status, notices and the note stack here, capped so the stage keeps its room (F044). */
+/* Banner, worker status, notices and the note stack here, capped so the stage keeps its room. */
 .messages {
   grid-area: note;
   display: flex;
@@ -636,7 +636,7 @@ legend {
   border-top: 1px solid #2c2c2c;
   cursor: ew-resize;
   font-variant-numeric: tabular-nums;
-  /* A finger or pen on the handle resizes the beat instead of scrolling the timeline (D48). */
+  /* A finger or pen on the handle resizes the beat instead of scrolling the timeline. */
   touch-action: none;
 }
 

@@ -14,12 +14,12 @@ interface TimelineProps {
   selectedBeatId: string | null;
   playhead: number;
   total: number;
-  /** The worker is not ready, so beats cannot be added and durations cannot be changed (C9.5). */
+  /** The worker is not ready, so beats cannot be added and durations cannot be changed. */
   disabled: boolean;
   onSelect: (beatId: string) => void;
   onDraft: (beatId: string, duration: number) => void;
   onCommit: (beatId: string, duration: number) => void;
-  /** "+ Beat": adds a beat after the selected beat, on the selected object (design §10.3). */
+  /** "+ Beat": adds a beat after the selected beat, on the selected object (spec §6, + Beat). */
   onAddBeat: () => void;
 }
 
@@ -114,7 +114,7 @@ function BeatCell({
 
   /**
    * A drag that ends without a release, for example when the browser takes it over, goes back to the duration it
-   * started from: committing that value only drops the draft (D48, F110).
+   * started from: committing that value only drops the draft.
    */
   function cancelDrag(pointerId: number): void {
     const current = dragOf(pointerId);

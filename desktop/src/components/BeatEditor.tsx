@@ -41,7 +41,7 @@ const TEMPLATE_LABELS: Record<string, string> = {
 const DEGREES: ReadonlySet<string> = new Set(["rotate.angle", "move_camera.phi", "move_camera.theta"]);
 
 /**
- * The beat editor (design §10.4): the kind, the targets, the duration, the kind's settings, the easing, and the
+ * The beat editor (spec §6, Beat editor): the kind, the targets, the duration, the kind's settings, the easing, and the
  * buttons that move and delete the beat. Each control sends one edit, and a refusal shows under the control of its op.
  */
 export function BeatEditor({
@@ -317,7 +317,7 @@ function EasingSelect({
 
 /**
  * The refusal of an edit to the beat, shown under the control of its op: `ops` names the ops that control sends, and
- * `paramKey` the setting a `set_beat_param` refusal must be about (design §10.7).
+ * `paramKey` the setting a `set_beat_param` refusal must be about (spec §6, Refusals in the UI).
  */
 function BeatMessage({
   error,

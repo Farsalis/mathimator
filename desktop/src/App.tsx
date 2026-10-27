@@ -68,7 +68,7 @@ export function App() {
     }
   }
 
-  /** "+ Beat": the worker fills in the settings, and its focus selects the new beat (design §10.3). */
+  /** "+ Beat": the worker fills in the settings, and its focus selects the new beat (spec §6, + Beat). */
   function onAddBeat(): void {
     if (!doc) {
       return;

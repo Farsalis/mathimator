@@ -10,7 +10,7 @@ interface NoticesViewProps {
   onClose: () => void;
 }
 
-/** The Notices panel: a short summary, then the notices file the installer ships (D75). */
+/** The Notices panel: a short summary, then the notices file the installer ships. */
 export function NoticesView({ onClose }: NoticesViewProps) {
   const [file, setFile] = useState<NoticesFile | null>(null);
 

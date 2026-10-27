@@ -6,7 +6,7 @@ import { CodeView } from "./CodeView";
 afterEach(cleanup);
 
 describe("CodeView", () => {
-  it("shows the source it is given (D25)", () => {
+  it("shows the source it is given", () => {
     render(<CodeView source={"class MainScene(Scene):\n    pass\n"} onClose={vi.fn()} onExport={vi.fn()} />);
     expect(screen.getByTestId("code-source").textContent).toBe("class MainScene(Scene):\n    pass\n");
     expect(screen.getByTestId<HTMLButtonElement>("export-code-button").disabled).toBe(false);

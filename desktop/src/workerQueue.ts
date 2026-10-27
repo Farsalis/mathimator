@@ -19,9 +19,9 @@ export class WorkerRefusal extends Error {
 }
 
 /**
- * An `error` reply, or a shell failure: `worker_unavailable`, `worker_exited`, `timeout`, `io` or `bad_argument`
- * (D45). A rejection that is not a shell error, such as Tauri's own text for an unknown command, has the code
- * `invoke_failed`.
+ * An `error` reply, or a shell failure: `worker_unavailable`, `worker_exited`, `timeout`, `io` or
+ * `bad_argument`. A rejection that is not a shell error, such as Tauri's own text for an unknown command, has the
+ * code `invoke_failed`.
  */
 export class WorkerFailure extends Error {
   name = "WorkerFailure";
@@ -35,12 +35,12 @@ export class WorkerFailure extends Error {
   }
 }
 
-/** A failure as the error banner shows it (C9.3, D23). `code` is null for a failure that has none. */
+/** A failure as the error banner shows it. `code` is null for a failure that has none. */
 export interface Failure {
   code: string | null;
   message: string;
   details?: string;
-  /** The preview or export whose terminal line this is (C9.3). A failed task has none. */
+  /** The preview or export whose terminal line this is. A failed task has none. */
   job?: "preview" | "export";
 }
 
@@ -67,7 +67,7 @@ export function errorMessage(reason: unknown): string {
 
 /**
  * Invokes a worker-bound command and returns its success value; a cancelled dialog returns null. Throws
- * WorkerRefusal for a `rejected` reply and WorkerFailure for an `error` reply or a shell failure (D46).
+ * WorkerRefusal for a `rejected` reply and WorkerFailure for an `error` reply or a shell failure.
  */
 export async function invokeWorker<C extends WorkerCommand>(command: C, ...args: ArgsOf<C>): Promise<unknown> {
   const reply = await invoke<unknown>(command, ...args).catch((reason: unknown) => {
@@ -97,7 +97,7 @@ export interface QueueHooks {
   report: (reason: unknown) => void;
   /** Reloads the worker's state with `get_state` and applies it. */
   resync: () => Promise<void>;
-  /** A task was refused with `project_changed` and the queue is paused (C9.3). Overwrite runs `retry` again. */
+  /** A task was refused with `project_changed` and the queue is paused. Overwrite runs `retry` again. */
   changed: (refusal: WorkerRefusal, retry: Task) => void;
 }
 
@@ -108,10 +108,10 @@ interface Entry {
 }
 
 /**
- * The one ordered queue of worker tasks (D20, C9.2). Tasks run one at a time in call order, so at most one worker
+ * The one ordered queue of worker tasks. Tasks run one at a time in call order, so at most one worker
  * request is outstanding and each task applies its results before the next one starts. A failed task is reported
- * and never blocks later ones. A timeout also queues the `get_state` resync, at most one queued at a time (F164).
- * The one exception is a `project_changed` refusal: it pauses the queue until the user answers the prompt (C9.3).
+ * and never blocks later ones. A timeout also queues the `get_state` resync, at most one queued at a time.
+ * The one exception is a `project_changed` refusal: it pauses the queue until the user answers the prompt.
  */
 export class WorkerQueue {
   private readonly waiting: Entry[] = [];
@@ -133,7 +133,7 @@ export class WorkerQueue {
     });
   }
 
-  /** Starts no new task until `resume`. The task in flight finishes (C9.3). */
+  /** Starts no new task until `resume`. The task in flight finishes. */
   pause(): void {
     this.paused = true;
   }
@@ -152,7 +152,7 @@ export class WorkerQueue {
 
   /**
    * Queues the resync unless one is already queued. A request while it runs queues another, because that run may
-   * fail with the exit that prompted the request (C8.6). A resync that fails is reported, not repeated.
+   * fail with the exit that prompted the request. A resync that fails is reported, not repeated.
    */
   resync(): void {
     if (this.resyncQueued) {

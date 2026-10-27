@@ -28,7 +28,7 @@ function renderBanner(failure: Failure, enabled = true) {
 }
 
 describe("ErrorBanner", () => {
-  it("shows the one-line summary and the details only on request (D23)", () => {
+  it("shows the one-line summary and the details only on request", () => {
     renderBanner(RENDER_FAILED);
     expect(screen.getByTestId("error").textContent).toBe(RENDER_FAILED.message);
     expect(screen.queryByTestId("error-details")).toBeNull();
@@ -56,7 +56,7 @@ describe("ErrorBanner", () => {
     expect(screen.queryByTestId("error-details")).toBeNull();
   });
 
-  it("offers no details toggle for a refusal, and Dismiss calls back (F109)", () => {
+  it("offers no details toggle for a refusal, and Dismiss calls back", () => {
     const { onDismiss } = renderBanner({ code: "read_failed", message: "Could not read project.json: denied." });
     expect(screen.queryByTestId("error-details-toggle")).toBeNull();
     expect(screen.queryByTestId("banner-save-as")).toBeNull();
@@ -65,7 +65,7 @@ describe("ErrorBanner", () => {
     expect(onDismiss).toHaveBeenCalledOnce();
   });
 
-  it("offers Save As when the project folder is gone (D57)", () => {
+  it("offers Save As when the project folder is gone", () => {
     const { onSaveAs } = renderBanner({ code: "project_unavailable", message: "The project folder was moved." });
     fireEvent.click(screen.getByTestId("banner-save-as"));
     expect(onSaveAs).toHaveBeenCalledOnce();

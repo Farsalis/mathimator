@@ -10,12 +10,12 @@ const UNEXPECTED = "The equation preview returned an unexpected result.";
 
 /**
  * The generation of the last compile any preview sent. One counter for the page, so a preview that mounts later
- * still asks above every generation the shell has seen compiled or cancelled (C9.9, F037).
+ * still asks above every generation the shell has seen compiled or cancelled.
  */
 let generation = 0;
 
 interface FormulaPreviewProps {
-  /** The formula object's id. Two previews shown together compile in different slots (C9.9). */
+  /** The formula object's id. Two previews shown together compile in different slots. */
   slot: string;
   latex: string;
 }

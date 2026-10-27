@@ -15,7 +15,7 @@ const READY = { worker: "ready", reason: null, tex: { state: "ok", message: null
 const REASON = "The installed runtime is incomplete (python). Reinstall Mathimator.";
 const CHANGED_TEXT = "project.json was changed outside Mathimator.";
 const CLIP_REMOVED = "manim used an incomplete clip 2.mp4; it was removed, so render again";
-/** The controls that edit the project or switch it, which the unavailable view disables (C9.5). */
+/** The controls that edit the project or switch it, which the unavailable view disables. */
 const EDITING = [
   "project-name",
   "new-button",
@@ -182,7 +182,7 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("shows Worker unavailable with the reason, disables editing, and Retry restarts the worker (C6, C9.5)", async () => {
+  it("shows Worker unavailable with the reason, disables editing, and Retry restarts the worker", async () => {
     script({
       app_status: [{ ...READY, worker: "unavailable", reason: REASON }],
       restart_worker: [READY],
@@ -203,7 +203,7 @@ describe("App", () => {
     expect(control("open-button").disabled).toBe(false);
   });
 
-  it("shows the shipped third-party notices while the worker is unavailable (C9.5, D75)", async () => {
+  it("shows the shipped third-party notices while the worker is unavailable", async () => {
     const notices = "Third-party notices for Mathimator 0.1.0\n";
     script({ app_status: [{ ...READY, worker: "unavailable", reason: REASON }], third_party_notices: [notices] });
     render(<App />);
@@ -214,7 +214,7 @@ describe("App", () => {
     expect(commands()).toEqual(["app_status", "third_party_notices"]);
   });
 
-  it("shows a startup notice once when its notice event comes too, and Dismiss calls dismiss_notice (C9.5)", async () => {
+  it("shows a startup notice once when its notice event comes too, and Dismiss calls dismiss_notice", async () => {
     const notice = { id: 7, message: "Could not reopen C:/Users/Ana/Old: gone. A new project was started." };
     script({ app_status: [{ ...READY, notices: [notice] }], get_state: [stateReply()] });
     render(
@@ -234,7 +234,7 @@ describe("App", () => {
     expect(invokeMock).toHaveBeenCalledWith("dismiss_notice", { id: 7 });
   });
 
-  it("shows the shell's notices for a missing last project and for a close ignored during a dialog (C9.5)", async () => {
+  it("shows the shell's notices for a missing last project and for a close ignored during a dialog", async () => {
     const missing = { id: 1, message: "Could not reopen C:/Users/Ana/Old: it is gone. A new project was started." };
     const ignored = { id: 2, message: "Mathimator stays open while a dialog is open. Close the dialog first." };
     script({
@@ -274,7 +274,7 @@ describe("App", () => {
     expect(screen.getByTestId("status").textContent).toBe("Rendering preview");
   });
 
-  it("keeps View code in step with each applied state without asking the worker (D25, C10)", async () => {
+  it("keeps View code in step with each applied state without asking the worker", async () => {
     script({
       app_status: [READY],
       get_state: [stateReply()],
@@ -292,7 +292,7 @@ describe("App", () => {
     expect(commands).not.toContain("view_code");
   });
 
-  it("answers a project_changed refusal with the prompt, not a banner, and Overwrite retries the edit (C9.3)", async () => {
+  it("answers a project_changed refusal with the prompt, not a banner, and Overwrite retries the edit", async () => {
     const changed = { event: "rejected", jobId: "rpc-2", code: "project_changed", message: CHANGED_TEXT };
     script({
       app_status: [READY],
@@ -311,7 +311,7 @@ describe("App", () => {
     expect(commands()).toEqual(["app_status", "get_state", "edit_document", "overwrite_project", "edit_document"]);
   });
 
-  it("makes the app inert behind the project_changed prompt, and Escape cancels it (C9.3, C13.2 E2)", async () => {
+  it("makes the app inert behind the project_changed prompt, and Escape cancels it", async () => {
     const changed = { event: "rejected", jobId: "rpc-2", code: "project_changed", message: CHANGED_TEXT };
     script({ app_status: [READY], get_state: [stateReply()], edit_document: [changed] });
     await renderReady();
@@ -326,14 +326,14 @@ describe("App", () => {
     expect(commands()).toEqual(["app_status", "get_state", "edit_document"]);
   });
 
-  it("shows a failed TeX check under the status line (C9.7)", async () => {
+  it("shows a failed TeX check under the status line", async () => {
     const message = "Formulas and axis labels cannot render on this PC: ! I can't find file. Reinstall Mathimator.";
     script({ app_status: [{ ...READY, tex: { state: "failed", message } }], get_state: [stateReply()] });
     await renderReady();
     expect(screen.getByTestId("tex-warning").textContent).toBe(message);
   });
 
-  it("sends one edit_document for one use of the colour picker (D08, C10)", async () => {
+  it("sends one edit_document for one use of the colour picker", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() => new Promise<Response>(() => undefined)),
@@ -448,7 +448,7 @@ describe("App", () => {
     );
   });
 
-  it("adds a shape after the selected beat, and offers no point on axes without axes (design §10.6)", async () => {
+  it("adds a shape after the selected beat, and offers no point on axes without axes (spec §6, Shapes)", async () => {
     script({
       app_status: [READY],
       get_state: [beatsReply([WRITE, CREATE], [[], ["text_1"], BOTH_ON])],
@@ -466,7 +466,7 @@ describe("App", () => {
     );
   });
 
-  it("puts a point added from Add on the axes of the selected plot (design §10.6)", async () => {
+  it("puts a point added from Add on the axes of the selected plot (spec §6, Shapes)", async () => {
     script({ app_status: [READY], get_state: [graphsReply()], edit_document: [new Promise(() => undefined)] });
     await renderReady();
     // The plot's axes are not the first axes on screen, nor the first in the document.
@@ -480,7 +480,7 @@ describe("App", () => {
     );
   });
 
-  it("shows a refused beat edit under its control as well as in the banner (design §10.7)", async () => {
+  it("shows a refused beat edit under its control as well as in the banner (spec §6, Refusals in the UI)", async () => {
     const message = "scene.objects[1] circle_1 has no entrance beat";
     script({
       app_status: [READY],
@@ -496,7 +496,7 @@ describe("App", () => {
     expect(screen.getByTestId("error").textContent).toBe(message);
   });
 
-  it("scrubs the preview without a worker command (D44)", async () => {
+  it("scrubs the preview without a worker command", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() => new Promise<Response>(() => undefined)),

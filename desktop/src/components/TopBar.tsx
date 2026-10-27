@@ -3,12 +3,12 @@ import { AddMenu, type AddKind } from "./AddMenu";
 
 interface TopBarProps {
   name: string;
-  /** The bound project folder (D29). */
+  /** The bound project folder. */
   projectPath: string | null;
   ready: boolean;
   canUndo: boolean;
   canRedo: boolean;
-  /** An export runs: the Export button says so, and New, Open, Save As and Sample are disabled (D22, C7.6). */
+  /** An export runs: the Export button says so, and New, Open, Save As and Sample are disabled. */
   exporting: boolean;
   /** Renames the project. The promise settles once the rename was applied or refused. */
   onRename: (name: string) => Promise<void>;

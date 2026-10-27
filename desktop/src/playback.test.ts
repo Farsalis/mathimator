@@ -47,7 +47,7 @@ function frameOf(seconds: number): number {
   return Math.floor(seconds * PREVIEW_FPS);
 }
 
-/** The frames of each beat in the movie, [first, end): every boundary snapped to the nearest frame, halves up (D63). */
+/** The frames of each beat in the movie, [first, end): every boundary snapped to the nearest frame, halves up. */
 function movieFrames(index: PreviewIndex): Array<[number, number]> {
   const boundary = (seconds: number): number => Math.floor((Math.round(seconds * 1000) * PREVIEW_FPS + 500) / 1000);
   return index.beats.map((beat) => [boundary(beat.derivedStart), boundary(beat.derivedStart + beat.duration)]);
@@ -65,8 +65,8 @@ function played(choice: Playback): FilePlayback {
   return choice;
 }
 
-describe("scrub (D44: the rule that ships)", () => {
-  // Ported from tests/test_phase2.py, which checked the worker's scrub command before D44 removed it.
+describe("scrub (the rule that ships)", () => {
+  // Ported from the worker's tests of its former scrub command, which was removed so this is the only scrub rule.
   const reference60 = [8, 10, 6, 4, 8, 8, 8, 8];
 
   it("shows the movie frame of beat index 1 at 9.0 s on a finished reference-60 preview (spec §2)", () => {
@@ -91,7 +91,7 @@ describe("scrub (D44: the rule that ships)", () => {
   it.each([
     [[0.1, 0.2, 0.5], 0.3],
     [[1.1, 2.2, 1], 3.3],
-  ])("takes a playhead on a boundary as the start of the next beat (%j at %s s, G3.4)", (durations, time) => {
+  ])("takes a playhead on a boundary as the start of the next beat (%j at %s s)", (durations, time) => {
     const index = finished(durations);
     const partial = playbackAt({ ...index, output: null }, time);
     expect(partial).toMatchObject({ mode: "partial", path: index.beats[2]?.partial, beatIndex: 2 });
@@ -103,7 +103,7 @@ describe("scrub (D44: the rule that ships)", () => {
 
   // The worker's tests check every boundary of the fixture; the preview plays only at PREVIEW_FPS.
   it.each(timing.boundaries.filter(({ fps }) => fps === PREVIEW_FPS))(
-    "snaps a boundary at $seconds s to frame $frame from its exact time, not its binary approximation (D63)",
+    "snaps a boundary at $seconds s to frame $frame from its exact time, not its binary approximation",
     ({ seconds, frame }) => {
       // Each falls on a half frame, which rounds up: 4.1 × 15 is 61.5, frame 62, but 61.4999… in floating point.
       const index = finished([seconds, 1]);
@@ -116,7 +116,7 @@ describe("scrub (D44: the rule that ships)", () => {
     },
   );
 
-  it("shows each beat over the frames the worker's scene draws for it (D63)", () => {
+  it("shows each beat over the frames the worker's scene draws for it", () => {
     const { durations, fps, frames } = timing.beats;
     expect(fps).toBe(PREVIEW_FPS);
     const index = finished(durations);
@@ -129,7 +129,7 @@ describe("scrub (D44: the rule that ships)", () => {
     }
   });
 
-  it("shows a movie frame of the highlighted beat everywhere on beats that are not whole frames (G3.2)", () => {
+  it("shows a movie frame of the highlighted beat everywhere on beats that are not whole frames", () => {
     const index = finished(Array.from({ length: 20 }, () => 0.5));
     const frames = movieFrames(index);
     for (let step = 0; step <= 1000; step += 1) {
@@ -155,7 +155,7 @@ describe("scrub (D44: the rule that ships)", () => {
 });
 
 describe("playhead from the playing video", () => {
-  it("follows the movie into the beat whose frames are on screen, and maps back to the same frame (G3.2)", () => {
+  it("follows the movie into the beat whose frames are on screen, and maps back to the same frame", () => {
     const index = finished(Array.from({ length: 20 }, () => 0.5));
     const frames = movieFrames(index);
     const movie = played(playbackAt(index, 0));
@@ -180,7 +180,7 @@ describe("playhead from the playing video", () => {
   });
 });
 
-describe("playback (F147)", () => {
+describe("playback", () => {
   it("shows neither the movie nor the stale partial of a dirty beat, but a blank canvas with the badge", () => {
     expect(playbackAt(dirtied(finished([2, 2])), 0.2)).toEqual({
       mode: "blank",

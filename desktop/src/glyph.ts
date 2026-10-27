@@ -2,7 +2,7 @@ import { isRecord } from "./parse";
 
 export const UNSUPPORTED = "No live preview for this formula.";
 
-/** The reply of `compile_equation_preview` (C9.9). */
+/** The reply of `compile_equation_preview`. */
 export type GlyphResult =
   | { status: "ok"; svgPath: string }
   | { status: "unsupported" }
@@ -17,7 +17,7 @@ export interface GlyphView {
 
 export const NO_GLYPH: GlyphView = { svgPath: null, message: null };
 
-/** The view after `result`. An error keeps the previous SVG; a cancelled compile changes nothing (C9.9). */
+/** The view after `result`. An error keeps the previous SVG; a cancelled compile changes nothing. */
 export function applyGlyph(view: GlyphView, result: GlyphResult): GlyphView {
   switch (result.status) {
     case "ok":

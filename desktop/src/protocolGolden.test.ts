@@ -20,7 +20,7 @@ const invokeMock = vi.mocked(invoke);
 
 /**
  * A request line of requests.json and the lines the worker wrote for it, folders written as placeholders. The worker
- * was started as the shell starts it (tests/test_shell_fixture.py), so these are the lines the shell routes (C9.4).
+ * was started as the shell starts it (tests/test_shell_fixture.py), so these are the lines the shell routes.
  */
 interface Entry {
   line: { id?: string; cmd: string };
@@ -28,7 +28,7 @@ interface Entry {
 }
 
 const entries: Entry[] = golden.requests;
-/** The requests the shell only writes: every line of theirs is a `worker-event`, as is a line without an id (C9.4). */
+/** The requests the shell only writes: every line of theirs is a `worker-event`, as is a line without an id. */
 const SENT_ONLY = new Set(["render_preview", "export", "cancel"]);
 const broadcast = entries.filter((entry) => SENT_ONLY.has(entry.line.cmd) || entry.line.id === undefined);
 /** The requests whose reply the shell hands to invoke: all the others but its own handshake. */

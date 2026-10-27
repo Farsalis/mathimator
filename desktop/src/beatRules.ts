@@ -1,5 +1,5 @@
 /**
- * The beat rules the UI applies before it sends an edit (design §10): which objects a kind can take at a point of the
+ * The beat rules the UI applies before it sends an edit (spec §6): which objects a kind can take at a point of the
  * timeline, the targets a kind change or "+ Beat" starts from, and the order the worker stores targets in. The worker
  * checks every edit again; these rules only keep the UI from offering what it would refuse.
  */
@@ -31,10 +31,10 @@ export function axesIdOf(object: SceneObject): string | null {
 }
 
 /**
- * The order the worker stores the targets of `action` in (design §6.1, tests/fixtures/beats/canonical-order.json).
- * The targets of a kind of arity "some" go in document order, then each axes that comes after one of its own children
- * moves to just before the first of them, so axes always come before what is drawn on them. A pair keeps its role
- * order. Ids that name no object keep their order at the end.
+ * The order the worker stores the targets of `action` in (spec §6, Protocol;
+ * tests/fixtures/beats/canonical-order.json). The targets of a kind of arity "some" go in document order, then each
+ * axes that comes after one of its own children moves to just before the first of them, so axes always come before
+ * what is drawn on them. A pair keeps its role order. Ids that name no object keep their order at the end.
  */
 export function canonicalTargets(
   objects: readonly SceneObject[],
@@ -148,10 +148,10 @@ export function targetRows(
 
 /**
  * The targets a beat at a point where `on` is on screen takes when its kind becomes `action`, or null when no object
- * could be its target there, which disables that kind in the kind select (design §10.4). For a kind of arity "some":
- * the current targets that fit (an exit adds what is drawn on axes among them), else the selected object if it fits,
- * else the first object that fits, checked as in the checklist. For a pair, each role in order: an object entering
- * here keeps its role (a morph's destination), and an on-screen role starts from the selected object.
+ * could be its target there, which disables that kind in the kind select (spec §6, Beat editor). For a kind of arity
+ * "some": the current targets that fit (an exit adds what is drawn on axes among them), else the selected object if
+ * it fits, else the first object that fits, checked as in the checklist. For a pair, each role in order: an object
+ * entering here keeps its role (a morph's destination), and an on-screen role starts from the selected object.
  */
 export function targetsForKind(
   action: BeatAction,
@@ -201,7 +201,7 @@ export function insertionIndex(beats: readonly Beat[], beatId: string | null): n
 }
 
 /**
- * The kind and targets of the beat "+ Beat" adds where `on` is on screen (design §10.3): with no object selected, a
+ * The kind and targets of the beat "+ Beat" adds where `on` is on screen (spec §6, + Beat): with no object selected, a
  * wait, or a camera move in a 3D scene; for a selected object off screen, its natural entrance; for one on screen,
  * indicate, which takes axes with what is drawn on them, so a graph is emphasised as one.
  */
@@ -222,7 +222,7 @@ export function plusBeat(
 }
 
 /**
- * The axes Add puts a point on, where `on` is on screen (design §10.6): the selected object if it is axes, else the
+ * The axes Add puts a point on, where `on` is on screen (spec §6, Shapes): the selected object if it is axes, else the
  * axes of the selected plot or point, else the first axes on screen there, else the first axes in the document; null
  * when the document holds no 2D axes.
  */

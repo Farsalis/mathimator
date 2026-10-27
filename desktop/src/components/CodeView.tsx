@@ -7,7 +7,7 @@ interface CodeViewProps {
   onExport: () => void;
 }
 
-/** View code (D25): read-only, and it follows every applied state. */
+/** View code: read-only, and it follows every applied state. */
 export function CodeView({ source, sourceError, onClose, onExport }: CodeViewProps) {
   return (
     <section className="code-view" data-testid="code-view" aria-label="Generated code">

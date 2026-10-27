@@ -54,7 +54,7 @@ describe("preview handshake", () => {
     expect(beat.beat).toEqual({ beatIndex: 2, path: "C:/p/2.mp4" });
   });
 
-  it("ignores a beat_ready of a preview overtaken by an applied undo, but still ends it (F135)", () => {
+  it("ignores a beat_ready of a preview overtaken by an applied undo, but still ends it", () => {
     const stale = markStale(beginPreview(idle, "preview-2"));
     const beat = receive(stale, { event: "beat_ready", jobId: "preview-2", beatIndex: 0, path: "C:/p/0.mp4" });
     expect(beat.beat).toBeNull();
@@ -71,7 +71,7 @@ describe("preview handshake", () => {
     expect(beat.beat).toEqual({ beatIndex: 0, path: "C:/p/0.mp4" });
   });
 
-  it("drops events for an id it does not wait for, errors without an id and the shell's own lines (F048)", () => {
+  it("drops events for an id it does not wait for, errors without an id and the shell's own lines", () => {
     const begun = beginPreview(idle, "preview-6");
     for (const event of [
       cancelled("preview-5"),
@@ -85,14 +85,14 @@ describe("preview handshake", () => {
     }
   });
 
-  it("ends a preview that the worker cancelled, and never says Cancelled (F041)", () => {
+  it("ends a preview that the worker cancelled, and never says Cancelled", () => {
     const step = receive(beginPreview(idle, "preview-7"), cancelled("preview-7"));
     expect(step.session.previewJobId).toBeNull();
     expect(step.session.status).toBe("Ready");
     expect(step.failure).toBeNull();
   });
 
-  it("decides on the code, not the message (F090)", () => {
+  it("decides on the code, not the message", () => {
     const step = receive(beginPreview(idle, "preview-8"), {
       event: "error",
       jobId: "preview-8",
@@ -116,7 +116,7 @@ describe("preview handshake", () => {
     expect(step.failure).toEqual({ job: "preview", code: "tex_unavailable", message: "The bundled TeX is missing." });
   });
 
-  it("carries an error in its own step only (F109)", () => {
+  it("carries an error in its own step only", () => {
     const failed = receive(beginPreview(idle, "preview-10"), {
       event: "error",
       jobId: "preview-10",
@@ -142,7 +142,7 @@ describe("preview handshake", () => {
     expect(receive(queued.session, { event: "started", jobId: "preview-12" }).session.status).toBe("Rendering preview");
   });
 
-  it("ends a preview whose send failed and leaves a newer one alone (F113)", () => {
+  it("ends a preview whose send failed and leaves a newer one alone", () => {
     const abandoned = abandonPreview(beginPreview(idle, "preview-13"), "preview-13");
     expect(abandoned.previewJobId).toBeNull();
     expect(abandoned.status).toBe("Ready");
@@ -160,7 +160,7 @@ describe("export handshake", () => {
     expect(clicked.note).toBeNull();
   });
 
-  it("keeps Rendering export when the export pre-empts the preview (F041)", () => {
+  it("keeps Rendering export when the export pre-empts the preview", () => {
     const begun = exporting(beginPreview(idle, "preview-1"), "export-1");
     const step = receive(begun, cancelled("preview-1"));
     expect(step.session.status).toBe("Rendering export");
@@ -202,7 +202,7 @@ describe("export handshake", () => {
     expect(receive(queued.session, { event: "started", jobId: "export-4" }).session.status).toBe("Rendering export");
   });
 
-  it("never patches the preview index from an export's beat_ready (F032, F033)", () => {
+  it("never patches the preview index from an export's beat_ready", () => {
     const begun = exporting(beginPreview(idle, "preview-5"), "export-5");
     const step = receive(begun, { event: "beat_ready", jobId: "export-5", beatIndex: 0, path: "C:/e/0.mp4" });
     expect(step.beat).toBeNull();
@@ -261,7 +261,7 @@ describe("export handshake", () => {
     expect(stopped.exportJobId).toBeNull();
   });
 
-  it("does not carry a Cancel into the next export after a refused profile (F047)", () => {
+  it("does not carry a Cancel into the next export after a refused profile", () => {
     const refused = abortExport(requestCancel(exporting(idle, "export-11")), "Ready");
     expect(refused.status).toBe("Ready");
     expect(refused.cancelRequested).toBe(false);
@@ -271,7 +271,7 @@ describe("export handshake", () => {
   });
 });
 
-describe("automatic preview after an export (C7.5)", () => {
+describe("automatic preview after an export", () => {
   it("follows an export that started while a preview was recorded", () => {
     const begun = exporting(beginPreview(idle, "preview-1"), "export-1");
     const done = receiveAll(begun, cancelled("preview-1"), {
@@ -305,7 +305,7 @@ describe("automatic preview after an export (C7.5)", () => {
 });
 
 describe("worker exit and the Open reset", () => {
-  it("ends every job, never says Cancelled and asks for one resync (C8.6)", () => {
+  it("ends every job, never says Cancelled and asks for one resync", () => {
     const busy = requestCancel(exporting(beginPreview(idle, "preview-1"), "export-1"));
     const exited = receive(busy, { event: "worker_exited", message: "The worker stopped (exit code 1).", exitCode: 1 });
     expect(exited.session).toMatchObject({
@@ -327,7 +327,7 @@ describe("worker exit and the Open reset", () => {
   });
 });
 
-describe("Save As (D29, O9)", () => {
+describe("Save As", () => {
   const shown = { ...beginPreview(idle, "preview-1"), note: "This file is from an older export." };
 
   it.each([

@@ -272,7 +272,7 @@ describe("WorkerQueue", () => {
     expect(report).toHaveBeenCalledTimes(2);
   });
 
-  it("pauses on a project_changed refusal: the next task waits, and the refusal is not reported (C9.3)", async () => {
+  it("pauses on a project_changed refusal: the next task waits, and the refusal is not reported", async () => {
     invokeMock.mockResolvedValueOnce(CHANGED).mockResolvedValue(STATE);
     const report = vi.fn();
     const changed = vi.fn();

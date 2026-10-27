@@ -18,7 +18,7 @@ function pendingEdit(): { promise: Promise<void>; settle: () => Promise<void> } 
   };
 }
 
-describe("useCommitDraft (F119)", () => {
+describe("useCommitDraft", () => {
   it("shows the draft, and follows a new value from the document", () => {
     const { result, rerender } = renderHook(({ value }) => useCommitDraft(value), { initialProps: { value: "Sine" } });
     act(() => result.current.change("Cosine"));
@@ -29,7 +29,7 @@ describe("useCommitDraft (F119)", () => {
     expect(result.current.text).toBe("Sine");
   });
 
-  it("keeps a committed draft until the edit settles, then shows the value a refusal left (F045)", async () => {
+  it("keeps a committed draft until the edit settles, then shows the value a refusal left", async () => {
     const { result } = renderHook(() => useCommitDraft("2"));
     const edit = pendingEdit();
     act(() => result.current.change("-5"));

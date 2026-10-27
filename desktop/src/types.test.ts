@@ -312,7 +312,7 @@ describe("parseAppStatus", () => {
     notices: [{ id: 1, message: "Could not reopen C:/old. A new project was started." }],
   };
 
-  it("reads the worker, the reason, the TeX state and the notices (C9.5)", () => {
+  it("reads the worker, the reason, the TeX state and the notices", () => {
     expect(parseAppStatus(status)).toEqual(status);
   });
 

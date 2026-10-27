@@ -3,7 +3,7 @@ import { applyGlyph, NO_GLYPH, parseGlyph, UNSUPPORTED, type GlyphView } from ".
 
 const SHOWN: GlyphView = { svgPath: "C:/Users/Ana/Sine/.mathimator/equation/formula-eq_1-4.svg", message: null };
 
-describe("applyGlyph (C9.9, F139)", () => {
+describe("applyGlyph", () => {
   it("shows a compiled SVG and clears the message", () => {
     const svgPath = "C:/Users/Ana/Sine/.mathimator/equation/formula-eq_1-5.svg";
     expect(applyGlyph({ svgPath: null, message: UNSUPPORTED }, { status: "ok", svgPath })).toEqual({

@@ -1,21 +1,21 @@
 import type { WorkerEvent } from "./types";
 
 /**
- * The job handshake (C1): the preview and export the UI waits for, the status line (C7.4), the Export button and the
+ * The job handshake: the preview and export the UI waits for, the status line, the Export button and the
  * note under the status line. It changes only through the pure functions below.
  */
 export interface Handshake {
-  /** The current preview job. Its id is recorded before render_preview is sent, so no event can come first (C7.1). */
+  /** The current preview job. Its id is recorded before render_preview is sent, so no event can come first. */
   previewJobId: string | null;
-  /** A state change overtook the current preview, so its beat_ready lines are ignored (C9.2, F135). */
+  /** A state change overtook the current preview, so its beat_ready lines are ignored. */
   previewStale: boolean;
   /** The current export job, recorded before export_movie is sent. */
   exportJobId: string | null;
-  /** From the Export click until the export's terminal line, or until the Export task stops (C7.6). */
+  /** From the Export click until the export's terminal line, or until the Export task stops. */
   exporting: boolean;
-  /** Cancel export was pressed for the current export (C9.2). */
+  /** Cancel export was pressed for the current export. */
   cancelRequested: boolean;
-  /** The current export pre-empted a preview, so a preview follows the export (C7.5). */
+  /** The current export pre-empted a preview, so a preview follows the export. */
   preempted: boolean;
   status: string;
   /** The note under the status line. */
@@ -24,7 +24,7 @@ export interface Handshake {
   exportPath: string | null;
 }
 
-/** The terminal `error` or `rejected` line of a job, shown as a banner or the project_changed prompt (C9.3). */
+/** The terminal `error` or `rejected` line of a job, shown as a banner or the project_changed prompt. */
 export interface JobFailure {
   /** The job that ended, so a `project_changed` refusal can be retried as the same kind of job. */
   job: "preview" | "export";
@@ -35,17 +35,17 @@ export interface JobFailure {
 
 /**
  * What the UI queues after a worker event:
- * - `refresh`: the current preview is done, so load the state with get_state (C9.2);
- * - `preview`: an export that pre-empted a preview ended, so schedule a preview (C7.5);
- * - `resync`: the worker exited, so resync once (C8.6).
+ * - `refresh`: the current preview is done, so load the state with get_state;
+ * - `preview`: an export that pre-empted a preview ended, so schedule a preview;
+ * - `resync`: the worker exited, so resync once.
  */
 export type FollowUp = "refresh" | "preview" | "resync" | null;
 
 export interface HandshakeStep {
   session: Handshake;
-  /** The failure of the event's job. It belongs to this step only, so it is never shown twice (F109). */
+  /** The failure of the event's job. It belongs to this step only, so it is never shown twice. */
   failure: JobFailure | null;
-  /** A beat of the current, non-stale preview, to patch into the preview index (C9.2). */
+  /** A beat of the current, non-stale preview, to patch into the preview index. */
   beat: { beatIndex: number; path: string } | null;
   next: FollowUp;
 }
@@ -83,22 +83,22 @@ export function withNote(session: Handshake, note: string | null): Handshake {
   return { ...session, note };
 }
 
-/** The handshake's part of the Open reset (C9.2): a stale preview, and no export path, note or pre-empted preview. */
+/** The handshake's part of the Open reset: a stale preview, and no export path, note or pre-empted preview. */
 export function openReset(session: Handshake): Handshake {
   return { ...markStale(session), exportPath: null, note: null, preempted: false };
 }
 
 /**
- * The handshake's part of Save As from the folder `from` to `to` (D29, O9), which keeps the note. The worker copied the
+ * The handshake's part of Save As from the folder `from` to `to`, which keeps the note. The worker copied the
  * exports with the project, so a shown export in `from` is shown as its copy in `to`. The state of another folder still
- * overtakes the current preview (C9.2).
+ * overtakes the current preview.
  */
 export function savedAs(session: Handshake, from: string, to: string): Handshake {
   const path = session.exportPath;
   return { ...markStale(session), exportPath: path === null ? null : movedPath(path, from, to) };
 }
 
-/** An applied edit that changed the document, or an undo, redo or reload, overtook the current preview (C9.2). */
+/** An applied edit that changed the document, or an undo, redo or reload, overtook the current preview. */
 export function markStale(session: Handshake): Handshake {
   return session.previewJobId === null || session.previewStale ? session : { ...session, previewStale: true };
 }
@@ -113,12 +113,12 @@ export function beginPreview(session: Handshake, jobId: string): Handshake {
   };
 }
 
-/** Ends a preview whose render_preview send failed, as if its terminal line were an error (C7.4). */
+/** Ends a preview whose render_preview send failed, as if its terminal line were an error. */
 export function abandonPreview(session: Handshake, jobId: string): Handshake {
   return session.previewJobId === jobId ? previewEnded(session) : session;
 }
 
-/** The Export click: "Rendering export" before anything is queued (C7.4). */
+/** The Export click: "Rendering export" before anything is queued. */
 export function requestExport(session: Handshake): Handshake {
   return {
     ...session,
@@ -130,7 +130,7 @@ export function requestExport(session: Handshake): Handshake {
   };
 }
 
-/** Records the Export task's job id. A preview that is current now is pre-empted by the export (C7.5). */
+/** Records the Export task's job id. A preview that is current now is pre-empted by the export. */
 export function beginExport(session: Handshake, jobId: string): Handshake {
   return {
     ...session,
@@ -141,21 +141,21 @@ export function beginExport(session: Handshake, jobId: string): Handshake {
   };
 }
 
-/** Cancel export: the export's later `error cancelled` reads "Cancelled" (C9.2). */
+/** Cancel export: the export's later `error cancelled` reads "Cancelled". */
 export function requestCancel(session: Handshake): Handshake {
   return session.exporting ? { ...session, cancelRequested: true } : session;
 }
 
-/** The Export task stopped before export_movie was sent, or the send failed (C7.4). */
+/** The Export task stopped before export_movie was sent, or the send failed. */
 export function abortExport(session: Handshake, status: ExportStop): Handshake {
   return exportEnded(session, status);
 }
 
-/** Applies a `worker-event` line. Job events count only for the current preview or export id (C7.1, C9.4). */
+/** Applies a `worker-event` line. Job events count only for the current preview or export id. */
 export function receive(session: Handshake, message: WorkerEvent): HandshakeStep {
   switch (message.event) {
     case "worker_exited":
-      // Every job ends and nothing reads "Cancelled" (C8.6, D21).
+      // Every job ends and nothing reads "Cancelled".
       return step({ ...exportEnded(session, READY), previewJobId: null }, { next: "resync" });
     case "notice":
     case "tex_status":
@@ -196,7 +196,7 @@ function previewEvent(session: Handshake, message: JobEvent): HandshakeStep {
     case "error":
     case "rejected":
       if (isCancel(message)) {
-        // Previews have no Cancel control, so a preview's cancel never reads "Cancelled" (C7.3, F041).
+        // Previews have no Cancel control, so a preview's cancel never reads "Cancelled".
         return step({ ...previewEnded(session), preempted: session.preempted || session.exporting });
       }
       return step(previewEnded(session), { failure: failureOf("preview", message) });
@@ -211,7 +211,7 @@ function exportEvent(session: Handshake, message: JobEvent): HandshakeStep {
     case "started":
       return step({ ...session, status: RENDERING_EXPORT });
     case "beat_ready":
-      // Exports send none (D17), and an export's partial never goes into the preview index (F032).
+      // Exports send none, and an export's partial never goes into the preview index.
       return step(session);
     case "done": {
       const note = message.current === false ? OLDER_EXPORT : null;

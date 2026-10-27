@@ -45,7 +45,7 @@ function ids(objects: readonly SceneObject[]): string[] {
   return objects.map((object) => object.id);
 }
 
-describe("beatLabel (design §10.5)", () => {
+describe("beatLabel (spec §6, Beat editor)", () => {
   it.each([
     ["fade_out", ["axes_1", "plot_1"], "Fade out · Axes, Sine"],
     ["transform", ["circle_1", "rectangle_1"], "Transform · Circle → Rectangle"],
@@ -103,7 +103,7 @@ function asOrderCase(value: unknown, path: string): OrderCase {
   };
 }
 
-describe("canonicalTargets (design §6.1, canonical-order.json)", () => {
+describe("canonicalTargets (spec §6, Protocol; canonical-order.json)", () => {
   const cases = listOf(asOrderCase)(canonicalOrder.cases, "cases");
 
   it.each(cases.map((item) => [item.name, item] as const))("orders %s as the worker does", (_, item) => {
@@ -145,7 +145,7 @@ describe("kindGroups", () => {
   });
 });
 
-describe("candidates (design §10.4)", () => {
+describe("candidates (spec §6, Beat editor)", () => {
   const on = ["axes_1", "plot_1", "text_1"];
 
   it("offers an entrance the objects of its types that are off screen", () => {
@@ -171,7 +171,7 @@ describe("candidates (design §10.4)", () => {
   });
 });
 
-describe("checkTarget and the children of axes (design §10.4)", () => {
+describe("checkTarget and the children of axes (spec §6, Beat editor)", () => {
   const on = ["axes_1", "plot_1", "point_1", "text_1"];
 
   it.each(["fade_out", "move", "scale", "indicate", "wiggle"] as const)(
@@ -219,7 +219,7 @@ describe("checkTarget and the children of axes (design §10.4)", () => {
   });
 });
 
-describe("targetsForKind (design §10.4)", () => {
+describe("targetsForKind (spec §6, Beat editor)", () => {
   const on = ["axes_1", "plot_1", "text_1", "dot_1"];
 
   it("gives a wait and a camera move no targets", () => {
@@ -282,7 +282,7 @@ describe("targetsForKind (design §10.4)", () => {
   });
 });
 
-describe("+ Beat (design §10.3)", () => {
+describe("+ Beat (spec §6, + Beat)", () => {
   const on = ["axes_1", "plot_1", "point_1", "text_1"];
 
   it("adds a wait with nothing selected, and a camera move in a 3D scene", () => {
@@ -320,7 +320,7 @@ describe("+ Beat (design §10.3)", () => {
   });
 });
 
-describe("Add's point on axes (design §10.6)", () => {
+describe("Add's point on axes (spec §6, Shapes)", () => {
   /** Two axes, each with a plot; the second also has a point, and a 3D surface names its own axes. */
   const GRAPHS: SceneObject[] = [
     { id: "text_1", name: "Caption", type: "text", params: {} },

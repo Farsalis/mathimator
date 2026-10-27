@@ -110,7 +110,7 @@ function stateReply(projectPath: string, name = "Sine", exportProfile = PROFILE)
   };
 }
 
-/** The reply to an edit that changed nothing, such as the Export task's unchanged profile (D08). */
+/** The reply to an edit that changed nothing, such as the Export task's unchanged profile. */
 function unchanged(projectPath: string) {
   return { ...stateReply(projectPath), changed: false };
 }
@@ -222,7 +222,7 @@ describe("useEditor startup", () => {
 describe("useEditor worker status", () => {
   const unavailable = { ...READY, worker: "unavailable", reason: UNAVAILABLE_REASON };
 
-  it("shows Worker unavailable with the reason, and Retry restarts the worker and loads it (C9.5)", async () => {
+  it("shows Worker unavailable with the reason, and Retry restarts the worker and loads it", async () => {
     script({ app_status: [unavailable], restart_worker: [READY], get_state: [stateReply("C:/first")] });
     const { result } = renderHook(() => useEditor());
     await waitFor(() => expect(result.current.unavailable).toBe(UNAVAILABLE_REASON));
@@ -260,7 +260,7 @@ describe("useEditor worker status", () => {
     expect(result.current.error).toBeNull();
   });
 
-  it("shows each notice once and dismisses it with dismiss_notice (C9.5)", async () => {
+  it("shows each notice once and dismisses it with dismiss_notice", async () => {
     const notice = { id: 4, message: "Could not reopen C:/old: gone. A new project was started." };
     script({ app_status: [{ ...READY, notices: [notice] }], get_state: [stateReply("C:/first")] });
     const result = await started();
@@ -275,7 +275,7 @@ describe("useEditor worker status", () => {
     expect(result.current.notices.map((item) => item.id)).toEqual([5]);
   });
 
-  it("warns while the TeX check has failed (C9.7, C14 Q4)", async () => {
+  it("warns while the TeX check has failed", async () => {
     const failed = "Formulas and axis labels cannot render on this PC: ! I can't find file. Reinstall Mathimator.";
     script({ app_status: [{ ...READY, tex: { state: "checking", message: null } }], get_state: [stateReply("C:/a")] });
     const result = await started();
@@ -286,7 +286,7 @@ describe("useEditor worker status", () => {
     expect(result.current.texWarning).toBeNull();
   });
 
-  it("keeps a finished TeX check when the app_status reply that still says checking comes later (C9.2)", async () => {
+  it("keeps a finished TeX check when the app_status reply that still says checking comes later", async () => {
     const failed = "Formulas and axis labels cannot render on this PC: ! I can't find file. Reinstall Mathimator.";
     const status = deferred();
     script({ app_status: [status.promise], get_state: [stateReply("C:/a")] });
@@ -483,7 +483,7 @@ describe("useEditor projects", () => {
     ["onOpenSample", "open_sample"],
     ["onNew", "new_project"],
     ["onSaveAs", "save_project_as_dialog"],
-  ] as const)("changes nothing when %s is cancelled (C14 Q2)", async (action, command) => {
+  ] as const)("changes nothing when %s is cancelled", async (action, command) => {
     script({ get_state: [stateReply("C:/first")], [command]: [{ cancelled: true }] });
     const result = await started();
     act(() => result.current.selectObject("plot_1"));
@@ -496,7 +496,7 @@ describe("useEditor projects", () => {
     expect(callsOf("render_preview")).toBe(0);
   });
 
-  it("keeps the view and the export result through Save As, and starts no preview (D29)", async () => {
+  it("keeps the view and the export result through Save As, and starts no preview", async () => {
     script({
       get_state: [stateReply("C:/first")],
       reserve_job_id: ["export-1"],
@@ -531,28 +531,25 @@ describe("useEditor projects", () => {
     ["onOpen", "open_project_dialog"],
     ["onOpenSample", "open_sample"],
     ["onNew", "new_project"],
-  ] as const)(
-    "follows a Save As in the leave warning of %s that opened no other project (O9)",
-    async (action, command) => {
-      script({ get_state: [stateReply("C:/temp")], [command]: [{ savedAs: stateReply("C:/kept") }] });
-      const result = await started();
-      act(() => {
-        result.current.selectObject("plot_1");
-        result.current.setPlayhead(1);
-        result.current.onViewCode();
-      });
-      await act(() => result.current[action]());
-      expect(result.current.state?.projectPath).toBe("C:/kept");
-      expect(result.current.selection).toEqual({ beatId: null, objectId: "plot_1" });
-      expect(result.current.playhead).toBe(1);
-      expect(result.current.panel).toBe("code");
-      expect(result.current.error).toBeNull();
-      await afterDebounce();
-      expect(callsOf("render_preview")).toBe(0);
-    },
-  );
+  ] as const)("follows a Save As in the leave warning of %s that opened no other project", async (action, command) => {
+    script({ get_state: [stateReply("C:/temp")], [command]: [{ savedAs: stateReply("C:/kept") }] });
+    const result = await started();
+    act(() => {
+      result.current.selectObject("plot_1");
+      result.current.setPlayhead(1);
+      result.current.onViewCode();
+    });
+    await act(() => result.current[action]());
+    expect(result.current.state?.projectPath).toBe("C:/kept");
+    expect(result.current.selection).toEqual({ beatId: null, objectId: "plot_1" });
+    expect(result.current.playhead).toBe(1);
+    expect(result.current.panel).toBe("code");
+    expect(result.current.error).toBeNull();
+    await afterDebounce();
+    expect(callsOf("render_preview")).toBe(0);
+  });
 
-  it("ignores a beat_ready of the preview that Save As overtook (C9.2, F135)", async () => {
+  it("ignores a beat_ready of the preview that Save As overtook", async () => {
     script({
       get_state: [indexedReply(null)],
       edit_document: [indexedReply(null)],
@@ -585,7 +582,7 @@ describe("useEditor projects", () => {
     expect(result.current.note).toBe(OLDER_EXPORT);
   });
 
-  it("updates the code from each applied state without asking the worker (D25)", async () => {
+  it("updates the code from each applied state without asking the worker", async () => {
     script({
       get_state: [{ ...stateReply("C:/first"), source: "class MainScene: ..." }],
       edit_document: [{ ...stateReply("C:/first"), source: "class Renamed: ..." }],
@@ -599,7 +596,7 @@ describe("useEditor projects", () => {
     expect(commands()).toEqual(["app_status", "get_state", "edit_document"]);
   });
 
-  it("keeps the Notices open through Save As (C9.2) and shows the Inspector after Open", async () => {
+  it("keeps the Notices open through Save As and shows the Inspector after Open", async () => {
     script({
       get_state: [stateReply("C:/temp")],
       save_project_as_dialog: [stateReply("C:/kept")],
@@ -656,7 +653,7 @@ describe("useEditor export", () => {
     expect(result.current.status).toBe("Ready");
   });
 
-  it("does not carry a Cancel pressed during a refused profile edit into the next export (F047)", async () => {
+  it("does not carry a Cancel pressed during a refused profile edit into the next export", async () => {
     const edit = deferred();
     script({
       get_state: [stateReply("C:/first")],
@@ -678,7 +675,7 @@ describe("useEditor export", () => {
     expect(result.current.status).toBe("Rendering export");
   });
 
-  it("saves the profile before every export, and Re-export sends force (C10, D56)", async () => {
+  it("saves the profile before every export, and Re-export sends force", async () => {
     const redoable = stateReply("C:/first");
     redoable.derived = { ...redoable.derived, canRedo: true };
     script({
@@ -706,7 +703,7 @@ describe("useEditor export", () => {
   it.each([
     ["reserve_job_id", ["reserve_job_id", "get_state"]],
     ["edit_document", ["reserve_job_id", "edit_document", "get_state"]],
-  ] as const)("stops the Export task when the worker exits during its %s (C8.6)", async (held, sent) => {
+  ] as const)("stops the Export task when the worker exits during its %s", async (held, sent) => {
     const pending = deferred();
     const replies = { reserve_job_id: "export-1", edit_document: unchanged("C:/first") };
     script({
@@ -766,7 +763,7 @@ describe("useEditor job ids", () => {
   it.each([
     ["preview", ["edit_document", "reserve_job_id"]],
     ["export", ["reserve_job_id"]],
-  ] as const)("sends no %s when reserve_job_id does not answer with a string (C7.1)", async (job, sent) => {
+  ] as const)("sends no %s when reserve_job_id does not answer with a string", async (job, sent) => {
     script({ get_state: [stateReply("C:/first")], edit_document: [stateReply("C:/first")], reserve_job_id: [42] });
     const result = await started();
     if (job === "preview") {
@@ -787,7 +784,7 @@ describe("useEditor job ids", () => {
 });
 
 describe("useEditor project_changed prompt", () => {
-  it("opens one prompt and holds the next edit; Overwrite retries the refused edit, then the next one (C9.3)", async () => {
+  it("opens one prompt and holds the next edit; Overwrite retries the refused edit, then the next one", async () => {
     script({
       get_state: [stateReply("C:/first")],
       edit_document: [
@@ -871,7 +868,7 @@ describe("useEditor project_changed prompt", () => {
     },
   );
 
-  it("Reload drops the joined refusals, reconciles the view and starts a preview (C14 Q7)", async () => {
+  it("Reload drops the joined refusals, reconciles the view and starts a preview", async () => {
     const reloaded = stateReply("C:/first", "From disk");
     script({
       get_state: [stateReply("C:/first")],
@@ -910,7 +907,7 @@ describe("useEditor project_changed prompt", () => {
 });
 
 describe("useEditor worker exit", () => {
-  it("ends the export, resyncs once for two exits and shows the restart note (C8.6)", async () => {
+  it("ends the export, resyncs once for two exits and shows the restart note", async () => {
     script({
       get_state: [stateReply("C:/first"), stateReply("C:/first", "Reloaded")],
       reserve_job_id: ["export-1"],
@@ -961,7 +958,7 @@ describe("useEditor worker exit", () => {
     expect(result.current.status).toBe("Ready");
   });
 
-  it("resyncs again when the worker exits while the resync runs (C8.6)", async () => {
+  it("resyncs again when the worker exits while the resync runs", async () => {
     const resync = deferred();
     script({ get_state: [stateReply("C:/first"), resync.promise, stateReply("C:/first", "Reloaded")] });
     const result = await started();
@@ -980,7 +977,7 @@ describe("useEditor worker exit", () => {
 describe("useEditor field errors", () => {
   const unsupported = "This expression is not supported.";
 
-  it("scopes a field error to the edited object and the refused field (C9.3)", async () => {
+  it("scopes a field error to the edited object and the refused field", async () => {
     script({
       get_state: [stateReply("C:/first")],
       edit_document: [refusal("unsupported_expression", unsupported, "expression")],
@@ -999,7 +996,7 @@ describe("useEditor field errors", () => {
     });
   });
 
-  it("records the op and axis of a refused axes edit, whose field is value for every axes input (C9.3)", async () => {
+  it("records the op and axis of a refused axes edit, whose field is value for every axes input", async () => {
     const ticks = "value has more than 500 ticks";
     script({ get_state: [stateReply("C:/first")], edit_document: [refusal("limit_exceeded", ticks, "value")] });
     const result = await started();
@@ -1069,7 +1066,7 @@ describe("useEditor selection", () => {
   it.each([
     ["deleted", () => ({ edit_document: [added, emptyReply("C:/first")] })],
     ["undone", () => ({ edit_document: [added], undo_document: [emptyReply("C:/first")] })],
-  ])("selects nothing once the selected beat is %s, so Add does not name it (F117)", async (how, replies) => {
+  ])("selects nothing once the selected beat is %s, so Add does not name it", async (how, replies) => {
     script({ get_state: [emptyReply("C:/first")], ...replies() });
     const result = await started();
     await act(() => result.current.commit({ op: "add_formula", afterBeatId: null }, false));
@@ -1082,7 +1079,7 @@ describe("useEditor selection", () => {
     expect(result.current.selection).toEqual({ beatId: null, objectId: null });
   });
 
-  it("clears the field error when the selection changes (F112)", async () => {
+  it("clears the field error when the selection changes", async () => {
     script({
       get_state: [stateReply("C:/first")],
       edit_document: [refusal("unsupported_expression", "This expression is not supported.", "expression")],
@@ -1114,7 +1111,7 @@ function waitReply(focus?: { beatId: string | null; objectId: string | null }) {
   };
 }
 
-describe("useEditor two-part selection (design §10.2)", () => {
+describe("useEditor two-part selection (spec §6, Selection)", () => {
   it("selects a beat with its first target, keeps the object for a beat without one, and an object keeps the beat", async () => {
     script({ get_state: [waitReply()] });
     const result = await started();
@@ -1153,7 +1150,7 @@ describe("useEditor two-part selection (design §10.2)", () => {
   });
 });
 
-describe("useEditor beat field errors (design §10.7)", () => {
+describe("useEditor beat field errors (spec §6, Refusals in the UI)", () => {
   const outOfRange = "params.factor must be from 0.01 to 100";
   const noEntrance = "scene.objects[0] plot_1 has no entrance beat";
 
@@ -1190,7 +1187,7 @@ describe("useEditor beat field errors (design §10.7)", () => {
 });
 
 describe("useEditor timeline", () => {
-  it("keeps the playhead inside a timeline that got shorter (F123)", async () => {
+  it("keeps the playhead inside a timeline that got shorter", async () => {
     script({ get_state: [stateReply("C:/first")], edit_document: [durationReply(1)] });
     const result = await started();
     act(() => result.current.setPlayhead(1.5));
@@ -1199,7 +1196,7 @@ describe("useEditor timeline", () => {
     expect(result.current.playhead).toBe(1);
   });
 
-  it("keeps a dragged duration until its edit settles (F114)", async () => {
+  it("keeps a dragged duration until its edit settles", async () => {
     const reply = deferred();
     script({ get_state: [stateReply("C:/first")], edit_document: [reply.promise] });
     const result = await started();
@@ -1215,7 +1212,7 @@ describe("useEditor timeline", () => {
     expect(result.current.total).toBe(3);
   });
 
-  it("drops the draft of an interrupted drag without an edit (D48)", async () => {
+  it("drops the draft of an interrupted drag without an edit", async () => {
     script({ get_state: [stateReply("C:/first")] });
     const result = await started();
     act(() => {

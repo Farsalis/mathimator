@@ -18,15 +18,15 @@ interface PreviewStageProps {
 export function PreviewStage({ index, time, total, playing, onTime, onPlaying }: PreviewStageProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const scrubbing = useRef(false);
-  /** The playhead the playing video last reported. The video is already there, so it is not seeked there (F043). */
+  /** The playhead the playing video last reported. The video is already there, so it is not seeked there. */
   const reported = useRef<number | null>(null);
   const [mediaNote, setMediaNote] = useState<string | null>(null);
-  /** The files that could not be read for `index`. Any new index tries them again (F115). */
+  /** The files that could not be read for `index`. Any new index tries them again. */
   const [missing, setMissing] = useState<{ index: PreviewIndex | null; paths: ReadonlySet<string> }>({
     index: null,
     paths: NONE,
   });
-  /** The last file read for the canvas. It stays on screen while the next file loads (F123). */
+  /** The last file read for the canvas. It stays on screen while the next file loads. */
   const [loaded, setLoaded] = useState<{ path: string; url: string } | null>(null);
   const absent = missing.index === index ? missing.paths : NONE;
   const choice = playbackAt(index, time, (path) => !absent.has(path));
@@ -39,14 +39,14 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
   /** Whether the video holds the file under the playhead, so it may be seeked and played. */
   const current = loaded !== null && loaded.path === path;
 
-  /** An unreadable file is logged, and the canvas falls back to last-good or blank with the badge (D23). */
+  /** An unreadable file is logged, and the canvas falls back to last-good or blank with the badge. */
   const onUnreadable = useEffectEvent((unreadable: string, reason: unknown) => {
     console.warn(`Could not read the preview file ${unreadable}:`, reason);
     setMissing({ index, paths: new Set([...absent, unreadable]) });
     setMediaNote(null);
   });
 
-  /** Moves the playhead on by `seconds` while no file plays, and stops at the end (D49). */
+  /** Moves the playhead on by `seconds` while no file plays, and stops at the end. */
   const advance = useEffectEvent((seconds: number) => {
     const next = time + seconds;
     if (next < total) {
@@ -111,7 +111,7 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
     return () => video.removeEventListener("loadeddata", seek);
   }, [current, blobUrl, time, choice.time]);
 
-  // A beat change plays again: two beats can share one file, and the video that ended waits paused at its end (F111).
+  // A beat change plays again: two beats can share one file, and the video that ended waits paused at its end.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !current) {
@@ -124,7 +124,7 @@ export function PreviewStage({ index, time, total, playing, onTime, onPlaying }:
     }
   }, [playing, current, blobUrl, choice.beatIndex, onPlaying]);
 
-  // Over a beat with no file, a clock moves the playhead until the next file plays (D49).
+  // Over a beat with no file, a clock moves the playhead until the next file plays.
   const playsFile = path !== null;
   useEffect(() => {
     if (!playing || playsFile) {
