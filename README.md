@@ -16,7 +16,8 @@ act on several objects at once, every beat but a wait takes an easing, and an
 object can leave the screen and enter again.
 
 [docs/design-spec.md](docs/design-spec.md) is the design and its acceptance
-criteria. Mathimator v1 targets Windows 11 x64. The fast tests and the Rust
+criteria, and [docs/README.md](docs/README.md) explains how the code works.
+Mathimator v1 targets Windows 11 x64. The fast tests and the Rust
 pre-checks also run on Linux; macOS is untested.
 
 ## How it works
@@ -53,7 +54,7 @@ describes the protocol.
 | `scripts/` | The version check, the bundle check and the notices generator |
 | `ci/` | The helper scripts the GitHub Actions workflows run, and the tests that hold the workflows and the project documents to the code |
 | `.github/` | The GitHub Actions workflows, the Dependabot configuration, the code owners, and the issue and pull request templates |
-| `docs/` | The design spec |
+| `docs/` | The design spec, and the developer documentation, starting at [docs/README.md](docs/README.md) |
 
 ## Quick start
 

@@ -161,7 +161,8 @@ generates from the commits.
 - Pinned toolchains: Rust 1.93.0 with rustfmt and clippy, Node 24 and
   CPython 3.14.9.
 - Ruff, mypy --strict, type-aware ESLint, Prettier and rustfmt, pre-commit
-  hooks that mirror CI, and one formatting commit hidden from git blame.
+  hooks that mirror CI, and a git blame ignore list for formatting-only
+  commits.
 - The installer bundle ships a relocatable CPython, installs the render stack
   from uv.lock with hashes, checks every download, the Linux ones included,
   against a pinned SHA-256, and precompiles its Python and the worker to

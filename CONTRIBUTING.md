@@ -3,7 +3,9 @@
 This guide covers the development setup, the rules a change follows, commits,
 pull requests and releases. [README.md](README.md) explains what Mathimator is
 and how to build, run and test it. [docs/design-spec.md](docs/design-spec.md)
-is the specification every change is held to.
+is the specification every change is held to, and
+[docs/README.md](docs/README.md) explains how the code fits together and where
+each kind of change goes.
 
 ## Development setup
 
@@ -33,9 +35,8 @@ uv run pre-commit run --all-files
 ### Formatting commits and git blame
 
 `.git-blame-ignore-revs` lists commits that only reformat code, so that
-`git blame` skips them once `blame.ignoreRevsFile` points at it. If you make
-another formatting-only commit, add its full hash to the file in a follow-up
-commit.
+`git blame` skips them once `blame.ignoreRevsFile` points at it. If you make a
+formatting-only commit, add its full hash to the file in a follow-up commit.
 
 ### Linux
 
