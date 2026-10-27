@@ -1,7 +1,7 @@
-//! The worker as the shell runs it: start and handshake (contract C6), the request gate and the
-//! per-generation pending replies (C9.1, C9.2), routing worker stdout (C9.4), exit and respawn
-//! (C8.6), the temp projects it is started on (C8.5), and the status the UI starts from (C9.5).
-//! Every worker-bound command of C9.1 has a method on [`Worker`].
+//! The worker as the shell runs it (spec §6): start and handshake, the request gate and the
+//! per-generation pending replies, routing worker stdout, exit and respawn, the temp projects it
+//! is started on, and the status the UI starts from. Every worker-bound Tauri command has a method
+//! on [`Worker`].
 
 use std::collections::HashMap;
 use std::fs;
@@ -25,16 +25,16 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const CLEAR_CACHE_TIMEOUT: Duration = Duration::from_secs(120);
 const SAVE_AS_TIMEOUT: Duration = Duration::from_secs(600);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long the router waits for the exit code once a worker's stdout has closed (C8.6).
+/// How long the router waits for the exit code once a worker's stdout has closed.
 const EXIT_CODE_WAIT: Duration = Duration::from_secs(1);
-/// How long the shell waits for a worker it ended to exit (C8.6).
+/// How long the shell waits for a worker it ended to exit.
 const STOP_WAIT: Duration = Duration::from_secs(5);
-/// Why no worker starts while an ended one is still alive (C8.6 step 4). Retry ends it again, and
+/// Why no worker starts while an ended one is still alive. Retry ends it again, and
 /// starts a worker once it has exited.
 const STUCK: &str =
     "The previous worker did not stop. Choose Retry to try again, or restart Mathimator.";
 
-/// What the shell does with what the worker reports (C9.4, C9.5).
+/// What the shell does with what the worker reports.
 pub trait Host: Send + Sync + 'static {
     /// Sends one `worker-event` to the UI.
     fn emit(&self, event: Value);
@@ -68,11 +68,11 @@ pub type Spawner = Box<dyn Fn(&Path, bool) -> io::Result<Spawned> + Send + Sync>
 /// The worker as the Tauri commands see it.
 pub struct Worker {
     shared: Arc<Shared>,
-    /// The request gate (C9.2). Its holder owns the worker: only it writes requests and starts or
+    /// The request gate. Its holder owns the worker: only it writes requests and starts or
     /// ends the process. The lock is fair, so requests are written in call order.
     gate: Arc<async_runtime::Mutex<Gate>>,
     /// Held for writing until the launch is done, so a read lock waits for the launch and not for
-    /// the requests after it (C8.5 launch step 5, C9.1).
+    /// the requests after it.
     launch: Arc<async_runtime::RwLock<()>>,
 }
 
@@ -81,7 +81,7 @@ pub struct Worker {
 struct Gate {
     status: Status,
     /// A worker that was ended but was still alive 5 s later. It is ended again before any worker
-    /// starts, so a new worker never meets its project lock (C8.6 step 4).
+    /// starts, so a new worker never meets its project lock.
     stuck: Option<Arc<Process>>,
 }
 
@@ -115,7 +115,7 @@ struct Child {
     exited: bool,
 }
 
-/// Where a worker starts (C8.5 launch step 2, C8.6 step 5).
+/// Where a worker starts.
 #[derive(Clone, Copy)]
 enum Start {
     /// The first worker, on the last project of the previous run.
@@ -128,22 +128,22 @@ enum Start {
 
 struct Shared {
     host: Arc<dyn Host>,
-    /// Starts a worker, or says why none can: the runtime has no worker (C9.6).
+    /// Starts a worker, or says why none can: the runtime has no worker.
     spawn: Result<Spawner, String>,
     /// Where temp projects are created.
     temp_root: PathBuf,
     /// The last project of the previous run, until a worker takes it or, when it is missing, until
-    /// a worker has started in its place (C8.5).
+    /// a worker has started in its place.
     reopen: Mutex<Option<PathBuf>>,
     /// supervisor.err, which the "stopped during startup" reason points to.
     stderr_log: PathBuf,
-    /// The one counter behind every request and job id (C2).
+    /// The one counter behind every request and job id.
     next_id: AtomicU64,
     next_generation: AtomicU64,
     routes: Mutex<Routes>,
     bound: Mutex<Bound>,
     /// Why the worker is unavailable, as the last holder of the request gate left it, so that
-    /// `app_status` does not wait for the gate (C9.1, C9.2).
+    /// `app_status` does not wait for the gate.
     unavailable: Mutex<Option<String>>,
 }
 
@@ -152,7 +152,7 @@ struct Shared {
 struct Routes {
     /// The generation whose stdout is still open.
     open: Option<u64>,
-    /// Pending RPCs by request id (C9.4).
+    /// Pending RPCs by request id.
     pending: HashMap<String, Pending>,
 }
 
@@ -190,7 +190,7 @@ impl From<Failure> for ShellError {
     }
 }
 
-/// The project folder as the shell knows it (C9.4).
+/// The project folder as the shell knows it.
 #[derive(Default)]
 struct Bound {
     /// The folder the worker was started on, then the `projectPath` of every `state` line.
@@ -233,7 +233,7 @@ impl Process {
         }
     }
 
-    /// Ends the process for good, and returns whether it exited within 5 s (C8.6 step 4). A
+    /// Ends the process for good, and returns whether it exited within 5 s. A
     /// process that exited is not ended again, so a crashed worker that both the router and the
     /// next command end is ended once.
     fn end(&self) -> bool {
@@ -252,8 +252,8 @@ impl Process {
 impl Worker {
     /// Starts the first worker in the background: on `last_project` when it is still a project
     /// folder, else on a new temp project in `temp_root`, with a notice when the last project is
-    /// missing (C8.5). Every worker-bound command waits until its handshake is done (C6). Without
-    /// a spawner, every command fails with `worker_unavailable` and the reason (D31).
+    /// missing. Every worker-bound command waits until its handshake is done. Without a spawner,
+    /// every command fails with `worker_unavailable` and the reason.
     pub fn launch(
         host: Arc<dyn Host>,
         spawn: Result<Spawner, String>,
@@ -294,7 +294,7 @@ impl Worker {
         }
     }
 
-    /// `reserve_job_id` (C9.1): the next id from the one id counter, for example `preview-7`. Only
+    /// `reserve_job_id`: the next id from the one id counter, for example `preview-7`. Only
     /// previews and exports reserve ids.
     pub fn reserve_job_id(&self, prefix: &str) -> Result<String, ShellError> {
         match prefix {
@@ -306,25 +306,25 @@ impl Worker {
         }
     }
 
-    /// The bound project folder (C9.4), once a worker has been started.
+    /// The bound project folder, once a worker has been started.
     pub fn project(&self) -> Option<PathBuf> {
         self.shared.project()
     }
 
-    /// Waits until the launch handshake is done (C8.5 launch step 5).
+    /// Waits until the launch handshake is done.
     pub async fn launched(&self) {
         drop(self.launch.read().await);
     }
 
     /// Why worker-bound commands fail with `worker_unavailable`, or `None` when they reach a
-    /// worker or start one (C9.5). Waits for the launch, but not for a request in flight, which
-    /// may take minutes (C9.1).
+    /// worker or start one. Waits for the launch, but not for a request in flight, which may
+    /// take minutes.
     pub async fn unavailable(&self) -> Option<String> {
         self.launched().await;
         lock(&self.shared.unavailable).clone()
     }
 
-    /// `restart_worker` (C9.1): makes sure a worker runs, retrying one that is unavailable, and
+    /// `restart_worker`: makes sure a worker runs, retrying one that is unavailable, and
     /// returns why it still is. A worker that did not stop must exit before another starts.
     pub async fn restart(&self) -> Result<Option<String>, ShellError> {
         self.hold(|session| {
@@ -337,7 +337,7 @@ impl Worker {
     }
 
     /// Tells the running worker the message its later job starts refuse formulas with, or `None`
-    /// once TeX works (C9.7, C14 Q4). Nothing running stops, and the document keeps its undo
+    /// once TeX works. Nothing running stops, and the document keeps its undo
     /// history. A worker that is not running is left alone: the next one starts with the shell's
     /// TeX error as MATHIMATOR_TEX_ERROR.
     pub async fn set_tex_error(&self, message: Option<String>) -> Result<(), ShellError> {
@@ -346,7 +346,7 @@ impl Worker {
     }
 
     /// Whether leaving the bound project asks first: it is a touched temp project, and a worker
-    /// can still save it elsewhere (C8.5, C14 Q2, Q8). The check holds the request gate, so it
+    /// can still save it elsewhere. The check holds the request gate, so it
     /// sees what the request in flight wrote, but it starts no worker.
     pub async fn is_touched_temp_project(&self) -> bool {
         self.hold(|session| Ok(session.is_touched_temp_project()))
@@ -354,8 +354,8 @@ impl Worker {
             .unwrap_or(false)
     }
 
-    /// Deletes the temp projects that pruning allows, once the launch is done (C8.5 launch step
-    /// 5). The bound project is kept, and so is a last project no worker has taken yet.
+    /// Deletes the temp projects that pruning allows, once the launch is done. The bound project
+    /// is kept, and so is a last project no worker has taken yet.
     pub async fn prune_temp_projects(&self) {
         self.launched().await;
         let shared = Arc::clone(&self.shared);
@@ -460,7 +460,7 @@ impl Worker {
     }
 
     /// Runs `work` holding the request gate. The work blocks on pipes and replies, so it runs on
-    /// the blocking pool, never on the UI thread (D20).
+    /// the blocking pool, never on the UI thread.
     async fn hold<T, F>(&self, work: F) -> Result<T, ShellError>
     where
         T: Send + 'static,
@@ -492,9 +492,9 @@ impl Session<'_> {
         })
     }
 
-    /// Ends the old worker, then starts one and runs the handshake (C6). The worker starts on the
-    /// bound folder after an exit (C8.6), on the last project at launch, and otherwise on a new
-    /// temp project (C8.5). Returns the reason the worker is unavailable.
+    /// Ends the old worker, then starts one and runs the handshake. The worker starts on the bound
+    /// folder after an exit, on the last project at launch, and otherwise on a new temp project.
+    /// Returns the reason the worker is unavailable.
     fn start(&mut self) -> Result<(), String> {
         self.stop()?;
         let shared = self.shared;
@@ -528,7 +528,7 @@ impl Session<'_> {
             .and_then(|startup_error| match startup_error {
                 Some(error) => self.recover(&folder, &error, start),
                 None => {
-                    // C8.5 launch step 4, before the commands waiting for the launch go on.
+                    // Marked and reported before the commands waiting for the launch go on.
                     if init {
                         shared.mark(&folder, temp_project::seed_of(&folder));
                     }
@@ -551,7 +551,7 @@ impl Session<'_> {
     }
 
     /// Ends the running worker, or the one that did not stop before, for good and waits for it to
-    /// exit (C8.6 step 4). A worker still alive after 5 s is kept as stuck.
+    /// exit. A worker still alive after 5 s is kept as stuck.
     fn stop(&mut self) -> Result<(), String> {
         let process = match mem::replace(self.status, Status::Stopped) {
             Status::Running(Link { stdin, process, .. }) => {
@@ -577,7 +577,7 @@ impl Session<'_> {
         Ok(())
     }
 
-    /// Sends `set_tex_error` to a running worker whose stdout is still open (C9.7).
+    /// Sends `set_tex_error` to a running worker whose stdout is still open.
     fn set_tex_error(&mut self, message: Option<String>) -> Result<(), ShellError> {
         match &*self.status {
             Status::Running(link) if self.shared.is_open(link.generation) => {}
@@ -587,7 +587,7 @@ impl Session<'_> {
         self.send(&Request::SetTexError { message }, &id)
     }
 
-    /// Sends `status` and checks the reply (C6). Returns the worker's `startupError`.
+    /// Sends `status` and checks the reply. Returns the worker's `startupError`.
     fn handshake(&mut self) -> Result<Option<Value>, String> {
         let id = self.shared.next_id("status");
         match self.request(&Request::Status, &id, HANDSHAKE_TIMEOUT) {
@@ -601,9 +601,9 @@ impl Session<'_> {
         }
     }
 
-    /// Opens a new temp project when the worker could not bind its folder (C8.5 launch step 3,
-    /// C8.6 step 5), and tells the user why. A new temp folder it could not bind held no work:
-    /// it is deleted, and only shell.log hears of it.
+    /// Opens a new temp project when the worker could not bind its folder, and tells the user why.
+    /// A new temp folder it could not bind held no work: it is deleted, and only shell.log hears
+    /// of it.
     fn recover(
         &mut self,
         folder: &Path,
@@ -677,13 +677,13 @@ impl Session<'_> {
             .map_err(Failure::Write)
     }
 
-    /// New (C8.5): opens a new temp project, which the worker fills with an empty project.
+    /// New: opens a new temp project, which the worker fills with an empty project.
     fn open_new_project(&mut self) -> Result<Value, ShellError> {
         let folder = self.shared.create_temp_project()?;
         self.open_temp_project(&folder, None)
     }
 
-    /// Sample (C8.5): opens a temp copy of the bundled sample.
+    /// Sample: opens a temp copy of the bundled sample.
     fn open_sample(&mut self, sample: &Path) -> Result<Value, ShellError> {
         let folder = self.shared.create_temp_project()?;
         let copied = fs::read(sample).and_then(|bytes| {
@@ -702,7 +702,7 @@ impl Session<'_> {
         }
     }
 
-    /// Opens a temp folder this session created (C8.5). `seed` is the SHA-256 of the project.json
+    /// Opens a temp folder this session created. `seed` is the SHA-256 of the project.json
     /// copied into it. Without one, the worker writes an empty project there (`init`), and the
     /// seed is read from that. Once the reply confirms the bind, the folder is marked. A refusal
     /// deletes it. A shell failure keeps it unmarked, because a late reply may still bind it.
@@ -725,7 +725,7 @@ impl Session<'_> {
         Ok(reply)
     }
 
-    /// Save As (C8.5). Once the worker has moved to the target, the old folder of a temp project
+    /// Save As. Once the worker has moved to the target, the old folder of a temp project
     /// is deleted, which makes Save As a move.
     fn save_as(&mut self, path: String) -> Result<Value, ShellError> {
         let old = self.shared.project();
@@ -742,7 +742,7 @@ impl Session<'_> {
         Ok(reply)
     }
 
-    /// Whether the bound project is a touched temp project (C8.5), while the worker is not
+    /// Whether the bound project is a touched temp project, while the worker is not
     /// unavailable. An unmarked temp folder, such as one a late reply bound, counts as touched:
     /// pruning may delete it whatever its project.json holds.
     fn is_touched_temp_project(&self) -> bool {
@@ -810,14 +810,14 @@ impl Shared {
     fn await_reply(&self, id: &str, replies: &Receiver<Reply>, timeout: Duration) -> Reply {
         match replies.recv_timeout(timeout) {
             Ok(reply) => reply,
-            // The entry goes, so a late reply is broadcast (C9.4).
+            // The entry goes, so a late reply is broadcast.
             Err(RecvTimeoutError::Timeout) if self.forget(id) => Err(Failure::Timeout),
             // The router took the entry as the wait ended, so its reply is on the way.
             Err(_) => replies.recv().unwrap_or(Err(Failure::Exited(None))),
         }
     }
 
-    /// Routes one worker's stdout until EOF, then handles its exit (C9.4, C8.6 steps 1 to 4).
+    /// Routes one worker's stdout until EOF, then handles its exit.
     fn route(&self, generation: u64, process: &Process, stdout: impl Read) {
         for line in BufReader::new(stdout).split(b'\n') {
             let Ok(line) = line else { break };
@@ -886,7 +886,7 @@ impl Shared {
         self.host.bind(project);
     }
 
-    /// Fails the pending RPCs of a generation whose stdout closed, and reports a crash (C8.6).
+    /// Fails the pending RPCs of a generation whose stdout closed, and reports a crash.
     fn close(&self, generation: u64, exit_code: Option<i32>, crashed: bool) {
         let stranded: Vec<Pending> = {
             let mut routes = lock(&self.routes);
@@ -914,7 +914,7 @@ impl Shared {
         }
     }
 
-    /// Creates `<temp>/mathimator-<pid>-<ms>` for a new temp project (C8.5).
+    /// Creates `<temp>/mathimator-<pid>-<ms>` for a new temp project.
     fn create_temp_project(&self) -> Result<PathBuf, ShellError> {
         let mut millis = unix_millis();
         loop {
@@ -937,14 +937,14 @@ impl Shared {
         }
     }
 
-    /// The last project, when it is still a folder with project.json (C8.5 launch step 2). Only
+    /// The last project, when it is still a folder with project.json. Only
     /// the first start is offered it. A missing one stays until a worker has started in its place.
     fn take_reopen(&self) -> Option<PathBuf> {
         lock(&self.reopen).take_if(|folder| folder.join("project.json").is_file())
     }
 
     /// Tells the user, once a worker has started in its place, that the last project was missing
-    /// at launch (C8.5 launch step 2). A launch that fails tells it after the start that succeeds.
+    /// at launch. A launch that fails tells it after the start that succeeds.
     fn report_missing_last_project(&self) {
         let missing = lock(&self.reopen).take();
         if let Some(missing) = missing {
@@ -955,7 +955,7 @@ impl Shared {
         }
     }
 
-    /// Marks a temp folder the worker has just bound (C8.5), with `seed`, the SHA-256 of the
+    /// Marks a temp folder the worker has just bound, with `seed`, the SHA-256 of the
     /// project.json it started from.
     fn mark(&self, folder: &Path, seed: io::Result<String>) {
         let marked = seed.and_then(|seed| Marker::new(seed, unix_millis()).write(folder));
@@ -967,7 +967,7 @@ impl Shared {
         }
     }
 
-    /// `folder` in canonical form when it is a temp folder (C8.5): a `mathimator-<digits>-<digits>`
+    /// `folder` in canonical form when it is a temp folder: a `mathimator-<digits>-<digits>`
     /// folder in the temp root, as pruning requires, so that a copy kept elsewhere is never taken
     /// for one. The paths are compared in canonical form, so an 8.3 %TEMP% still matches the long
     /// form the worker reports.
@@ -979,14 +979,13 @@ impl Shared {
         is_temp.then_some(folder)
     }
 
-    /// The marker of `folder` when it is a temp project the shell made (C8.5): a marked temp
-    /// folder.
+    /// The marker of `folder` when it is a temp project the shell made: a marked temp folder.
     fn temp_marker(&self, folder: &Path) -> Option<Marker> {
         Marker::read(&self.temp_folder(folder)?)
     }
 
     /// Whether `old`, the folder Save As just moved away from, is a temp project the shell may
-    /// delete (C8.5): one that does not hold `target`.
+    /// delete: one that does not hold `target`.
     fn is_left_temp_project(&self, old: &Path, target: &Path) -> bool {
         let (Ok(old), Ok(target)) = (fs::canonicalize(old), fs::canonicalize(target)) else {
             return false;
@@ -1024,7 +1023,7 @@ impl Shared {
     }
 }
 
-/// Checks the reply to the handshake's `status` (C6 step 3), and returns its `startupError`.
+/// Checks the reply to the handshake's `status`, and returns its `startupError`.
 fn check_ready(reply: &Value) -> Result<Option<Value>, String> {
     let protocol = reply.get("protocol").and_then(Value::as_u64).unwrap_or(1);
     if event_of(reply) != Some("ready") || protocol != PROTOCOL_VERSION {
@@ -1497,7 +1496,7 @@ mod tests {
         }
     }
 
-    /// Writes the temp-project marker into `folder`, creating the folder (C8.5).
+    /// Writes the temp-project marker into `folder`, creating the folder.
     fn mark_temp(folder: &Path) {
         fs::create_dir_all(folder.join(".mathimator")).unwrap();
         Marker::new("0".repeat(64), 1).write(folder).unwrap();
@@ -2016,7 +2015,7 @@ mod tests {
 
     #[test]
     fn crlf_terminated_lines_are_read_like_lf_terminated_ones() {
-        // The worker writes text-mode stdout, so on Windows each line ends in CRLF (C2).
+        // The worker writes text-mode stdout, so on Windows each line ends in CRLF.
         let beat = json!({"event": "beat_ready", "jobId": "preview-3", "beatIndex": 0, "path": "C:/p/b0.mp4"});
         let line = beat.to_string();
         let test = Test::start(move |request| {

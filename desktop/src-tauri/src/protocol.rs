@@ -1,12 +1,12 @@
-//! The worker line protocol as the shell speaks it (contract C2, C4, C9.1).
+//! The worker line protocol as the shell speaks it (spec §6).
 
 use serde::Serialize;
 use serde_json::Value;
 
-/// The protocol this shell speaks. The worker reports its own in `ready.protocol` (C6).
+/// The protocol this shell speaks. The worker reports its own in `ready.protocol`.
 pub const PROTOCOL_VERSION: u64 = 2;
 
-/// One request to the worker (C4), without the `id` the transport adds.
+/// One request to the worker, without the `id` the transport adds.
 #[derive(Serialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
@@ -37,7 +37,7 @@ pub enum Request {
         #[serde(rename = "jobId")]
         job_id: String,
     },
-    /// The message later job starts refuse formulas with, or `None` once TeX works (C9.7).
+    /// The message later job starts refuse formulas with, or `None` once TeX works.
     SetTexError {
         message: Option<String>,
     },
@@ -63,8 +63,8 @@ impl Request {
     }
 }
 
-/// What a dialog command returns (C9.1): the worker's reply, passed through (D46), or what the
-/// shell did itself.
+/// What a dialog command returns: the worker's reply, passed through, or what the shell did
+/// itself.
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum DialogReply {
@@ -79,7 +79,7 @@ pub enum DialogReply {
     },
     /// `{savedAs: state}`: Open, Sample or New saved the project in the leave warning, then bound
     /// no other project. The `state` is the Save As reply, so the UI follows the move as after
-    /// Save As (O9).
+    /// Save As.
     SavedAs {
         #[serde(rename = "savedAs")]
         saved_as: Value,
@@ -90,8 +90,8 @@ impl DialogReply {
     pub const CANCELLED: Self = Self::Cancelled { cancelled: true };
 }
 
-/// A failure of the shell itself, rejected to the UI as `{code, message}` (C9.1, D45). Worker
-/// replies, refusals included, are not `ShellError`s: they pass through as `Ok` (D46).
+/// A failure of the shell itself, rejected to the UI as `{code, message}`. Worker replies,
+/// refusals included, are not `ShellError`s: they pass through as `Ok`.
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct ShellError {
     pub code: ErrorCode,
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn dialog_replies_serialize_as_the_contract_shapes() {
+    fn dialog_replies_serialize_as_the_specified_shapes() {
         let refused = json!({"event": "rejected", "jobId": "rpc-3", "code": "lock_failed"});
         let saved =
             json!({"event": "state", "jobId": "rpc-4", "projectPath": "C:\\Lessons\\waves"});

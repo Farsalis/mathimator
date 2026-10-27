@@ -1,5 +1,5 @@
-//! SHA-256 (FIPS 180-4), for the seed of a temp project (contract C8.5). The shell takes no
-//! hashing crate for one digest of a small file (D45).
+//! SHA-256 (FIPS 180-4), for the seed of a temp project (spec §6). The shell takes no hashing
+//! crate for one digest of a small file.
 
 /// The SHA-256 of `bytes`, as 64 lowercase hex digits.
 pub fn hex_digest(bytes: &[u8]) -> String {

@@ -31,5 +31,5 @@ windows-sys = { version = "0.61.2", features = [
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-# Keeps the open_project_path command in release builds, for the journey tests (D27).
+# Keeps the open_project_path command in release builds, for the journey tests.
 test-hooks = []

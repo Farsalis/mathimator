@@ -1,6 +1,5 @@
-//! The TeX self-test (contract C9.7, C13.2 E4): at every launch, one line through `latex` and
-//! `dvisvgm` with the worker's TeX environment. Its failure blocks formulas, as a missing TinyTeX
-//! does (C14 Q4).
+//! The TeX self-test (spec §6): at every launch, one line through `latex` and `dvisvgm` with the
+//! worker's TeX environment. Its failure blocks formulas, as a missing TinyTeX does.
 
 use std::fs;
 use std::path::Path;
@@ -10,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::runtime::Runtime;
 use crate::wait_child;
 
-/// Why formulas cannot render when a release build has no TinyTeX (C9.7).
+/// Why formulas cannot render when a release build has no TinyTeX.
 pub const MISSING: &str =
     "Formulas and axis labels cannot render: the bundled TeX is missing. Reinstall Mathimator.";
 

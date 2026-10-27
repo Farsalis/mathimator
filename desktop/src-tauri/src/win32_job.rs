@@ -1,7 +1,7 @@
 //! Windows Job Object teardown for the supervisor process.
 //!
 //! `assign_supervisor` runs on Windows unless a debug build has
-//! `MATHIMATOR_WIN32_JOBS=0`; release builds read no such override (C9.6).
+//! `MATHIMATOR_WIN32_JOBS=0`; release builds read no such override.
 //! Dropping the returned job kills the supervisor and every process it created,
 //! because the job has `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
 
@@ -15,7 +15,7 @@ pub struct SupervisorJob {
 }
 
 /// Puts the supervisor in a kill-on-close Job Object. `Ok(None)` means Job
-/// Objects are off; an error carries the OS reason, for shell.log (F104).
+/// Objects are off; an error carries the OS reason, for shell.log.
 pub fn assign_supervisor(child: &Child) -> io::Result<Option<SupervisorJob>> {
     if cfg!(debug_assertions) && std::env::var("MATHIMATOR_WIN32_JOBS").ok().as_deref() == Some("0")
     {
@@ -65,7 +65,7 @@ fn assign_enabled(child: &Child) -> io::Result<Option<SupervisorJob>> {
     Ok(Some(SupervisorJob { _job: job }))
 }
 
-/// The last OS error, tagged with the Win32 call that failed (F101).
+/// The last OS error, tagged with the Win32 call that failed.
 #[cfg(windows)]
 fn os_error(api: &str) -> io::Error {
     let err = io::Error::last_os_error();
@@ -89,7 +89,7 @@ mod tests {
 
     use super::*;
 
-    /// The C# stand-ins the Python reap tests compile too (D53).
+    /// The C# stand-ins the Python reap tests compile too.
     const JOB_TREE: &str = include_str!("../../../tests/fixtures/win32/job_tree.cs");
     const SLEEPER: &str = include_str!("../../../tests/fixtures/win32/sleeper.cs");
 

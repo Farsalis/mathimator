@@ -31,9 +31,9 @@ use protocol::{DialogReply, ErrorCode, ShellError};
 use runtime::{Runtime, WorkerFiles};
 use worker::{event_of, message_of, Host, Spawned, Spawner, Worker, WorkerProcess};
 
-/// The variable that makes the worker refuse formulas with its text (C9.6, C9.7).
+/// The variable that makes the worker refuse formulas with its text.
 const TEX_ERROR: &str = "MATHIMATOR_TEX_ERROR";
-/// supervisor.err is rotated to supervisor.err.1 at a spawn once it is larger than this (C9.8).
+/// supervisor.err is rotated to supervisor.err.1 at a spawn once it is larger than this.
 const STDERR_LOG_LIMIT: u64 = 1024 * 1024;
 
 /// Locks a mutex, recovering the data if a panicking thread poisoned it.
@@ -59,7 +59,7 @@ fn write_atomically(file: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// shell.log and supervisor.err go to the repository's out/logs in debug builds and to the app
-/// log folder, %LOCALAPPDATA%\<identifier>\logs, in release builds (C9.8, D32).
+/// log folder, %LOCALAPPDATA%\<identifier>\logs, in release builds.
 fn log_dir(app: &AppHandle) -> PathBuf {
     match runtime::repo_root() {
         Some(repo) => repo.join("out").join("logs"),
@@ -70,7 +70,7 @@ fn log_dir(app: &AppHandle) -> PathBuf {
     }
 }
 
-/// Appends one timestamped line to shell.log in `logs` (C9.8). Logging never fails its caller.
+/// Appends one timestamped line to shell.log in `logs`. Logging never fails its caller.
 fn log_line(logs: &Path, line: &str) {
     let _ = fs::create_dir_all(logs);
     let file = logs.join("shell.log");
@@ -85,15 +85,15 @@ fn allow_project(app: &AppHandle, path: &Path) -> Result<(), String> {
         .allow_directory(path, true)
         .map_err(|err| err.to_string())?;
     // The grant above already covers .mathimator while requireLiteralLeadingDot is false. This one
-    // keeps the previews there readable should that setting change (F134).
+    // keeps the previews there readable should that setting change.
     scope
         .allow_directory(path.join(".mathimator"), true)
         .map_err(|err| err.to_string())?;
     Ok(())
 }
 
-/// The command that starts the Python supervisor on a project folder (C9.6). `--init` is only for
-/// new temp projects, and `tex_error` makes the worker refuse formulas (C9.7).
+/// The command that starts the Python supervisor on a project folder. `--init` is only for new
+/// temp projects, and `tex_error` makes the worker refuse formulas.
 fn supervisor_command(
     runtime: &Runtime,
     files: &WorkerFiles,
@@ -118,7 +118,7 @@ fn supervisor_command(
 }
 
 /// The worker's spawner. Each spawn passes on the TeX error of its moment, so that a worker started
-/// after a failed self-test refuses formulas (C9.7, C14 Q4).
+/// after a failed self-test refuses formulas.
 fn spawner<F>(tex: Arc<Tex>, spawn: F) -> Spawner
 where
     F: Fn(&Path, bool, Option<&str>) -> io::Result<Spawned> + Send + Sync + 'static,
@@ -127,7 +127,7 @@ where
 }
 
 /// Starts the supervisor in a kill-on-close Job Object, with its stderr appended to
-/// `stderr_log`, supervisor.err (C9.6, C9.8).
+/// `stderr_log`, supervisor.err.
 fn spawn_supervisor(
     runtime: &Runtime,
     files: &WorkerFiles,
@@ -163,10 +163,10 @@ fn spawn_supervisor(
     })
 }
 
-/// Opens supervisor.err for the worker with this pid (C9.8): rotated to supervisor.err.1 once it
-/// is over 1 MiB, then appended to under a header for this spawn. A rotation that fails, for
-/// example while another program holds the file, is logged, and the file is appended to anyway,
-/// so the worker's stderr is still kept (F129).
+/// Opens supervisor.err for the worker with this pid: rotated to supervisor.err.1 once it is over
+/// 1 MiB, then appended to under a header for this spawn. A rotation that fails, for example
+/// while another program holds the file, is logged, and the file is appended to anyway, so the
+/// worker's stderr is still kept.
 fn open_stderr_log(path: &Path, pid: u32, log: &dyn Fn(&str)) -> io::Result<File> {
     if fs::metadata(path).is_ok_and(|metadata| metadata.len() > STDERR_LOG_LIMIT) {
         let mut rotated = path.as_os_str().to_owned();
@@ -188,8 +188,8 @@ fn open_stderr_log(path: &Path, pid: u32, log: &dyn Fn(&str)) -> io::Result<File
 }
 
 /// Copies the worker's stderr into supervisor.err as it arrives, line by line and as bytes, so
-/// a crash keeps its traceback and output that is not UTF-8 cannot stop the copy (F129). Without
-/// a log the output is still read, so the worker never blocks on a full pipe.
+/// a crash keeps its traceback and output that is not UTF-8 cannot stop the copy. Without a log
+/// the output is still read, so the worker never blocks on a full pipe.
 fn drain_stderr(mut log: Option<impl Write>, stderr: impl Read) {
     let mut stderr = BufReader::new(stderr);
     let mut line = Vec::new();
@@ -236,10 +236,10 @@ fn wait_child(child: &mut Child, limit: Duration) -> Option<ExitStatus> {
 }
 
 /// The shell side of worker output: `worker-event`s, the asset scope, `lastProject`, shell.log,
-/// notices and the TeX state (C8.5, C9.4, C9.5, C9.7, C9.8).
+/// notices and the TeX state.
 struct Shell {
     app: AppHandle,
-    /// The folder of shell.log and supervisor.err (C9.8).
+    /// The folder of shell.log and supervisor.err.
     logs: PathBuf,
     state_file: Option<PathBuf>,
     notices: Mutex<Notices>,
@@ -266,7 +266,7 @@ impl Shell {
         self.logs.join("supervisor.err")
     }
 
-    /// The `lastProject` of state.json, which the launch reopens (C8.5).
+    /// The `lastProject` of state.json, which the launch reopens.
     fn last_project(&self) -> Option<PathBuf> {
         let file = self.state_file.as_ref()?;
         read_last_project(file)
@@ -319,7 +319,7 @@ impl Host for Shell {
     }
 }
 
-/// What `app_status` and `restart_worker` return (C9.5).
+/// What `app_status` and `restart_worker` return.
 #[derive(Debug, PartialEq, Serialize)]
 struct AppStatus {
     worker: WorkerState,
@@ -350,7 +350,7 @@ impl AppStatus {
     }
 }
 
-/// Whether formulas can render (C9.5, C9.7).
+/// Whether formulas can render.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 struct TexStatus {
     state: TexState,
@@ -366,7 +366,7 @@ enum TexState {
 }
 
 impl TexStatus {
-    /// Failed from the start when TeX is blocked, else checking until the self-test ends (C9.7).
+    /// Failed from the start when TeX is blocked, else checking until the self-test ends.
     fn at_launch(tex_error: Option<String>) -> Self {
         match tex_error {
             Some(message) => Self::checked(Err(message)),
@@ -398,7 +398,7 @@ impl TexStatus {
         }
     }
 
-    /// The `tex_status` event that tells the UI this status (C9.5).
+    /// The `tex_status` event that tells the UI this status.
     fn event(&self) -> Value {
         json!({
             "event": "tex_status",
@@ -409,7 +409,7 @@ impl TexStatus {
     }
 }
 
-/// The TeX status, shared by the shell and the worker's spawner (C9.7).
+/// The TeX status, shared by the shell and the worker's spawner.
 struct Tex(Mutex<TexStatus>);
 
 impl Tex {
@@ -421,7 +421,7 @@ impl Tex {
         lock(&self.0).clone()
     }
 
-    /// The message the worker refuses formulas with, while TeX has failed (C9.7).
+    /// The message the worker refuses formulas with, while TeX has failed.
     fn error(&self) -> Option<String> {
         lock(&self.0).error().map(str::to_owned)
     }
@@ -434,9 +434,9 @@ impl Tex {
     }
 }
 
-/// Records the TeX self-test result, logs it and sends `tex_status` (C9.7). A failure blocks
-/// formulas (C14 Q4): the running worker hears the result through `set_tex_error`, and every
-/// worker started later through MATHIMATOR_TEX_ERROR. Nothing running is stopped.
+/// Records the TeX self-test result, logs it and sends `tex_status`. A failure blocks formulas:
+/// the running worker hears the result through `set_tex_error`, and every worker started later
+/// through MATHIMATOR_TEX_ERROR. Nothing running is stopped.
 async fn tex_checked(worker: &Worker, tex: &Tex, host: &dyn Host, result: Result<(), String>) {
     let status = tex.checked(result);
     host.log(&match &status.message {
@@ -450,7 +450,7 @@ async fn tex_checked(worker: &Worker, tex: &Tex, host: &dyn Host, result: Result
     }
 }
 
-/// The notices not yet dismissed (C9.5).
+/// The notices not yet dismissed.
 #[derive(Default)]
 struct Notices {
     last_id: u64,
@@ -484,7 +484,7 @@ impl Notices {
     }
 }
 
-/// `<app_config_dir>\state.json` (C8.5).
+/// `<app_config_dir>\state.json`.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppState {
@@ -497,7 +497,7 @@ fn read_last_project(file: &Path) -> io::Result<PathBuf> {
     Ok(state.last_project)
 }
 
-/// Rewrites state.json with `project` as `lastProject`, atomically (C8.5).
+/// Rewrites state.json with `project` as `lastProject`, atomically.
 fn write_last_project(file: &Path, project: &Path) -> io::Result<()> {
     let state = AppState {
         last_project: project.to_owned(),
@@ -511,7 +511,7 @@ fn write_last_project(file: &Path, project: &Path) -> io::Result<()> {
 /// The notice for a close request that left the window open while a dialog command runs.
 const CLOSE_IGNORED: &str = "The window stays open while a dialog or a Save As is still running. Close the window again once that is done.";
 
-/// One native dialog at a time (F130), and who holds the turn: no one, a dialog command, or the
+/// One native dialog at a time, and who holds the turn: no one, a dialog command, or the
 /// quit warning. A dialog command that arrives while the turn is held is answered
 /// `{cancelled: true}`, and a close request leaves the window open, with a notice when a dialog
 /// command holds the turn.
@@ -577,11 +577,11 @@ fn picked_path(picked: FilePath) -> Result<PathBuf, ShellError> {
         .map_err(|err| ShellError::new(ErrorCode::Io, err.to_string()))
 }
 
-/// The first line of the warning before a touched temp project is left (C8.5).
+/// The first line of the warning before a touched temp project is left.
 const TEMP_WARNING: &str = "This project is in a temporary folder that Windows may delete.";
 const SAVE_AS: &str = "Save As\u{2026}";
 
-/// What leaves the bound project: quitting (C8.5, C14 Q8), or Open, Sample or New (C14 Q2).
+/// What leaves the bound project: quitting, or Open, Sample or New.
 #[derive(Clone, Copy)]
 enum Leaving {
     Quit,
@@ -626,8 +626,8 @@ enum Left {
     Stayed(DialogReply),
 }
 
-/// Asks before leaving a touched temp project, with Save As (C8.5, C14 Q2, Q8). An untouched
-/// one is left without a word.
+/// Asks before leaving a touched temp project, with Save As. An untouched one is left without a
+/// word.
 async fn leave(
     app: &AppHandle,
     window: &Window,
@@ -659,7 +659,7 @@ async fn leave(
     })
 }
 
-/// Save As (C8.5): a parented folder picker, then `save_as`. Returns the reply, or
+/// Save As: a parented folder picker, then `save_as`. Returns the reply, or
 /// `{cancelled: true}` when no folder was picked.
 async fn save_as(
     app: &AppHandle,
@@ -678,7 +678,7 @@ async fn save_as(
         .map(DialogReply::Worker)
 }
 
-/// Open, Sample and New (C14 Q2): asks before a touched temp project is left, then awaits `open`,
+/// Open, Sample and New: asks before a touched temp project is left, then awaits `open`,
 /// which binds another project, or gives `None` when the user picked none. Like every future,
 /// `open` does nothing until it is awaited, so nothing runs when the user stays.
 async fn switch_project(
@@ -720,7 +720,7 @@ fn after_save_as(
     saved
 }
 
-/// The quit warning (C8.5, C14 Q8), on the window's close request. The window closes unless the
+/// The quit warning, on the window's close request. The window closes unless the
 /// user stays: Cancel, a cancelled picker, or a Save As that failed, whose reason is shown. While
 /// another dialog command runs, the window stays open, and a notice says why; a close request
 /// repeated while this one runs is ignored.
@@ -938,7 +938,7 @@ async fn cancel_render(worker: State<'_, Worker>, job_id: String) -> Result<(), 
 }
 
 /// Opens a project without a dialog, for the journey tests. Release builds have it only with the
-/// `test-hooks` feature (D27).
+/// `test-hooks` feature.
 #[cfg(any(debug_assertions, feature = "test-hooks"))]
 #[tauri::command]
 async fn open_project_path(worker: State<'_, Worker>, path: String) -> Result<Value, ShellError> {
@@ -957,7 +957,7 @@ async fn cancel_equation_preview(
 }
 
 /// Compiles a formula's glyph on the blocking pool, so that a cancel or the next keystroke can
-/// end it, and the window never waits for Typst (C9.9, D20).
+/// end it, and the window never waits for Typst.
 #[tauri::command]
 async fn compile_equation_preview(
     worker: State<'_, Worker>,
@@ -978,7 +978,7 @@ async fn compile_equation_preview(
         })
 }
 
-/// Writes the shell-ready marker, only when MATHIMATOR_SHELL_READY_FILE names a file (D32).
+/// Writes the shell-ready marker, only when MATHIMATOR_SHELL_READY_FILE names a file.
 #[tauri::command]
 fn note_shell_ready() -> Result<(), ShellError> {
     match std::env::var_os(runtime::SHELL_READY_FILE).filter(|file| !file.is_empty()) {
@@ -996,7 +996,7 @@ fn write_ready_marker(file: &Path) -> Result<(), ShellError> {
     })
 }
 
-/// The THIRD_PARTY_NOTICES.txt the installer ships, read-only, for the Notices panel (D75).
+/// The THIRD_PARTY_NOTICES.txt the installer ships, read-only, for the Notices panel.
 #[tauri::command]
 async fn third_party_notices(runtime: State<'_, Runtime>) -> Result<String, ShellError> {
     runtime
@@ -1005,7 +1005,7 @@ async fn third_party_notices(runtime: State<'_, Runtime>) -> Result<String, Shel
         .map_err(|message| ShellError::new(ErrorCode::Io, message))
 }
 
-/// Runs the TeX self-test once the launch is done (C8.5 launch step 5, C9.7).
+/// Runs the TeX self-test once the launch is done.
 async fn check_tex(app: AppHandle) {
     let (worker, shell) = (app.state::<Worker>(), app.state::<Arc<Shell>>());
     if shell.tex.status().state != TexState::Checking {
@@ -1021,7 +1021,7 @@ async fn check_tex(app: AppHandle) {
 
 /// Registers the Tauri commands, each with the names the UI passes its arguments by: Tauri's
 /// camelCase of the Rust parameter names. Tests keep each name with the text of its `cfg`
-/// attribute ("" when it has none) and those argument names for the `commands.json` check (C9.1),
+/// attribute ("" when it has none) and those argument names for the `commands.json` check,
 /// so every build checks the release surface.
 macro_rules! commands {
     ($($(#[$cfg:meta])* $command:ident($($arg:ident),*)),* $(,)?) => {
@@ -1071,7 +1071,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Nothing here fails: a missing runtime or a worker that cannot start leaves the window
-            // open with "Worker unavailable" and the reason (C9.5, D31).
+            // open with "Worker unavailable" and the reason.
             let handle = app.handle();
             let logs = log_dir(handle);
             let runtime = runtime::resolve(handle, &|line| log_line(&logs, line));
@@ -1114,7 +1114,7 @@ pub fn run() {
             Ok(())
         })
         .on_page_load(|webview, payload| {
-            // A reload, or a renderer restart, starts the UI's glyph generations at 1 again (C9.9).
+            // A reload, or a renderer restart, starts the UI's glyph generations at 1 again.
             if payload.event() == PageLoadEvent::Started {
                 if let Some(glyph) = webview.try_state::<Arc<GlyphPreview>>() {
                     glyph.reset();
@@ -1146,7 +1146,7 @@ mod tests {
             "../../../tests/fixtures/protocol/commands.json"
         ))
         .unwrap();
-        // Release builds register a debugOnly command only with the test-hooks feature (D27).
+        // Release builds register a debugOnly command only with the test-hooks feature.
         let debug_only = r#"cfg(any(debug_assertions, feature = "test-hooks"))"#;
         let listed: Vec<(&str, &str, Vec<&str>)> = fixture["tauriCommands"]
             .as_array()
@@ -1553,7 +1553,7 @@ mod tests {
     }
 
     #[test]
-    fn the_supervisor_runs_with_the_contract_command_line() {
+    fn the_supervisor_runs_with_the_specified_command_line() {
         let project = Path::new("C:\\Users\\me\\Lessons\\waves");
         let command = supervisor_command(&installed_runtime(), &files(), project, true, None);
         assert_eq!(
@@ -1586,7 +1586,7 @@ mod tests {
     }
 
     /// The worker runs Manim with the real interpreter only when its `--python` is the launcher it
-    /// runs under (D16).
+    /// runs under.
     #[test]
     fn a_supervisor_behind_a_venv_launcher_runs_the_real_interpreter_and_names_the_launcher() {
         let files = WorkerFiles {
@@ -1748,9 +1748,9 @@ mod tests {
         assert!(dialogs.begin().is_some());
     }
 
-    /// The shell against the repository's worker, started as a debug build starts it (PR1 D,
-    /// TR24). Only Windows probes a project lock without taking it, so the test is Windows only,
-    /// and it runs only under `--ignored` with `MATHIMATOR_REAL_WORKER_TESTS=1`.
+    /// The shell against the repository's worker, started as a debug build starts it. Only Windows
+    /// probes a project lock without taking it, so the test is Windows only, and it runs only
+    /// under `--ignored` with `MATHIMATOR_REAL_WORKER_TESTS=1`.
     #[cfg(windows)]
     mod real_worker {
         use std::sync::atomic::AtomicBool;
@@ -1867,7 +1867,7 @@ mod tests {
             let formula = &added["focus"]["objectId"];
             let untrusted =
                 json!({"op": "set_latex", "objectId": formula, "latex": "\\csname x\\endcsname"});
-            // A refusal is the command's reply, not a shell error, and is not broadcast (D46).
+            // A refusal is the command's reply, not a shell error, and is not broadcast.
             let refused = block_on(worker.edit_document(untrusted)).unwrap();
             assert_eq!(refused["event"], "rejected", "{refused}");
             assert_eq!(refused["code"], "untrusted_latex");

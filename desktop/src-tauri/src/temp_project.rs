@@ -1,4 +1,4 @@
-//! Temp projects (contract C8.5): the folders the shell makes in %TEMP% for the launch project,
+//! Temp projects (spec §6): the folders the shell makes in %TEMP% for the launch project,
 //! New and each Sample copy, their marker, the "touched" check, and pruning.
 
 use std::fs::{self, File};
@@ -11,7 +11,7 @@ use crate::{sha256, write_atomically};
 
 /// The `kind` of every marker.
 const KIND: &str = "mathimator-temp";
-/// Pruning keeps a temp project for at least this long (D29).
+/// Pruning keeps a temp project for at least this long.
 const PRUNE_AGE_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// `<folder>\.mathimator\temp-project.json`, which makes a folder a temp project. The worker
@@ -80,9 +80,9 @@ pub fn created_ms_in_name(folder: &Path) -> Option<u64> {
     }
 }
 
-/// Deletes the temp projects in `temp_root` that hold nothing to keep (C8.5, D29, C14 Q6), and logs
-/// each deletion. Pruning only considers `mathimator-<pid>-<ms>` folders that are at least 24 h
-/// old, that no worker has locked, and that are not in `keep`.
+/// Deletes the temp projects in `temp_root` that hold nothing to keep, and logs each deletion.
+/// Pruning only considers `mathimator-<pid>-<ms>` folders that are at least 24 h old, that no
+/// worker has locked, and that are not in `keep`.
 ///
 /// - A marked folder must be untouched: its project.json still hashes to the seed, and it
 ///   published no export. Its age is the marker's `createdMs`.
@@ -160,7 +160,7 @@ fn holds_files(folder: &Path) -> bool {
     })
 }
 
-/// Whether a worker holds the project lock of `folder` (C8.1). A lock file that cannot be opened
+/// Whether a worker holds the project lock of `folder`. A lock file that cannot be opened
 /// counts as held.
 pub(crate) fn is_locked(folder: &Path) -> bool {
     match File::open(lock_file(folder)) {
@@ -420,7 +420,7 @@ mod tests {
     }
 
     /// Probing a lock takes no lock on Windows, so a worker that binds a folder while pruning
-    /// probes it is never refused (TR24). Rust's lock stands in for the worker's.
+    /// probes it is never refused. Rust's lock stands in for the worker's.
     #[cfg(windows)]
     #[test]
     fn a_probe_never_refuses_a_lock_taken_while_it_runs() {

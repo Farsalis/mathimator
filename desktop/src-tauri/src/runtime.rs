@@ -1,7 +1,7 @@
-//! The tools the shell runs and how it starts them (contract C9.6): Python with the worker, Typst
-//! for the glyph preview, TinyTeX, and the sample; and the third-party notices the bundle ships
-//! (D75). Debug builds use the repository; release builds use only the installed bundle, as its
-//! runtime.json describes it (D30, D33).
+//! The tools the shell runs and how it starts them (spec §6): Python with the worker, Typst for
+//! the glyph preview, TinyTeX, and the sample; and the third-party notices the bundle ships. Debug
+//! builds use the repository; release builds use only the installed bundle, as its runtime.json
+//! describes it.
 
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -23,23 +23,23 @@ const PYTHON_OVERRIDE: &str = "MATHIMATOR_PYTHON";
 const TYPST_OVERRIDE: &str = "MATHIMATOR_TYPST";
 const TINYTEX_OVERRIDE: &str = "MATHIMATOR_TINYTEX_BIN";
 /// The prefix of the shell's and the worker's own variables. A release build ignores every
-/// inherited one but [`SHELL_READY_FILE`] and passes none of them to its children (D30).
+/// inherited one but [`SHELL_READY_FILE`] and passes none of them to its children.
 const OVERRIDE_PREFIX: &str = "MATHIMATOR_";
 /// The file that gets the shell-ready marker: the one `MATHIMATOR_*` variable a release build
-/// reads (D32).
+/// reads.
 pub const SHELL_READY_FILE: &str = "MATHIMATOR_SHELL_READY_FILE";
 /// The variable that names a Windows venv launcher to the real interpreter it starts, so that the
-/// venv applies there (D16).
+/// venv applies there.
 const VENV_LAUNCHER: &str = "__PYVENV_LAUNCHER__";
 /// The notices scripts/generate_notices.py writes into the bundle, which the installer ships as
-/// runtime/THIRD_PARTY_NOTICES.txt (D75).
+/// runtime/THIRD_PARTY_NOTICES.txt.
 const NOTICES: &str = "THIRD_PARTY_NOTICES.txt";
 /// Why a debug build has no notices to show.
 const NOTICES_NOT_BUILT: &str = "The third-party notices are not built: packaging/bundle has no \
     THIRD_PARTY_NOTICES.txt. Build the bundle, then run scripts/generate_notices.py.";
 
 /// What the shell runs, and the notices it ships. Each part is resolved on its own, so a missing
-/// piece disables only what needs it (D31).
+/// piece disables only what needs it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Runtime {
     /// Python and the worker, or why the worker cannot start.
@@ -48,16 +48,16 @@ pub struct Runtime {
     pub typst: Result<PathBuf, String>,
     /// The TinyTeX bin folder. A debug build without one uses the TeX on PATH.
     pub tinytex_bin: Option<PathBuf>,
-    /// Why formulas cannot render, when TeX is blocked from the start (C9.7).
+    /// Why formulas cannot render, when TeX is blocked from the start.
     pub tex_error: Option<String>,
-    /// The working directory of every child (C9.6).
+    /// The working directory of every child.
     pub work_dir: PathBuf,
-    /// The third-party notices the Notices panel shows (D75).
+    /// The third-party notices the Notices panel shows.
     pub notices: NoticesFile,
 }
 
-/// The third-party notices file and what the shell says when it is missing (D75). It is read each
-/// time the Notices panel asks, so notices written while the app runs show without a restart.
+/// The third-party notices file and what the shell says when it is missing. It is read each time
+/// the Notices panel asks, so notices written while the app runs show without a restart.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoticesFile {
     /// Where the file is, or None when there is no bundle to look in.
@@ -70,10 +70,10 @@ pub struct NoticesFile {
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkerFiles {
     /// The interpreter with Manim installed, which the worker gets as `--python`: the real one in
-    /// a release build (D33), the repository's venv or `MATHIMATOR_PYTHON` in a debug build.
+    /// a release build, the repository's venv or `MATHIMATOR_PYTHON` in a debug build.
     pub python: PathBuf,
     /// The real interpreter that `python` starts as its child when it is a Windows venv launcher,
-    /// which only a debug build runs (D16).
+    /// which only a debug build runs.
     pub base_python: Option<PathBuf>,
     /// The folder that holds `mathimator_worker`.
     pub source: PathBuf,
@@ -81,7 +81,7 @@ pub struct WorkerFiles {
     pub sample: PathBuf,
 }
 
-/// The fields of runtime.json the shell uses (C9.6). The informational ones are only logged, and
+/// The fields of runtime.json the shell uses. The informational ones are only logged, and
 /// unknown ones are ignored.
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,7 +94,7 @@ struct Manifest {
     tinytex_bin: Option<String>,
 }
 
-/// The `MATHIMATOR_*` tool overrides, which only debug builds honour (D30).
+/// The `MATHIMATOR_*` tool overrides, which only debug builds honour.
 #[derive(Default)]
 pub struct Overrides {
     python: Option<PathBuf>,
@@ -117,8 +117,8 @@ impl Overrides {
     }
 }
 
-/// Finds the runtime and logs what it found (C9.8). It never fails: a missing part carries the
-/// reason instead (D31).
+/// Finds the runtime and logs what it found. It never fails: a missing part carries the reason
+/// instead.
 pub fn resolve(app: &AppHandle, log: &dyn Fn(&str)) -> Runtime {
     let runtime = match repo_root() {
         Some(repo) => development(&repo, &Overrides::from_env()),
@@ -142,8 +142,7 @@ pub fn resolve(app: &AppHandle, log: &dyn Fn(&str)) -> Runtime {
     runtime
 }
 
-/// The repository, in debug builds only. Release builds neither use nor embed its path (D30,
-/// F057).
+/// The repository, in debug builds only. Release builds neither use nor embed its path.
 #[cfg(debug_assertions)]
 pub fn repo_root() -> Option<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -152,15 +151,14 @@ pub fn repo_root() -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// The repository, in debug builds only. Release builds neither use nor embed its path (D30,
-/// F057).
+/// The repository, in debug builds only. Release builds neither use nor embed its path.
 #[cfg(not(debug_assertions))]
 pub fn repo_root() -> Option<PathBuf> {
     None
 }
 
 /// Debug builds: the repository's worker, .venv and sample, the overrides, and the Typst, TinyTeX
-/// and notices of packaging/bundle when it has them (C9.6, F055).
+/// and notices of packaging/bundle when it has them.
 pub fn development(repo: &Path, overrides: &Overrides) -> Runtime {
     let bundle = repo.join("packaging").join("bundle");
     let manifest = read_manifest(&bundle)
@@ -218,8 +216,8 @@ pub fn development(repo: &Path, overrides: &Overrides) -> Runtime {
     }
 }
 
-/// Release builds: only the bundle, as its runtime.json describes it (C9.6, D30, D33). Without a
-/// resource folder there is no bundle: nothing is looked up from the working directory (F124).
+/// Release builds: only the bundle, as its runtime.json describes it. Without a resource folder
+/// there is no bundle: nothing is looked up from the working directory.
 /// The notices need no runtime.json, so they stay readable when the worker cannot start. The
 /// `ignored` variables are only named in shell.log.
 fn installed(
@@ -278,7 +276,7 @@ fn installed(
     }
 }
 
-/// What the shell says of an installed runtime that lacks `field` (C9.6).
+/// What the shell says of an installed runtime that lacks `field`.
 fn incomplete(field: &str) -> String {
     format!("The installed runtime is incomplete ({field}). Reinstall Mathimator.")
 }
@@ -296,7 +294,7 @@ impl Runtime {
         }
     }
 
-    /// A child with the worker's environment (C9.6, F124): no console window, the fixed working
+    /// A child with the worker's environment: no console window, the fixed working
     /// directory, the inherited `PYTHON*`, `TEXINPUTS` and `TEXMF*` variables removed (in a
     /// release build the `MATHIMATOR_*` ones too), and the TinyTeX bin folder first on PATH.
     pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
@@ -328,10 +326,10 @@ impl Runtime {
         command
     }
 
-    /// `python -P -m <module>` with the worker package importable (C9.6). `-P` keeps the working
-    /// directory off `sys.path` (F124). Behind a venv launcher the real interpreter runs, told the
+    /// `python -P -m <module>` with the worker package importable. `-P` keeps the working
+    /// directory off `sys.path`. Behind a venv launcher the real interpreter runs, told the
     /// launcher as the launcher itself would tell it, so that the process the shell puts in its
-    /// Job Object is the one that starts the worker's children (D16).
+    /// Job Object is the one that starts the worker's children.
     pub fn python_command(&self, files: &WorkerFiles, module: &str) -> Command {
         let mut command = self.command(files.base_python.as_ref().unwrap_or(&files.python));
         if files.base_python.is_some() {
@@ -356,7 +354,7 @@ impl Runtime {
         }
     }
 
-    /// One shell.log line that names every tool (C9.8).
+    /// One shell.log line that names every tool.
     fn describe(&self) -> String {
         let worker = match &self.worker {
             Ok(files) => format!(
@@ -388,7 +386,7 @@ impl Runtime {
 }
 
 impl NoticesFile {
-    /// The text of the notices, or why there is none to show (D75).
+    /// The text of the notices, or why there is none to show.
     pub fn read(&self) -> Result<String, String> {
         let path = self.path.as_ref().ok_or_else(|| self.missing.clone())?;
         fs::read_to_string(path).map_err(|err| match err.kind() {
@@ -398,7 +396,7 @@ impl NoticesFile {
     }
 }
 
-/// A command whose console window stays hidden (F105).
+/// A command whose console window stays hidden.
 pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut command = Command::new(program);
@@ -409,8 +407,8 @@ pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
 
 /// Whether children lose an inherited variable: the `PYTHON*` ones change how the interpreter
 /// starts, `PYTHONHOME` among them, and `TEXINPUTS` and `TEXMF*` change which files kpathsea
-/// finds (C9.6, F124, G2.6). A `release` build drops the `MATHIMATOR_*` ones too, so that no
-/// development switch such as `MATHIMATOR_WIN32_JOBS=0` reaches the worker (D30).
+/// finds. A `release` build drops the `MATHIMATOR_*` ones too, so that no development switch
+/// such as `MATHIMATOR_WIN32_JOBS=0` reaches the worker.
 fn is_cleaned(key: &OsStr, release: bool) -> bool {
     let key = key.to_string_lossy().to_ascii_uppercase();
     key.starts_with("PYTHON")
@@ -420,7 +418,7 @@ fn is_cleaned(key: &OsStr, release: bool) -> bool {
 }
 
 /// The `inherited` variables a release build ignores: every `MATHIMATOR_*` one but
-/// [`SHELL_READY_FILE`] (D30, D32).
+/// [`SHELL_READY_FILE`].
 fn ignored_in_release(inherited: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<String> {
     inherited
         .into_iter()
@@ -474,7 +472,7 @@ fn venv_python(repo: &Path) -> PathBuf {
 }
 
 /// The real interpreter behind `python` when it is a Windows venv launcher: the file of the same
-/// name in the `home` folder of the venv's pyvenv.cfg, read as the launcher reads it (D16). The
+/// name in the `home` folder of the venv's pyvenv.cfg, read as the launcher reads it. The
 /// launcher takes the first pyvenv.cfg beside it, else one folder up, and the first lowercase
 /// `home` key in it. A POSIX venv's python is a link to the real interpreter, not a launcher.
 fn venv_base(python: &Path) -> Option<PathBuf> {
@@ -1169,7 +1167,7 @@ mod tests {
     /// The repository's venv, started as the shell starts the worker: the process the shell
     /// spawns, and so puts in its Job Object, is the interpreter that runs the module, inside the
     /// venv, and it sees the venv's python as `sys.executable`, as the worker sees the `--python`
-    /// it gets (D16). Runs only under `--ignored` with `MATHIMATOR_REAL_WORKER_TESTS=1`.
+    /// it gets. Runs only under `--ignored` with `MATHIMATOR_REAL_WORKER_TESTS=1`.
     #[test]
     #[ignore = "starts the repository's Python; needs MATHIMATOR_REAL_WORKER_TESTS=1"]
     fn the_repository_venv_runs_in_the_process_the_shell_spawns() {

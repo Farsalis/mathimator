@@ -1,6 +1,6 @@
-//! The equation glyph preview (contract C9.9): the LaTeX-to-Typst translator, which runs in the
-//! shell with no Python child (D28), and the Typst compile of one formula per slot, where only the
-//! newest generation may publish (F037).
+//! The equation glyph preview (spec §6): the LaTeX-to-Typst translator, which runs in the shell
+//! with no Python child, and the Typst compile of one formula per slot, where only the newest
+//! generation may publish.
 
 use std::collections::HashMap;
 use std::fs;
@@ -24,13 +24,13 @@ const LIMIT: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(5);
 /// The Typst the preview is written for (spec §1).
 pub const VERSION: &str = "typst 0.15.0";
-/// Generations stay below 2^53, so they are exact JavaScript numbers (C9.9).
+/// Generations stay below 2^53, so they are exact JavaScript numbers.
 const GENERATION_LIMIT: u64 = 1 << 53;
 /// `\frac` and `\sqrt` groups nested deeper than this are unsupported. A stored formula has at most
 /// 500 characters, so it nests at most 71 deep; the bound only keeps the recursion off the end of
 /// the stack.
 const MAX_DEPTH: usize = 100;
-/// Why a compile finds no project folder (C9.9, G5.3).
+/// Why a compile finds no project folder.
 const MOVED: &str = "The project folder was moved or deleted.";
 /// The page around the translated math (spec §6).
 const PAGE: &str = "#set page(width: auto, height: auto, margin: 8pt, fill: none)";
@@ -39,7 +39,7 @@ const NAMES: [&str; 10] = [
     "sin", "cos", "tan", "log", "exp", "pi", "theta", "alpha", "beta", "gamma",
 ];
 
-/// What `compile_equation_preview` returns (C9.9).
+/// What `compile_equation_preview` returns.
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
 pub enum GlyphResult {
@@ -64,7 +64,7 @@ impl GlyphResult {
     }
 }
 
-/// The shell's own check of a glyph request (C9.9): `slot` is a formula id, matching
+/// The shell's own check of a glyph request: `slot` is a formula id, matching
 /// `^[a-z][a-z0-9_]{0,31}$`, and `generation` a positive integer below 2^53.
 pub fn check_arguments(slot: &str, generation: u64) -> Result<(), ShellError> {
     let mut bytes = slot.bytes();
@@ -89,10 +89,10 @@ pub fn check_arguments(slot: &str, generation: u64) -> Result<(), ShellError> {
 /// The glyph preview. The shell runs Typst itself, never behind the worker (spec §6).
 pub struct GlyphPreview {
     gate: Mutex<Gate>,
-    /// The Typst the runtime resolved, or why there is none (C9.6).
+    /// The Typst the runtime resolved, or why there is none.
     typst: Result<PathBuf, String>,
     /// Set once `typst --version` has reported [`VERSION`]. A failed check runs again on the next
-    /// compile, so a Typst fixed meanwhile is picked up (F052).
+    /// compile, so a Typst fixed meanwhile is picked up.
     checked: AtomicBool,
 }
 
@@ -105,10 +105,9 @@ impl GlyphPreview {
         }
     }
 
-    /// Compiles `latex` for the formula in `slot` to an SVG in `<project>/.mathimator/equation`
-    /// (C9.9, D52). A compile whose generation is not above every one the slot has seen, or that
-    /// a newer compile or a cancel supersedes before it publishes, is cancelled. Blocks until
-    /// Typst ends.
+    /// Compiles `latex` for the formula in `slot` to an SVG in `<project>/.mathimator/equation`.
+    /// A compile whose generation is not above every one the slot has seen, or that a newer
+    /// compile or a cancel supersedes before it publishes, is cancelled. Blocks until Typst ends.
     pub fn compile(&self, project: &Path, latex: &str, slot: &str, generation: u64) -> GlyphResult {
         let Some(claim) = lock(&self.gate).claim(slot, generation) else {
             return GlyphResult::Cancelled;
@@ -160,19 +159,19 @@ impl GlyphPreview {
         GlyphResult::Ok { svg_path }
     }
 
-    /// `cancel_equation_preview` (C9.9): no compile in `slot` at or below `generation` publishes,
+    /// `cancel_equation_preview`: no compile in `slot` at or below `generation` publishes,
     /// and the one running ends its Typst.
     pub fn cancel(&self, slot: &str, generation: u64) {
         lock(&self.gate).cancel(slot, generation);
     }
 
-    /// Forgets every slot's generations, on a page load (C9.9). The reloaded UI counts from 1
+    /// Forgets every slot's generations, on a page load. The reloaded UI counts from 1
     /// again. The compiles still running are stale and end their Typst.
     pub fn reset(&self) {
         lock(&self.gate).reset();
     }
 
-    /// The Typst binary, once its version check has passed (F052).
+    /// The Typst binary, once its version check has passed.
     fn typst(&self) -> Result<&Path, String> {
         let typst = self.typst.as_ref().map_err(String::clone)?;
         if !self.checked.load(Ordering::Relaxed) {
@@ -198,7 +197,7 @@ impl GlyphPreview {
     /// Deletes the slot's other formula files if `claim` is still live, and says whether it was.
     /// The gate stays locked meanwhile, so a newer compile of the slot cannot write its file
     /// before the deletion ends. Every other file of the slot is then an older one, or one left
-    /// from before a page reload (F127, F169).
+    /// from before a page reload.
     fn publish(&self, folder: &Path, slot: &str, generation: u64, claim: u64) -> bool {
         let gate = lock(&self.gate);
         let live = gate.is_live(slot, claim);
@@ -209,7 +208,7 @@ impl GlyphPreview {
     }
 }
 
-/// The slot and generation gate (C9.9, F037). A slot is one formula's preview.
+/// The slot and generation gate. A slot is one formula's preview.
 #[derive(Default)]
 struct Gate {
     slots: HashMap<String, Slot>,
@@ -291,7 +290,7 @@ impl Parser<'_> {
         while let Some(next) = self.peek().filter(|&next| Some(next) != closing) {
             let piece = self.piece(next, depth)?;
             // Typst reads a run such as mc or x2 as one name. A space keeps each letter, digit
-            // and command its own atom, as in LaTeX: mc^2 becomes m c^2 (D10).
+            // and command its own atom, as in LaTeX: mc^2 becomes m c^2.
             let is_atom = |character: char| character.is_ascii_alphanumeric();
             if math.ends_with(is_atom) && piece.starts_with(is_atom) {
                 math.push(' ');
@@ -358,10 +357,9 @@ fn is_space(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
 }
 
-/// `<project>/.mathimator/equation` (D52). It is made inside the project folder, never the folder
-/// itself, so a project moved or deleted meanwhile is not brought back (G5.3). A link in place of
-/// either folder is refused, as the worker refuses to bind one (O10), so that no glyph is written
-/// outside the project.
+/// `<project>/.mathimator/equation`. It is made inside the project folder, never the folder itself,
+/// so a project moved or deleted meanwhile is not brought back. A link in place of either folder
+/// is refused, as the worker refuses to bind one, so that no glyph is written outside the project.
 fn equation_folder(project: &Path) -> Result<PathBuf, String> {
     let mut folder = project.to_owned();
     for name in [".mathimator", "equation"] {
@@ -390,9 +388,8 @@ fn is_link(path: &Path) -> bool {
 
 /// `typst compile` of `<name>.typ` to `<name>.svg` in `folder`, with no console window. Typst
 /// reads `{p}`, `{0p}` and `{n}` in its output path as a page template, so both paths are names
-/// in the working folder, which no project path can change (G4.8). The embedded fonts cover the
-/// subset, and skipping the system fonts saves their scan and keeps the glyph the same on every
-/// PC (F053).
+/// in the working folder, which no project path can change. The embedded fonts cover the subset,
+/// and skipping the system fonts saves their scan and keeps the glyph the same on every PC.
 fn typst_command(typst: &Path, folder: &Path, name: &str) -> Command {
     let mut command = hidden_command(typst);
     command
@@ -403,7 +400,7 @@ fn typst_command(typst: &Path, folder: &Path, name: &str) -> Command {
     command
 }
 
-/// Checks that `typst` runs, without a console window, and is [`VERSION`] (F052).
+/// Checks that `typst` runs, without a console window, and is [`VERSION`].
 fn check_version(typst: &Path) -> Result<(), String> {
     let mut command = hidden_command(typst);
     command.arg("--version");
@@ -430,7 +427,7 @@ fn check_version(typst: &Path) -> Result<(), String> {
 /// Runs `command` with its output read until it exits, or ends it once `go_on` turns false or
 /// `limit` passes, and then returns `None`. An ended process's readers are left to finish on
 /// their own: a process it started, such as the real Typst behind a shim, may hold its pipes open
-/// for as long as it runs (F038).
+/// for as long as it runs.
 fn run(
     mut command: Command,
     limit: Duration,
@@ -575,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn the_document_puts_the_math_on_the_phase_3_page() {
+    fn the_document_puts_the_math_on_an_auto_sized_page() {
         assert_eq!(
             document("y = sin(x)"),
             "#set page(width: auto, height: auto, margin: 8pt, fill: none)\n$ y = sin(x) $\n"
